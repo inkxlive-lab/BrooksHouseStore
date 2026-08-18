@@ -1,0 +1,285 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>Products | BrooksHouse Store</title>
+
+    <link
+        rel="stylesheet"
+        href="/static/store.css"
+<style>
+    .product-table {
+        table-layout: fixed;
+        width: 100%;
+    }
+
+    .product-table th:nth-child(3),
+    .product-table td:nth-child(3) {
+        width: 180px !important;
+        max-width: 180px !important;
+        white-space: normal !important;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+    }
+</style>    >
+</head>
+
+<body>
+    <header class="store-header">
+        <div>
+            <p class="eyebrow">The BrooksHouse Store</p>
+            <h1>Products</h1>
+            <p class="subtitle">
+                {{ products | length }} product record{% if products | length != 1 %}s{% endif %}
+            </p>
+        </div>
+
+        <nav>
+            <a href="/storage-gallery">Storage Gallery</a>
+
+            <a href="/smart-scan">Smart Scan</a>
+
+            <a href="/channels/amazon/mapping">Amazon Mapping</a>
+            <a href="/dashboard">Dashboard</a>
+            <a href="/channels/shopify/reconcile">Shopify Compare</a>
+            <a href="/channels/shopify/storefront-import">Storefront Import</a>
+            <a href="/channels/shopify/settings">Shopify Settings</a>
+            <a href="/channels/shopify/approve">Approval Queue</a>
+            <a href="/inventory/search">Inventory Search</a>
+            <a href="/inventory/replenishment">
+                Replenishment
+            </a>
+            <a href="/scan">Scan Item</a>
+            <a href="/inventory/receive">Receive Inventory</a>
+            <a href="/inventory/transfer">Transfer Inventory</a>
+            <a href="/inventory/adjust">Adjust Inventory</a>
+            <a href="/products/add">Add Product</a>
+            <a href="/docs">API Docs</a>
+        </nav>
+    </header>
+
+    <main class="page-container">
+        <section class="product-list-card">
+            {% if products %}
+            <div class="product-table-wrapper">
+                <table class="product-table">
+                    <thead>
+                        <tr>
+                            <th>Product</th>
+                            <th>Barcode</th>
+                            <th>Category</th>
+                            <th>Price</th>
+                            <th>Quantity</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+
+                    <tbody>
+                        {% for product in products %}
+                        <tr>
+                            <td>
+                                
+                    <div class="product-list-thumbnail">
+                        {% if product.images %}
+                            {% set image = product.images[0] %}
+
+                            {% set image_source =
+                                image.image_url
+                                or image.url
+                                or image.source_url
+                                or image.external_url
+                            %}
+
+                            {% if image_source %}
+                            <img
+                                src="{{ image_source }}"
+                                alt="{{ image.alt_text or product.product_name }}"
+                                loading="lazy"
+                            >
+                            {% else %}
+                            <div class="product-image-placeholder">
+                                No image
+                            </div>
+                            {% endif %}
+                        {% else %}
+                        <div class="product-image-placeholder">
+                            No image
+                        </div>
+                        {% endif %}
+                    </div>
+
+<strong>{{ product.product_name }}</strong>
+
+                                {% if product.brand %}
+                                <small>{{ product.brand }}</small>
+                                {% endif %}
+                            </td>
+
+                            <td>
+                                {% if product.barcodes %}
+                                    {{ product.barcodes[0].barcode }}
+                                {% else %}
+                                    No barcode
+                                {% endif %}
+                            </td>
+
+                            <td>
+                                {% if product.category %}{{ product.category.split(">")[-1].strip() }}{% else %}Uncategorized{% endif %}
+                            </td>
+
+                            <td>
+                                {% if product.store_price is not none %}
+                                    ${{ "%.2f" | format(product.store_price) }}
+                                {% else %}
+                                    Not priced
+                                {% endif %}
+                            </td>
+
+                            <td>
+                                {% set inventory_total =
+                                    product.inventory_records
+                                    | sum(attribute="quantity_on_hand")
+                                %}
+
+                                {{ inventory_total }}
+                            </td>
+
+                            <td>
+                                <a
+                                    class="table-link"
+                                    href="/products/{{ product.product_id }}"
+                                >
+                                    View
+                                </a>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+
+        <div
+            class="product-pagination"
+            style="
+                display:flex;
+                flex-wrap:wrap;
+                justify-content:space-between;
+                align-items:center;
+                gap:16px;
+                margin-top:20px;
+                padding-top:16px;
+                border-top:1px solid #ddd;
+            "
+        >
+            <div>
+                Showing
+                <strong>{{ start_item }}</strong>
+                -
+                <strong>{{ end_item }}</strong>
+                of
+                <strong>{{ total_products }}</strong>
+                products
+            </div>
+
+            <div
+                style="
+                    display:flex;
+                    align-items:center;
+                    gap:12px;
+                    flex-wrap:wrap;
+                "
+            >
+                {% if page > 1 %}
+                <a
+                    class="secondary-button link-button"
+                    href="/products?page={{ page - 1 }}&per_page={{ per_page }}"
+                >
+                    Previous
+                </a>
+                {% endif %}
+
+                <strong>
+                    Page {{ page }} of {{ total_pages }}
+                </strong>
+
+                {% if page < total_pages %}
+                <a
+                    class="secondary-button link-button"
+                    href="/products?page={{ page + 1 }}&per_page={{ per_page }}"
+                >
+                    Next
+                </a>
+                {% endif %}
+            </div>
+
+            <form
+                action="/products"
+                method="get"
+                style="
+                    display:flex;
+                    align-items:center;
+                    gap:8px;
+                "
+            >
+                <input
+                    type="hidden"
+                    name="page"
+                    value="1"
+                >
+
+                <label for="products-per-page">
+                    Items per page:
+                </label>
+
+                <select
+                    id="products-per-page"
+                    name="per_page"
+                    onchange="this.form.submit()"
+                >
+                    {% for size in allowed_page_sizes %}
+                    <option
+                        value="{{ size }}"
+                        {% if size == per_page %}selected{% endif %}
+                    >
+                        {{ size }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </form>
+        </div>
+
+            {% else %}
+            <div class="empty-state">
+                <h2>No products yet</h2>
+
+                <p>
+                    Add your first BrooksHouse Store product.
+                </p>
+
+                <a
+                    class="primary-button link-button"
+                    href="/products/add"
+                >
+                    Add Product
+                </a>
+            </div>
+            {% endif %}
+        </section>
+    </main>
+
+    <script
+        src="/static/product-channel-badges.js"
+        defer
+    ></script>
+
+</body>
+</html>
+
+
+

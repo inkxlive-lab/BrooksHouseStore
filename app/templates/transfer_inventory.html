@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>Transfer Inventory | BrooksHouse Store</title>
+
+    <link
+        rel="stylesheet"
+        href="/static/store.css"
+    >
+</head>
+
+<body>
+    <header class="store-header">
+        <div>
+            <p class="eyebrow">The BrooksHouse Store</p>
+            <h1>Transfer Inventory</h1>
+
+            <p class="subtitle">
+                Move existing inventory between store locations.
+            </p>
+        </div>
+
+        <nav>
+            <a href="/storage-gallery">Storage Gallery</a>
+
+            <a href="/smart-scan">Smart Scan</a>
+
+            <a href="/channels/amazon/mapping">Amazon Mapping</a>
+            <a href="/dashboard">Dashboard</a>
+            <a href="/channels/shopify/reconcile">Shopify Compare</a>
+            <a href="/channels/shopify/storefront-import">Storefront Import</a>
+            <a href="/channels/shopify/settings">Shopify Settings</a>
+            <a href="/channels/shopify/approve">Approval Queue</a>
+            <a href="/inventory/search">Inventory Search</a>
+            <a href="/inventory/replenishment">
+                Replenishment
+            </a>
+            <a href="/inventory/adjust">Adjust Inventory</a>
+            <a href="/scan">Scan Item</a>
+            <a href="/inventory/receive">Receive Inventory</a>
+            <a href="/products">Products</a>
+        </nav>
+    </header>
+
+    <main class="page-container">
+        <section class="scan-card">
+            <a
+                class="primary-button link-button"
+                href="/inventory/transfer/batch"
+            >
+                Bulk Transfer
+            </a>
+        </section>
+
+        {% if message %}
+        <section class="alert success">
+            <strong>{{ message }}</strong>
+
+            {% if product %}
+            <div class="alert-actions">
+                <a href="/products/{{ product.product_id }}">
+                    View Product
+                </a>
+
+                <a href="/inventory/transfer">
+                    Transfer Another Item
+                </a>
+            </div>
+            {% endif %}
+        </section>
+        {% endif %}
+
+        {% if error %}
+        <section class="alert error">
+            <strong>{{ error }}</strong>
+        </section>
+        {% endif %}
+
+        <section class="scan-card">
+            <form
+                action="/inventory/transfer"
+                method="get"
+                class="scan-form"
+            >
+                <label class="field">
+                    <span>Scan or enter an existing product barcode</span>
+
+                    <input
+                        type="text"
+                        name="barcode"
+                        inputmode="numeric"
+                        autocomplete="off"
+                        placeholder="Scan barcode here"
+                        value="{{ scanned_barcode or '' }}"
+                        autofocus
+                        required
+                    >
+                </label>
+
+                <button
+                    type="submit"
+                    class="primary-button"
+                >
+                    Find Product
+                </button>
+            </form>
+        </section>
+
+        {% if searched and not product %}
+        <section class="result-card no-match">
+            <div class="result-label">Product not found</div>
+
+            <h2>This item is not in your BrooksHouse products.</h2>
+
+            <p>
+                Check the barcode through the Scan Item page before
+                attempting an inventory transfer.
+            </p>
+
+            <a
+                class="primary-button link-button"
+                href="/scan"
+            >
+                Check Item
+            </a>
+        </section>
+        {% endif %}
+
+        {% if product %}
+        <section class="transfer-layout">
+            <article class="result-card store-match">
+                <div class="result-label">
+                    Existing BrooksHouse product
+                </div>
+
+                <h2>{{ product.product_name }}</h2>
+
+                {% if product.brand %}
+                <p>{{ product.brand }}</p>
+                {% endif %}
+
+                <div class="result-grid">
+                    <div>
+                        <span>Barcode</span>
+
+                        <strong>
+                            {% if product.barcodes %}
+                                {{ product.barcodes[0].barcode }}
+                            {% else %}
+                                No barcode
+                            {% endif %}
+                        </strong>
+                    </div>
+
+                    <div>
+                        <span>Total inventory</span>
+
+                        <strong>
+                            {{
+                                product.inventory_records
+                                | sum(attribute="quantity_on_hand")
+                            }}
+                        </strong>
+                    </div>
+                </div>
+
+                <div class="location-quantity-list">
+                    <h3>Inventory by location</h3>
+
+                    {% for record in product.inventory_records %}
+                    <div class="location-quantity-row">
+                        <span>{{ record.location.location_name }}</span>
+
+                        <strong>
+                            {{ record.quantity_on_hand }}
+                        </strong>
+                    </div>
+                    {% endfor %}
+                </div>
+            </article>
+
+            <form
+                class="product-form"
+                action="/inventory/transfer"
+                method="post"
+            >
+                <input
+                    type="hidden"
+                    name="product_id"
+                    value="{{ product.product_id }}"
+                >
+
+                <input
+                    type="hidden"
+                    name="barcode"
+                    value="{{ scanned_barcode }}"
+                >
+
+                <section class="form-card">
+                    <div class="section-heading">
+                        <span>1</span>
+
+                        <div>
+                            <h2>Transfer details</h2>
+
+                            <p>
+                                Choose where the inventory is leaving
+                                and where it is going.
+                            </p>
+                        </div>
+                    </div>
+
+                    <div class="form-grid">
+                        <label class="field">
+                            <span>Source location *</span>
+
+                            <select
+                                name="source_location_id"
+                                id="transfer-source-location"
+                                required
+                            >
+                                <option value="">
+                                    Select source location
+                                </option>
+
+                                {% for record in product.inventory_records %}
+                                    {% if record.quantity_on_hand > 0 %}
+                                    <option
+                                        value="{{ record.location_id }}"
+                                        {% if selected_source_location_id == record.location_id %}
+                                        selected
+                                        {% endif %}
+                                    >
+                                        {{ record.location.location_name }}
+                                        — {{ record.quantity_on_hand }} available
+                                    </option>
+                                    {% endif %}
+                                {% endfor %}
+                            </select>
+                        </label>
+
+                        <label class="field">
+                            <span>Source pallet / container</span>
+
+                            <select
+                                name="source_container_id"
+                                id="transfer-source-container"
+                            >
+                                <option value="">
+                                    Any container at source location
+                                </option>
+
+                                {% for record in product.inventory_records %}
+                                    {% if record.quantity_on_hand > 0 and record.container_id %}
+                                    <option
+                                        value="{{ record.container_id }}"
+                                        data-location-id="{{ record.location_id }}"
+                                        {% if selected_source_container_id == record.container_id %}
+                                        selected
+                                        {% endif %}
+                                    >
+                                        {{ record.container_id }}
+                                        - {{ record.quantity_on_hand }} available
+                                    </option>
+                                    {% endif %}
+                                {% endfor %}
+                            </select>
+                        </label>
+
+                        <label class="field">
+                            <span>Destination location *</span>
+
+                            <select
+                                name="destination_location_id"
+                                id="transfer-destination-location"
+                                required
+                            >
+                                <option value="">
+                                    Select destination
+                                </option>
+
+                                {% for location in locations %}
+                                <option
+                                    value="{{ location.location_id }}"
+                                    {% if selected_destination_location_id == location.location_id %}
+                                    selected
+                                    {% endif %}
+                                >
+                                    {{ location.location_name }}
+                                </option>
+                                {% endfor %}
+                            </select>
+                        </label>
+
+                        <label class="field">
+                            <span>Destination pallet / container</span>
+
+                            <input
+                                type="text"
+                                name="destination_container_id"
+                                id="transfer-destination-container"
+                                value="{{ selected_destination_container_id or '' }}"
+                                placeholder="Leave blank for loose inventory"
+                                autocomplete="off"
+                            >
+                        </label>
+
+                        <label class="field">
+                            <span>Quantity to transfer *</span>
+
+                            <input
+                                type="number"
+                                name="quantity_transferred"
+                                min="1"
+                                value="1"
+                                required
+                            >
+                        </label>
+
+                        <label class="field">
+                            <span>Transfer reference</span>
+
+                            <input
+                                type="text"
+                                name="reference_number"
+                                placeholder="Example: RESTOCK-0805"
+                            >
+                        </label>
+
+                        <label class="field full-width">
+                            <span>Transfer notes</span>
+
+                            <textarea
+                                name="notes"
+                                rows="4"
+                                placeholder="Reason for transfer or other notes"
+                            ></textarea>
+                        </label>
+                    </div>
+                </section>
+
+                <div class="form-actions">
+                    <a
+                        class="secondary-button link-button"
+                        href="/scan"
+                    >
+                        Cancel
+                    </a>
+
+                    <button
+                        type="submit"
+                        class="primary-button"
+                    >
+                        Transfer Inventory
+                    </button>
+                </div>
+            </form>
+        </section>
+        {% endif %}
+    </main>
+
+    <script>
+
+        const transferSourceLocation = document.querySelector(
+            "#transfer-source-location"
+        );
+
+        const transferSourceContainer = document.querySelector(
+            "#transfer-source-container"
+        );
+
+        function filterTransferSourceContainers() {
+            if (!transferSourceLocation || !transferSourceContainer) {
+                return;
+            }
+
+            const sourceLocationId = transferSourceLocation.value;
+            const previousContainer = transferSourceContainer.value;
+
+            for (const option of transferSourceContainer.options) {
+                if (!option.value) {
+                    option.hidden = false;
+                    continue;
+                }
+
+                option.hidden =
+                    option.dataset.locationId !== sourceLocationId;
+            }
+
+            const selectedStillVisible = Array.from(
+                transferSourceContainer.options
+            ).some(
+                option =>
+                    option.value === previousContainer
+                    && !option.hidden
+            );
+
+            if (!selectedStillVisible) {
+                transferSourceContainer.value = "";
+            }
+        }
+
+        transferSourceLocation?.addEventListener(
+            "change",
+            filterTransferSourceContainers
+        );
+
+        filterTransferSourceContainers();
+
+    </script>
+</body>
+</html>

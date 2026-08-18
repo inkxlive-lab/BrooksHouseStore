@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>Shopify Reconciliation | BrooksHouse Store</title>
+
+    <link
+        rel="stylesheet"
+        href="/static/store.css"
+    >
+</head>
+
+<body>
+    <header class="store-header">
+        <div>
+            <p class="eyebrow">The BrooksHouse Store</p>
+
+            <h1>Shopify Inventory Reconciliation</h1>
+
+            <p class="subtitle">
+                Compare BrooksHouse inventory with the latest Shopify import.
+            </p>
+        </div>
+
+        <nav>
+            <a href="/storage-gallery">Storage Gallery</a>
+
+            <a href="/smart-scan">Smart Scan</a>
+
+            <a href="/channels/amazon/mapping">Amazon Mapping</a>
+            <a href="/dashboard">Dashboard</a>
+            <a href="/inventory/search">Inventory Search</a>
+            <a href="/inventory/replenishment">
+                Replenishment
+            </a>
+            <a href="/channels/shopify/reconcile">Shopify Compare</a>
+            <a href="/channels/shopify/storefront-import">Storefront Import</a>
+            <a href="/channels/shopify/settings">Shopify Settings</a>
+            <a href="/channels/shopify/approve">Approval Queue</a>
+            <a href="/scan">Scan</a>
+            <a href="/products">Products</a>
+        </nav>
+    </header>
+
+    <main class="page-container">
+        {% if error %}
+        <section class="alert error">
+            <strong>{{ error }}</strong>
+        </section>
+        {% endif %}
+
+        <section class="reconciliation-summary">
+            <article class="dashboard-card">
+                <span>Compared</span>
+                <strong>{{ summary.compared }}</strong>
+                <p>Barcode-matched records.</p>
+            </article>
+
+            <article class="dashboard-card">
+                <span>Matches</span>
+                <strong>{{ summary.matches }}</strong>
+                <p>Local and Shopify quantities agree.</p>
+            </article>
+
+            <article class="dashboard-card">
+                <span>Mismatches</span>
+                <strong>{{ summary.mismatches }}</strong>
+                <p>Quantities require review.</p>
+            </article>
+
+            <article class="dashboard-card">
+                <span>Unmatched</span>
+                <strong>{{ summary.unmatched }}</strong>
+                <p>Records missing from one side.</p>
+            </article>
+        </section>
+
+        <section class="report-filter-panel">
+            <form
+                action="/channels/shopify/reconcile"
+                method="get"
+                class="report-filter-form"
+            >
+                <div class="form-grid">
+                    <label class="field">
+                        <span>Product or barcode</span>
+
+                        <input
+                            type="text"
+                            name="search"
+                            value="{{ filters.search }}"
+                            placeholder="Search title or barcode; % and * supported"
+                            title="Wildcards: % or * = any text; _ or ? = one character"
+                        >
+                    </label>
+
+                    <label class="field">
+                        <span>Reconciliation status</span>
+
+                        <select name="reconciliation_status">
+                            <option value="all">
+                                All records
+                            </option>
+
+                            {% for value, label in status_options %}
+                            <option
+                                value="{{ value }}"
+                                {% if filters.reconciliation_status == value %}
+                                    selected
+                                {% endif %}
+                            >
+                                {{ label }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </label>
+                </div>
+
+                <div class="form-actions">
+                    <a
+                        class="secondary-button link-button"
+                        href="/channels/shopify/reconcile"
+                    >
+                        Clear Filters
+                    </a>
+
+                    <button
+                        type="submit"
+                        class="primary-button"
+                    >
+                        Run Comparison
+                    </button>
+                </div>
+            </form>
+        </section>
+
+        <section class="dashboard-panel">
+            <div class="dashboard-panel-heading">
+                <div>
+                    <p class="eyebrow">Comparison results</p>
+
+                    <h2>Local vs. Shopify</h2>
+
+                    <p>
+                        Local quantity currently includes every BrooksHouse
+                        inventory location.
+                    </p>
+                </div>
+
+                <span class="dashboard-badge">
+                    {{ rows | length }}
+                </span>
+            </div>
+
+            {% if rows %}
+            <div class="dashboard-table-wrap">
+                <table class="dashboard-table reconciliation-table">
+                    <thead>
+                        <tr>
+                            <th>Status</th>
+                            <th>Product</th>
+                            <th>Barcode</th>
+                            <th>Local</th>
+                            <th>Shopify</th>
+                            <th>Difference</th>
+                            <th>Shopify Status</th>
+                            <th>Price</th>
+                        </tr>
+                    </thead>
+
+                    <tbody>
+                        {% for row in rows %}
+                        <tr>
+                            <td>
+                                <span
+                                    class="
+                                        reconciliation-status
+                                        reconciliation-{{ row.status }}
+                                    "
+                                >
+                                    {{ row.status_label }}
+                                </span>
+                            </td>
+
+                            <td>
+                                {% if row.product_id %}
+                                <a href="/products/{{ row.product_id }}">
+                                    <strong>{{ row.product_name }}</strong>
+                                </a>
+                                {% else %}
+                                <strong>{{ row.product_name }}</strong>
+                                {% endif %}
+                            </td>
+
+                            <td>
+                                {{ row.barcode or "No barcode" }}
+                            </td>
+
+                            <td>
+                                {% if row.local_quantity is not none %}
+                                    {{ row.local_quantity }}
+                                {% else %}
+                                    —
+                                {% endif %}
+                            </td>
+
+                            <td>
+                                {% if row.shopify_quantity is not none %}
+                                    {{ row.shopify_quantity }}
+                                {% else %}
+                                    —
+                                {% endif %}
+                            </td>
+
+                            <td>
+                                {% if row.difference is not none %}
+                                    <strong
+                                        class="
+                                            {% if row.difference > 0 %}
+                                                positive-change
+                                            {% elif row.difference < 0 %}
+                                                negative-change
+                                            {% endif %}
+                                        "
+                                    >
+                                        {% if row.difference > 0 %}
+                                            +{{ row.difference }}
+                                        {% else %}
+                                            {{ row.difference }}
+                                        {% endif %}
+                                    </strong>
+                                {% else %}
+                                    —
+                                {% endif %}
+                            </td>
+
+                            <td>
+                                {{ row.shopify_status or "—" }}
+                            </td>
+
+                            <td>
+                                {% if row.shopify_price is not none %}
+                                    ${{ "%.2f" | format(row.shopify_price) }}
+                                {% else %}
+                                    —
+                                {% endif %}
+                            </td>
+                        </tr>
+
+                        {% if row.details %}
+                        <tr class="reconciliation-detail-row">
+                            <td></td>
+
+                            <td colspan="7">
+                                {{ row.details }}
+                            </td>
+                        </tr>
+                        {% endif %}
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <p>No reconciliation records matched the selected filters.</p>
+            {% endif %}
+        </section>
+    </main>
+</body>
+</html>

@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Python Lab | BrooksHouse Store</title>
+    <link rel="stylesheet" href="/static/store.css">
+
+    <style>
+        .python-editor {
+            width: 100%;
+            min-height: 360px;
+            box-sizing: border-box;
+            padding: 1rem;
+            border: 1px solid #cfcfcf;
+            border-radius: 12px;
+            resize: vertical;
+            font-family: Consolas, "Courier New", monospace;
+            font-size: 0.95rem;
+            line-height: 1.5;
+            tab-size: 4;
+        }
+
+        .python-examples,
+        .python-toolbar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.65rem;
+            align-items: end;
+            margin-top: 0.85rem;
+        }
+
+        .python-confirmation {
+            min-width: 260px;
+        }
+
+        .python-output {
+            min-height: 90px;
+            max-height: 560px;
+            overflow: auto;
+            margin: 0;
+            padding: 1rem;
+            border: 1px solid #dddddd;
+            border-radius: 10px;
+            background: #171a1f;
+            color: #e9f0e9;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+            font-family: Consolas, "Courier New", monospace;
+            font-size: 0.86rem;
+            line-height: 1.5;
+        }
+
+        .python-error-output {
+            color: #ffd2ce;
+        }
+
+        .python-warning {
+            padding: 0.85rem;
+            margin-top: 0.85rem;
+            border: 1px solid #e8b931;
+            border-radius: 10px;
+            background: #fff9e8;
+        }
+
+        .python-rules {
+            margin: 0.5rem 0 0;
+            padding-left: 1.2rem;
+        }
+
+        @media (max-width: 700px) {
+            .python-editor {
+                min-height: 260px;
+                font-size: 16px;
+            }
+
+            .python-toolbar {
+                display: grid;
+                grid-template-columns: 1fr;
+            }
+
+            .python-toolbar button,
+            .python-toolbar input {
+                width: 100%;
+                min-height: 48px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <header class="store-header">
+        <div>
+            <p class="eyebrow">The BrooksHouse Store</p>
+            <h1>Python Lab</h1>
+            <p class="subtitle">
+                Learn Python, run calculations, and read BrooksHouse data.
+            </p>
+        </div>
+
+        <nav>
+            <a href="/dashboard">Dashboard</a>
+            <a href="/tools/sql">SQL Console</a>
+            <a href="/inventory/search">Inventory Search</a>
+            <a href="/smart-scan">Smart Scan</a>
+        </nav>
+    </header>
+
+    <main class="page-container">
+        {% if message %}
+        <section class="alert success">
+            <strong>{{ message }}</strong>
+        </section>
+        {% endif %}
+
+        {% if error %}
+        <section class="alert error">
+            <strong>{{ error }}</strong>
+        </section>
+        {% endif %}
+
+        <section class="dashboard-panel">
+            <div class="dashboard-panel-heading">
+                <div>
+                    <p class="eyebrow">Saved scripts</p>
+                    <h2>Walmart Open Orders &rarr; Reserved</h2>
+                    <p>
+                        Checks open Walmart order lines and adds the ordered
+                        quantity to Online Orders / Reserved (Location 5).
+                        Duplicate Walmart order lines are skipped automatically.
+                    </p>
+                </div>
+            </div>
+
+            <div class="python-warning">
+                <strong>Recommended workflow:</strong>
+                Run Preview first. Review every matched/unmatched order line.
+                Only use Apply after the preview looks correct.
+            </div>
+
+            <div class="python-toolbar">
+                <form
+                    action="/tools/python/saved/walmart-orders"
+                    method="post"
+                >
+                    <input type="hidden" name="mode" value="preview">
+                    <button
+                        type="submit"
+                        class="secondary-button"
+                        {% if not is_local_client %}disabled{% endif %}
+                    >
+                        👀 Preview Walmart Open Orders
+                    </button>
+                </form>
+
+                <form
+                    action="/tools/python/saved/walmart-orders"
+                    method="post"
+                    onsubmit="return confirm('Apply matched Walmart open orders to Online Orders / Reserved?');"
+                >
+                    <input type="hidden" name="mode" value="apply">
+                    <button
+                        type="submit"
+                        class="primary-button"
+                        {% if not is_local_client %}disabled{% endif %}
+                    >
+                        ✅ Apply to Online Orders / Reserved
+                    </button>
+                </form>
+            </div>
+        </section>
+
+        <section class="dashboard-panel">
+            <div class="dashboard-panel-heading">
+                <div>
+                    <p class="eyebrow">Saved scripts</p>
+                    <h2>Amazon Open Orders &rarr; Reserved</h2>
+                    <p>
+                        Pulls merchant-fulfilled Amazon open orders through
+                        SP-API and adds matched quantities to Online Orders /
+                        Reserved (Location 5).
+                    </p>
+                </div>
+            </div>
+
+            <div class="python-warning">
+                <strong>Recommended workflow:</strong>
+                Preview first, inspect matches, then Apply.
+                Amazon order ID + order item ID prevents duplicate adds.
+            </div>
+
+            <div class="python-toolbar">
+                <form action="/tools/python/saved/amazon-orders" method="post">
+                    <input type="hidden" name="mode" value="preview">
+                    <button type="submit" class="secondary-button" {% if not is_local_client %}disabled{% endif %}>
+                        👀 Preview Amazon Open Orders
+                    </button>
+                </form>
+
+                <form action="/tools/python/saved/amazon-orders" method="post"
+                      onsubmit="return confirm('Apply matched Amazon open orders to Online Orders / Reserved?');">
+                    <input type="hidden" name="mode" value="apply">
+                    <button type="submit" class="primary-button" {% if not is_local_client %}disabled{% endif %}>
+                        ✅ Apply Amazon to Reserved
+                    </button>
+                </form>
+
+                <a href="/channels/stats" class="secondary-button link-button">
+                    📊 Marketplace Stats
+                </a>
+            </div>
+        </section>
+
+        <section class="dashboard-panel">
+            <div class="dashboard-panel-heading">
+                <div>
+                    <p class="eyebrow">Saved scripts</p>
+                    <h2>Amazon Order History &amp; Sales Stats</h2>
+                    <p>
+                        Downloads historical Amazon orders into BrooksHouse
+                        for reporting only. This does not change inventory.
+                    </p>
+                </div>
+            </div>
+
+            <div class="python-warning">
+                <strong>Safe history sync:</strong>
+                Existing orders are updated instead of duplicated.
+                The default button imports the last 365 days and includes
+                Amazon proceeds for sales totals.
+            </div>
+
+            <div class="python-toolbar">
+                <form action="/tools/python/saved/amazon-history" method="post">
+                    <input type="hidden" name="days" value="365">
+                    <button type="submit" class="primary-button" {% if not is_local_client %}disabled{% endif %}>
+                        📥 Sync Amazon Order History
+                    </button>
+                </form>
+
+                <form action="/tools/python/saved/amazon-history" method="post">
+                    <input type="hidden" name="days" value="730">
+                    <button type="submit" class="secondary-button" {% if not is_local_client %}disabled{% endif %}>
+                        🗓️ Sync 2 Years
+                    </button>
+                </form>
+
+                <a href="/channels/stats" class="secondary-button link-button">
+                    📊 View Marketplace Stats
+                </a>
+            </div>
+        </section>
+
+        <section class="dashboard-panel">
+            <div class="dashboard-panel-heading">
+                <div>
+                    <p class="eyebrow">Developer tools</p>
+                    <h2>Run Python</h2>
+                    <p>
+                        Runs in a separate isolated Python process with a
+                        10-second timeout. Only the server computer can run it.
+                    </p>
+                </div>
+            </div>
+
+            <form action="/tools/python" method="post" id="python-lab-form">
+                <textarea
+                    class="python-editor"
+                    name="python_text"
+                    id="python-text"
+                    spellcheck="false"
+                    required
+                >{{ python_text }}</textarea>
+
+                <div class="python-examples">
+                    <button type="button" class="secondary-button" data-python-example="hello">Hello Python</button>
+                    <button type="button" class="secondary-button" data-python-example="products">Latest Products</button>
+                    <button type="button" class="secondary-button" data-python-example="columns">Products Columns</button>
+                    <button type="button" class="secondary-button" data-python-example="inventory">Inventory Summary</button>
+                    <button type="button" class="secondary-button" id="clear-python">Clear</button>
+                </div>
+
+                <div class="python-warning">
+                    <strong>Safety rules</strong>
+                    <ul class="python-rules">
+                        <li>Available only at 127.0.0.1 on the server laptop.</li>
+                        <li>Stops automatically after 10 seconds.</li>
+                        <li>Shell, file-opening, interactive input, and unapproved imports are blocked.</li>
+                        <li>Use SQLite read-only mode for learning queries.</li>
+                    </ul>
+                </div>
+
+                <div class="python-toolbar">
+                    <label class="field python-confirmation">
+                        <span>Type RUN PYTHON to confirm</span>
+                        <input
+                            type="text"
+                            name="confirmation"
+                            autocomplete="off"
+                            placeholder="RUN PYTHON"
+                            {% if not is_local_client %}disabled{% endif %}
+                        >
+                    </label>
+
+                    <button
+                        type="submit"
+                        class="primary-button"
+                        {% if not is_local_client %}disabled{% endif %}
+                    >
+                        Run Python
+                    </button>
+                </div>
+
+                {% if not is_local_client %}
+                <div class="python-warning">
+                    Python execution is disabled on phones, Zebra devices,
+                    and other network clients. Open this page on the server
+                    laptop using http://127.0.0.1:8001/tools/python.
+                </div>
+                {% endif %}
+            </form>
+        </section>
+
+        {% if stdout or return_code is not none %}
+        <section class="dashboard-panel">
+            <div class="dashboard-panel-heading">
+                <div>
+                    <p class="eyebrow">Standard output</p>
+                    <h2>Results</h2>
+                </div>
+                {% if return_code is not none %}
+                <span class="dashboard-badge">Exit {{ return_code }}</span>
+                {% endif %}
+            </div>
+            <pre class="python-output">{{ stdout or "(No printed output)" }}</pre>
+        </section>
+        {% endif %}
+
+        {% if stderr %}
+        <section class="dashboard-panel">
+            <div class="dashboard-panel-heading">
+                <div>
+                    <p class="eyebrow">Error output</p>
+                    <h2>Python traceback</h2>
+                </div>
+            </div>
+            <pre class="python-output python-error-output">{{ stderr }}</pre>
+        </section>
+        {% endif %}
+    </main>
+
+    <script>
+        const pythonText = document.getElementById("python-text");
+
+        const examples = {
+            hello: `message = "Hello from the BrooksHouse Python Lab!"
+for number in range(1, 6):
+    print(number, message)`,
+
+            products: `import sqlite3
+
+connection = sqlite3.connect(
+    "file:app/data/brookshouse_store.db?mode=ro",
+    uri=True,
+)
+connection.row_factory = sqlite3.Row
+
+rows = connection.execute("""
+    SELECT product_id, product_name, store_price
+    FROM products
+    ORDER BY product_id DESC
+    LIMIT 10
+""").fetchall()
+
+for row in rows:
+    print(dict(row))
+
+connection.close()`,
+
+            columns: `import sqlite3
+
+connection = sqlite3.connect(
+    "file:app/data/brookshouse_store.db?mode=ro",
+    uri=True,
+)
+
+for column in connection.execute("PRAGMA table_info(products)"):
+    print(column)
+
+connection.close()`,
+
+            inventory: `import sqlite3
+
+connection = sqlite3.connect(
+    "file:app/data/brookshouse_store.db?mode=ro",
+    uri=True,
+)
+connection.row_factory = sqlite3.Row
+
+rows = connection.execute("""
+    SELECT
+        l.location_name,
+        COUNT(DISTINCT i.product_id) AS products,
+        SUM(i.quantity_on_hand) AS units
+    FROM inventory AS i
+    JOIN inventory_locations AS l
+      ON l.location_id = i.location_id
+    GROUP BY l.location_id, l.location_name
+    ORDER BY l.location_name
+""").fetchall()
+
+for row in rows:
+    print(dict(row))
+
+connection.close()`
+        };
+
+        document.querySelectorAll("[data-python-example]").forEach((button) => {
+            button.addEventListener("click", () => {
+                const example = examples[button.dataset.pythonExample];
+                if (pythonText && example) {
+                    pythonText.value = example;
+                    pythonText.focus();
+                }
+            });
+        });
+
+        document.getElementById("clear-python")?.addEventListener("click", () => {
+            pythonText.value = "";
+            pythonText.focus();
+        });
+
+        pythonText?.addEventListener("keydown", (event) => {
+            if (event.key === "Tab") {
+                event.preventDefault();
+                const start = pythonText.selectionStart;
+                const end = pythonText.selectionEnd;
+                pythonText.value = pythonText.value.substring(0, start)
+                    + "    "
+                    + pythonText.value.substring(end);
+                pythonText.selectionStart = pythonText.selectionEnd = start + 4;
+            }
+
+            if (event.ctrlKey && event.key === "Enter") {
+                event.preventDefault();
+                document.getElementById("python-lab-form")?.requestSubmit();
+            }
+        });
+    </script>
+</body>
+</html>

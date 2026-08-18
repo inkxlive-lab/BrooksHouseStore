@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>Receive Inventory | BrooksHouse Store</title>
+
+    <link
+        rel="stylesheet"
+        href="/static/store.css"
+    >
+</head>
+
+<body>
+    <header class="store-header">
+        <div>
+            <p class="eyebrow">The BrooksHouse Store</p>
+            <h1>Receive Inventory</h1>
+
+            <p class="subtitle">
+                Scan an existing product and add inventory to a location.
+            </p>
+        </div>
+
+        <nav>
+            <a href="/storage-gallery">Storage Gallery</a>
+
+            <a href="/smart-scan">Smart Scan</a>
+
+            <a href="/channels/amazon/mapping">Amazon Mapping</a>
+            <a href="/dashboard">Dashboard</a>
+            <a href="/channels/shopify/reconcile">Shopify Compare</a>
+            <a href="/channels/shopify/storefront-import">Storefront Import</a>
+            <a href="/channels/shopify/settings">Shopify Settings</a>
+            <a href="/channels/shopify/approve">Approval Queue</a>
+            <a href="/inventory/search">Inventory Search</a>
+            <a href="/inventory/replenishment">
+                Replenishment
+            </a>
+            <a href="/inventory/transfer">Transfer Inventory</a>
+            <a href="/inventory/adjust">Adjust Inventory</a>
+            <a href="/scan">Scan Item</a>
+            <a href="/products">Products</a>
+            <a href="/products/add">Add Product</a>
+        
+            <a href="/barcode-mapper">
+                Packaging Mapper
+            </a>
+</nav>
+    </header>
+
+    <main class="page-container">
+        {% if message %}
+        <section class="alert success">
+            <strong>{{ message }}</strong>
+
+            {% if product %}
+            <div class="alert-actions">
+                <a href="/products/{{ product.product_id }}">
+                    View Product
+                </a>
+
+                <a href="/inventory/receive">
+                    Receive Another Item
+                </a>
+            </div>
+            {% endif %}
+        </section>
+        {% endif %}
+
+        {% if error %}
+        <section class="alert error">
+            <strong>{{ error }}</strong>
+        </section>
+        {% endif %}
+
+        <section class="scan-card">
+            <form
+                action="/inventory/receive"
+                method="get"
+                class="scan-form"
+            >
+                <label class="field">
+                    <span>Scan or enter an existing product barcode</span>
+
+                    <input
+                        type="text"
+                        name="barcode"
+                        inputmode="numeric"
+                        autocomplete="off"
+                        placeholder="Scan barcode here"
+                        value="{{ scanned_barcode or '' }}"
+                        autofocus
+                        required
+                    >
+                </label>
+
+                <button
+                    type="submit"
+                    class="primary-button"
+                >
+                    Find Product
+                </button>
+            </form>
+        </section>
+
+        {% if searched and not product %}
+        <section class="result-card no-match">
+            <div class="result-label">Product not found</div>
+
+            <h2>This item is not in your active store products yet.</h2>
+
+            <p>
+                Check the master catalog first, then add the product before
+                receiving inventory.
+            </p>
+
+            <a
+                class="primary-button link-button"
+                href="/scan"
+            >
+                Check Master Catalog
+            </a>
+        </section>
+        {% endif %}
+
+        {% if product %}
+        <section class="receive-layout">
+            <article class="result-card store-match">
+                <div class="result-label">
+                    Existing BrooksHouse product
+                </div>
+
+                <h2>{{ product.product_name }}</h2>
+
+                {% if product.brand %}
+                <p>{{ product.brand }}</p>
+                {% endif %}
+
+                <div class="result-grid">
+                    <div>
+                        <span>Barcode</span>
+
+                        <strong>
+                            {% if product.barcodes %}
+                                {{ product.barcodes[0].barcode }}
+                            {% else %}
+                                No barcode
+                            {% endif %}
+                        </strong>
+                    </div>
+
+                    <div>
+                        <span>Current total quantity</span>
+
+                        <strong>
+                            {{
+                                product.inventory_records
+                                | sum(attribute="quantity_on_hand")
+                            }}
+                        </strong>
+                    </div>
+
+                    <div>
+                        <span>Current store price</span>
+
+                        <strong>
+                            {% if product.store_price is not none %}
+                                ${{ "%.2f" | format(product.store_price) }}
+                            {% else %}
+                                Not priced
+                            {% endif %}
+                        </strong>
+                    </div>
+
+                    <div>
+                        <span>Current average cost</span>
+
+                        <strong>
+                            {% if product.average_cost is not none %}
+                                ${{ "%.2f" | format(product.average_cost) }}
+                            {% else %}
+                                Not entered
+                            {% endif %}
+                        </strong>
+                    </div>
+                </div>
+            </article>
+
+            <form
+                class="product-form"
+                action="/inventory/receive"
+                method="post"
+            >
+                <input
+                    type="hidden"
+                    name="product_id"
+                    value="{{ product.product_id }}"
+                >
+
+                <input
+                    type="hidden"
+                    name="barcode"
+                    value="{{ scanned_barcode }}"
+                >
+
+                <section class="form-card">
+                    <div class="section-heading">
+                        <span>1</span>
+
+                        <div>
+                            <h2>Receiving details</h2>
+
+                            <p>
+                                Enter the quantity and destination location.
+                            </p>
+                        </div>
+                    </div>
+
+                    
+                <div
+                    class="receive-mapper-shortcut"
+                    style="
+                        margin: 0 0 16px 0;
+                        padding: 14px;
+                        border: 1px solid #d0d0d0;
+                        border-radius: 12px;
+                    "
+                >
+                    <strong>
+                        📦 Need to map a case or inner-pack barcode?
+                    </strong>
+
+                    <p style="margin: 6px 0 10px 0;">
+                        Connect unit, inner-pack, master-case,
+                        and pallet barcodes before receiving.
+                    </p>
+
+                    <a
+                        href="/barcode-mapper"
+                        class="secondary-button link-button"
+                    >
+                        Open Packaging Mapper
+                    </a>
+                </div>
+
+<div class="form-grid">
+                                        <div
+                    id="receive-packaging-banner"
+                    style="
+                        margin: 0 0 16px 0;
+                        padding: 14px;
+                        border: 1px solid #d0d0d0;
+                        border-radius: 12px;
+                    "
+                >
+                    {% if scan_is_package %}
+                    <strong>
+                        📦 {{ scan_barcode_type.replace("_", " ").title() }}
+                    </strong>
+
+                    <div style="margin-top: 6px;">
+                        1 scan / package =
+                        <strong>
+                            {{ scan_quantity_per_scan }} retail units
+                        </strong>
+                    </div>
+
+                    <div
+                        id="receive-unit-preview"
+                        style="margin-top: 6px;"
+                    >
+                        1 package ×
+                        {{ scan_quantity_per_scan }}
+                        = {{ scan_quantity_per_scan }} retail units
+                    </div>
+                    {% else %}
+                    <strong>
+                        🏷️ Unit Barcode
+                    </strong>
+
+                    <div style="margin-top: 6px;">
+                        1 scan = 1 retail unit
+                    </div>
+
+                    <div
+                        id="receive-unit-preview"
+                        style="margin-top: 6px;"
+                    >
+                        Quantity entered will be received as retail units.
+                    </div>
+                    {% endif %}
+                </div>
+
+<label class="field">
+                            <span>{% if scan_is_package %}
+                            Number of packages / scans
+                        {% else %}
+                            Quantity received
+                        {% endif %}</span>
+
+                            <input
+                                type="number"
+                                name="quantity_received"
+                                min="1"
+                                value="1"
+                                required
+                            
+                            data-quantity-per-scan="{{ scan_quantity_per_scan or 1 }}"
+                        >
+                        </label>
+
+                        <label class="field">
+                            <span>Destination location *</span>
+
+                            <select name="location_id" required>
+                                {% for location in locations %}
+                                <option value="{{ location.location_id }}">
+                                    {{ location.location_name }}
+                                </option>
+                                {% endfor %}
+                            </select>
+                        </label>
+
+                        <label class="field">
+                            <span>Actual unit cost</span>
+
+                            <div class="money-input">
+                                <span>$</span>
+
+                                <input
+                                    type="number"
+                                    name="unit_cost"
+                                    min="0"
+                                    step="0.0001"
+                                    placeholder="0.00"
+                                    value="{% if product.average_cost is not none %}{{ product.average_cost }}{% endif %}"
+                                >
+                            </div>
+                        </label>
+
+                        <label class="field">
+                            <span>Reference number</span>
+
+                            <input
+                                type="text"
+                                name="reference_number"
+                                placeholder="Pallet, shipment, invoice, or load number"
+                            >
+                        </label>
+
+                        <label class="field full-width">
+                            <span>Receiving notes</span>
+
+                            <textarea
+                                name="notes"
+                                rows="4"
+                                placeholder="Supplier, condition, pallet details, or other notes"
+                            ></textarea>
+                        </label>
+                    </div>
+                </section>
+
+                <div class="form-actions">
+                    <a
+                        class="secondary-button link-button"
+                        href="/scan"
+                    >
+                        Cancel
+                    </a>
+
+                    <button
+                        type="submit"
+                        class="primary-button"
+                    >
+                        Receive Inventory
+                    </button>
+                </div>
+            </form>
+        </section>
+        {% endif %}
+    </main>
+
+    <script>
+        function updateReceiveUnitPreview() {
+            const quantityInput = document.querySelector(
+                'input[name="quantity_received"]'
+            );
+
+            const preview = document.getElementById(
+                "receive-unit-preview"
+            );
+
+            if (!quantityInput || !preview) {
+                return;
+            }
+
+            const multiplier = Number(
+                quantityInput.dataset.quantityPerScan
+                || "1"
+            );
+
+            const entered = Number(
+                quantityInput.value
+                || "0"
+            );
+
+            if (
+                !Number.isFinite(entered)
+                || entered < 0
+            ) {
+                return;
+            }
+
+            if (multiplier > 1) {
+                const retailUnits = (
+                    entered * multiplier
+                );
+
+                preview.textContent =
+                    entered
+                    + " package"
+                    + (entered === 1 ? "" : "s")
+                    + " × "
+                    + multiplier
+                    + " = "
+                    + retailUnits
+                    + " retail unit"
+                    + (retailUnits === 1 ? "" : "s");
+            } else {
+                preview.textContent =
+                    entered
+                    + " retail unit"
+                    + (entered === 1 ? "" : "s")
+                    + " will be received.";
+            }
+        }
+
+        document.addEventListener(
+            "DOMContentLoaded",
+            updateReceiveUnitPreview
+        );
+
+        document.querySelector(
+            'input[name="quantity_received"]'
+        )?.addEventListener(
+            "input",
+            updateReceiveUnitPreview
+        );
+    </script>
+
+</body>
+</html>

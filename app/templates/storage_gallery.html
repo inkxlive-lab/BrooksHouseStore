@@ -1,0 +1,1336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+    <title>Storage Gallery | BrooksHouse Store</title>
+    <link rel="stylesheet" href="/static/store.css">
+
+    <style>
+        .storage-gallery-toolbar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 1rem;
+        }
+
+        .storage-album-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 1rem;
+        }
+
+        .storage-album-card,
+        .storage-slot-card,
+        .storage-media-card {
+            border: 1px solid #d8d8d8;
+            border-radius: 12px;
+            overflow: hidden;
+            background: #fff;
+        }
+
+        .storage-album-link,
+        .storage-slot-link {
+            display: block;
+            color: inherit;
+            text-decoration: none;
+        }
+
+        .storage-album-cover {
+            min-height: 150px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #f3f3f3;
+            overflow: hidden;
+        }
+
+        .storage-album-cover img {
+            width: 100%;
+            height: 180px;
+            object-fit: cover;
+        }
+
+        .storage-album-body,
+        .storage-slot-body,
+        .storage-media-body {
+            padding: 0.9rem;
+        }
+
+        .storage-counts {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            margin-top: 0.5rem;
+            font-size: 0.9rem;
+        }
+
+        .storage-count-badge {
+            padding: 0.25rem 0.55rem;
+            border-radius: 999px;
+            background: #f1f1f1;
+        }
+
+        .storage-general-gallery video {
+            display: block;
+            width: 100%;
+            max-height: 420px;
+            object-fit: contain;
+        }
+
+        .storage-general-gallery {
+            margin-bottom: 1.5rem;
+        }
+
+        .trailer-shell {
+            max-width: 760px;
+            margin: 0 auto;
+            border: 3px solid #333;
+            border-radius: 18px;
+            padding: 1rem;
+            background: #fafafa;
+        }
+
+        .trailer-end-label {
+            text-align: center;
+            font-weight: 700;
+            margin: 0.25rem 0 0.75rem;
+        }
+
+        .trailer-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.55rem;
+        }
+
+        .storage-slot-card {
+            min-height: 110px;
+        }
+
+        .storage-slot-card.has-media {
+            border-width: 2px;
+        }
+
+        .storage-slot-preview {
+            height: 90px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #ededed;
+            overflow: hidden;
+        }
+
+        .storage-slot-preview img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .slot-code {
+            font-weight: 700;
+        }
+
+        .slot-position {
+            font-size: 0.85rem;
+            opacity: 0.72;
+        }
+
+        .slot-inventory-summary {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.45rem;
+            align-items: baseline;
+            margin-top: 0.45rem;
+            font-size: 0.9rem;
+        }
+
+        .slot-inventory-summary span {
+            opacity: 0.78;
+        }
+
+        .slot-media-counts {
+            font-size: 0.82rem;
+            margin-top: 0.35rem;
+        }
+
+        .pallet-inventory-section {
+            margin-top: 1.5rem;
+        }
+
+        .pallet-inventory-table-wrap {
+            width: 100%;
+            overflow-x: auto;
+        }
+
+        .pallet-inventory-table {
+            width: 100%;
+            border-collapse: collapse;
+            min-width: 680px;
+        }
+
+        .pallet-inventory-table th,
+        .pallet-inventory-table td {
+            padding: 0.7rem;
+            border-bottom: 1px solid #dddddd;
+            text-align: left;
+            vertical-align: middle;
+        }
+
+        .pallet-inventory-table th {
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            opacity: 0.72;
+        }
+
+        .pallet-product-name {
+            font-weight: 700;
+        }
+
+        .pallet-product-brand {
+            display: block;
+            margin-top: 0.2rem;
+            font-size: 0.85rem;
+            opacity: 0.72;
+        }
+
+        .pallet-action-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.4rem;
+        }
+
+        .pallet-quantity {
+            font-weight: 700;
+            white-space: nowrap;
+        }
+
+        .storage-media-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+
+        .storage-media-preview {
+            background: #111;
+            min-height: 180px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .storage-media-preview img,
+        .storage-media-preview video {
+            display: block;
+            width: 100%;
+            max-height: 360px;
+            object-fit: contain;
+        }
+
+        .storage-upload-card {
+            margin-bottom: 1.25rem;
+        }
+
+        .storage-upload-card input[type="file"] {
+            width: 100%;
+        }
+
+        .media-type-label {
+            font-size: 0.8rem;
+            font-weight: 700;
+            text-transform: uppercase;
+        }
+
+        @media (max-width: 540px) {
+            .trailer-shell {
+                padding: 0.6rem;
+            }
+
+            .trailer-grid {
+                gap: 0.4rem;
+            }
+
+            .storage-slot-card {
+                min-height: 96px;
+            }
+
+            .storage-slot-preview {
+                height: 70px;
+            }
+
+            .storage-slot-body {
+                padding: 0.6rem;
+            }
+        }
+    
+        .storage-mobile-help {
+            margin: 0.65rem 0 0 0;
+            font-size: 0.9rem;
+            opacity: 0.78;
+        }
+
+        .storage-multi-upload-form {
+            border-top: 1px solid #dddddd;
+            padding-top: 1rem;
+        }
+
+        @media (max-width: 700px) {
+            .storage-upload-card input[type="file"] {
+                width: 100%;
+                min-height: 48px;
+            }
+
+            .storage-upload-card button {
+                width: 100%;
+                min-height: 48px;
+            }
+        }
+
+</style>
+</head>
+
+<body>
+    <header class="store-header">
+        <div>
+            <p class="eyebrow">The BrooksHouse Store</p>
+            <h1>Storage Gallery</h1>
+            <p class="subtitle">
+                Visual trailer load maps, pallet photos, and videos.
+            </p>
+        </div>
+
+        <nav>
+            <a href="/dashboard">Dashboard</a>
+            <a href="/smart-scan">Smart Scan</a>
+            <a href="/inventory/search">Inventory Search</a>
+            <a href="/inventory/replenishment">Replenishment</a>
+            <a href="/inventory/adjust">Adjust Inventory</a>
+            <a href="/products">Products</a>
+        </nav>
+    </header>
+
+    <main class="page-container">
+
+        {% if gallery_mode == "albums" %}
+        <section class="dashboard-panel">
+            <div class="dashboard-panel-heading">
+                <div>
+                    <p class="eyebrow">Storage locations</p>
+                    <h2>Trailer & Container Load Maps</h2>
+                    <p>
+                        Open a location to view its 32 pallet positions.
+                    </p>
+                </div>
+            </div>
+
+            {% if albums %}
+            <div class="storage-album-grid">
+                {% for album in albums %}
+                <article class="storage-album-card">
+                    <a
+                        class="storage-album-link"
+                        href="/storage-gallery/{{ album.location.location_id }}"
+                    >
+                        <div class="storage-album-cover">
+                            {% if album.cover_image_path %}
+                            <img
+                                src="{{ album.cover_image_path }}"
+                                alt="{{ album.display_name }}"
+                                loading="lazy"
+                            >
+                            {% elif album.cover_photo %}
+                            <img
+                                src="{{ album.cover_photo.image_path }}"
+                                alt="{{ album.display_name }}"
+                                loading="lazy"
+                            >
+                            {% else %}
+                            <span>No cover picture yet</span>
+                            {% endif %}
+                        </div>
+
+                        <div class="storage-album-body">
+                            <h3>{{ album.location.location_name }}</h3>
+
+                            <p>
+                                Pallet IDs:
+                                {{ album.slot_prefix }}-P01
+                                through
+                                {{ album.slot_prefix }}-P32
+                            </p>
+
+                            <div class="storage-counts">
+                                <span class="storage-count-badge">
+                                    {{ album.photo_count }} photos
+                                </span>
+
+                                <span class="storage-count-badge">
+                                    {{ album.video_count }} videos
+                                </span>
+                            </div>
+                        </div>
+                    </a>
+                </article>
+                {% endfor %}
+            </div>
+            {% else %}
+            <p>
+                No active trailer or container inventory locations were found.
+            </p>
+            {% endif %}
+        </section>
+        {% endif %}
+
+        {% if gallery_mode == "load_map" %}
+        <div class="storage-gallery-toolbar">
+            <div>
+                <p class="eyebrow">Load map</p>
+                <h2>{{ gallery_settings.display_name }}</h2>
+                <p>
+                    2 columns x 16 rows - click a pallet position.
+                </p>
+            </div>
+
+            <a
+                class="secondary-button link-button"
+                href="/storage-gallery"
+            >
+                Back to Storage Gallery
+            </a>
+        </div>
+
+        <section class="form-card storage-upload-card">
+            <div class="section-heading">
+                <span>⚙</span>
+                <div>
+                    <h2>Manage Storage Location</h2>
+                    <p>
+                        Change the gallery name or choose a custom cover
+                        picture. Pallet IDs stay unchanged.
+                    </p>
+                </div>
+            </div>
+
+            <div class="form-grid">
+                <form
+                    action="/storage-gallery/{{ location.location_id }}/settings"
+                    method="post"
+                    class="product-form"
+                >
+                    <label class="field">
+                        <span>Display name</span>
+                        <input
+                            type="text"
+                            name="display_name"
+                            value="{{ gallery_settings.display_name }}"
+                            maxlength="80"
+                            required
+                        >
+                    </label>
+
+                    <div class="form-actions">
+                        <button type="submit" class="primary-button">
+                            Save Name
+                        </button>
+                    </div>
+                </form>
+
+                <form
+                    action="/storage-gallery/{{ location.location_id }}/cover"
+                    method="post"
+                    enctype="multipart/form-data"
+                    class="product-form"
+                >
+                    <label class="field">
+                        <span>Cover picture</span>
+                        <input
+                            type="file"
+                            name="cover_image"
+                            accept="image/*"
+                            capture="environment"
+                            required
+                        >
+                    </label>
+
+                    <div class="form-actions">
+                        <button type="submit" class="primary-button">
+                            Upload Cover
+                        </button>
+                    </div>
+                </form>
+            </div>
+
+            {% if gallery_settings.cover_image_path %}
+            <div style="margin-top: 1rem;">
+                <img
+                    src="{{ gallery_settings.cover_image_path }}"
+                    alt="{{ gallery_settings.display_name }} cover"
+                    style="display:block;width:100%;max-width:420px;max-height:260px;object-fit:cover;border-radius:12px;"
+                >
+
+                <form
+                    action="/storage-gallery/{{ location.location_id }}/cover/delete"
+                    method="post"
+                    style="margin-top: 0.75rem;"
+                >
+                    <button type="submit" class="secondary-button">
+                        Remove Custom Cover
+                    </button>
+                </form>
+            </div>
+            {% endif %}
+        </section>
+
+        <section class="dashboard-panel storage-general-gallery">
+            <div class="dashboard-panel-heading">
+                <div>
+                    <p class="eyebrow">General trailer media</p>
+                    <h2>General Pictures & Videos Folder</h2>
+                    <p>
+                        Overview pictures and videos that are not currently
+                        assigned to a pallet position.
+                    </p>
+                </div>
+            </div>
+
+            <div class="storage-album-grid">
+                <article class="storage-album-card">
+                    <a
+                        class="storage-album-link"
+                        href="/storage-gallery/{{ location.location_id }}/general"
+                    >
+                        <div class="storage-album-cover">
+                            {% if general_folder.cover_photo %}
+                            <img
+                                src="{{ general_folder.cover_photo.image_path }}"
+                                alt="General media folder"
+                                loading="lazy"
+                            >
+                            {% elif general_folder.video_count %}
+                            <span>🎬 Videos available</span>
+                            {% else %}
+                            <span>📁 No general media yet</span>
+                            {% endif %}
+                        </div>
+
+                        <div class="storage-album-body">
+                            <h3>📁 Random / Overview Media</h3>
+                            <p>Click to open all general trailer media.</p>
+
+                            <div class="storage-counts">
+                                <span class="storage-count-badge">
+                                    {{ general_folder.photo_count }} photos
+                                </span>
+                                <span class="storage-count-badge">
+                                    {{ general_folder.video_count }} videos
+                                </span>
+                                <span class="storage-count-badge">
+                                    {{ general_folder.media_count }} total
+                                </span>
+                            </div>
+                        </div>
+                    </a>
+                </article>
+            </div>
+        </section>
+
+        {% if false %}
+        <section class="dashboard-panel storage-general-gallery">
+            <div class="dashboard-panel-heading">
+                <div>
+                    <p class="eyebrow">
+                        General trailer media
+                    </p>
+
+                    <h2>
+                        Random / Overview Photos & Videos
+                    </h2>
+
+                    <p>
+                        Pictures for the trailer or container itself.
+                        These are not assigned to a pallet position.
+                    </p>
+                </div>
+            </div>
+
+            <section class="form-card storage-upload-card">
+                <form
+                    action="/storage-gallery/{{ location.location_id }}/general/upload"
+                    method="post"
+                    enctype="multipart/form-data"
+                    class="product-form"
+                >
+                    <div class="form-grid">
+                        <label class="field">
+                            <span>Add photo or video</span>
+
+                            <input
+                                type="file"
+                                name="storage_media"
+                                accept="image/*,video/*"
+                                capture="environment"
+                                required
+                            >
+                        </label>
+
+                        <label class="field">
+                            <span>Caption / note</span>
+
+                            <input
+                                type="text"
+                                name="caption"
+                                placeholder="Overall view, rear doors, loading progress, damage, etc."
+                            >
+                        </label>
+                    </div>
+
+                    <div class="form-actions">
+                        <button
+                            type="submit"
+                            class="primary-button"
+                        >
+                            Save Media
+                        </button>
+                    </div>
+                </form>
+                <form
+                    action="/storage-gallery/{{ location.location_id }}/general/upload-multiple"
+                    method="post"
+                    enctype="multipart/form-data"
+                    class="product-form storage-multi-upload-form"
+                    style="margin-top: 1rem;"
+                >
+                    <div class="form-grid">
+                        <label class="field">
+                            <span>🖼️ Select Multiple Overview Files</span>
+                            <input
+                                type="file"
+                                name="storage_media"
+                                accept="image/*,video/*"
+                                multiple
+                                required
+                            >
+                        </label>
+
+                        <label class="field">
+                            <span>Caption / note for this batch</span>
+                            <input
+                                type="text"
+                                name="caption"
+                                placeholder="Optional note applied to all files"
+                            >
+                        </label>
+                    </div>
+
+                    <p class="storage-mobile-help">
+                        Select several photos/videos from your phone.
+                        Up to 30 files at once.
+                    </p>
+
+                    <div class="form-actions">
+                        <button
+                            type="submit"
+                            class="secondary-button"
+                        >
+                            Upload Selected Files
+                        </button>
+                    </div>
+                </form>
+
+            </section>
+
+            {% if general_media_records %}
+            <div class="storage-media-grid">
+                {% for media in general_media_records %}
+                <article class="storage-media-card">
+                    <div class="storage-media-preview">
+                        {% set media_path = media.image_path|lower %}
+
+                        {% if
+                            media_path.endswith(".mp4")
+                            or media_path.endswith(".mov")
+                            or media_path.endswith(".m4v")
+                            or media_path.endswith(".webm")
+                        %}
+                        <video
+                            controls
+                            preload="metadata"
+                            playsinline
+                        >
+                            <source src="{{ media.image_path }}">
+                            Your browser does not support video playback.
+                        </video>
+                        {% else %}
+                        <a
+                            href="{{ media.image_path }}"
+                            target="_blank"
+                            rel="noopener"
+                        >
+                            <img
+                                src="{{ media.image_path }}"
+                                alt="{{ media.caption or gallery_settings.display_name }}"
+                                loading="lazy"
+                            >
+                        </a>
+                        {% endif %}
+                    </div>
+
+                    <div class="storage-media-body">
+                        {% if media.caption %}
+                        <p>{{ media.caption }}</p>
+                        {% endif %}
+
+                        <form
+                            action="/storage-gallery/media/{{ media.photo_id }}/delete"
+                            method="post"
+                        >
+                            <button
+                                type="submit"
+                                class="secondary-button"
+                            >
+                                Delete
+                            </button>
+                        </form>
+                    </div>
+                </article>
+                {% endfor %}
+            </div>
+            {% else %}
+            <p>No general trailer photos or videos yet.</p>
+            {% endif %}
+        </section>
+        {% endif %}
+
+        <section class="trailer-shell">
+            <div class="trailer-end-label">
+                TRAILER DOORS / REAR
+            </div>
+
+            <div class="trailer-grid">
+                {% for slot_item in slots %}
+                <article
+                    class="
+                        storage-slot-card
+                        {% if slot_item.media_count %}
+                        has-media
+                        {% endif %}
+                    "
+                >
+                    <a
+                        class="storage-slot-link"
+                        href="/storage-gallery/{{ location.location_id }}/slot/{{ slot_item.slot_code }}"
+                    >
+                        <div class="storage-slot-preview">
+                            {% if slot_item.cover_photo %}
+                            <img
+                                src="{{ slot_item.cover_photo.image_path }}"
+                                alt="{{ slot_item.slot_code }}"
+                                loading="lazy"
+                            >
+                            {% elif slot_item.video_count %}
+                            <span>Video available</span>
+                            {% else %}
+                            <span>Empty media slot</span>
+                            {% endif %}
+                        </div>
+
+                        <div class="storage-slot-body">
+                            <div class="slot-code">
+                                {{ slot_item.slot_code }}
+                            </div>
+
+                            <div class="slot-position">
+                                Row {{ slot_item.row_number }}
+                                - {{ slot_item.column_number }}
+                            </div>
+
+                            <div class="slot-inventory-summary">
+                                <strong>
+                                    {{ slot_item.inventory_units }} units
+                                </strong>
+
+                                <span>
+                                    {{ slot_item.inventory_product_count }}
+                                    {% if slot_item.inventory_product_count == 1 %}
+                                        product
+                                    {% else %}
+                                        products
+                                    {% endif %}
+                                </span>
+                            </div>
+
+                            <div class="slot-media-counts">
+                                Photos {{ slot_item.photo_count }}
+                                &nbsp; Videos {{ slot_item.video_count }}
+                            </div>
+                        </div>
+                    </a>
+                </article>
+                {% endfor %}
+            </div>
+
+            <div class="trailer-end-label">
+                NOSE / FRONT OF TRAILER
+            </div>
+        </section>
+        {% endif %}
+
+        {% if gallery_mode == "general" %}
+        <div class="storage-gallery-toolbar">
+            <div>
+                <p class="eyebrow">General trailer media</p>
+                <h2>{{ gallery_settings.display_name }}</h2>
+                <p>
+                    Random and overview pictures/videos not assigned to a
+                    pallet position.
+                </p>
+            </div>
+
+            <a
+                class="secondary-button link-button"
+                href="/storage-gallery/{{ location.location_id }}"
+            >
+                Back to Load Map
+            </a>
+        </div>
+
+        <section class="form-card storage-upload-card">
+            <div class="section-heading">
+                <span>+</span>
+                <div>
+                    <h2>Add General Photo or Video</h2>
+                    <p>
+                        Upload overview media now. You can assign it to a
+                        pallet position afterward.
+                    </p>
+                </div>
+            </div>
+
+            <form
+                action="/storage-gallery/{{ location.location_id }}/general/upload"
+                method="post"
+                enctype="multipart/form-data"
+                class="product-form"
+            >
+                <div class="form-grid">
+                    <label class="field full-width">
+                        <span>📷 Take Photo / Video — Back Camera</span>
+                        <input
+                            type="file"
+                            name="storage_media"
+                            accept="image/*,video/*"
+                            capture="environment"
+                            required
+                        >
+                    </label>
+
+                    <label class="field full-width">
+                        <span>Caption / notes</span>
+                        <textarea
+                            name="caption"
+                            rows="3"
+                            placeholder="Overview, rear doors, loading progress, damage, etc."
+                        ></textarea>
+                    </label>
+                </div>
+
+                <div class="form-actions">
+                    <button type="submit" class="primary-button">
+                        Save General Media
+                    </button>
+                </div>
+            </form>
+
+            <form
+                action="/storage-gallery/{{ location.location_id }}/general/upload-multiple"
+                method="post"
+                enctype="multipart/form-data"
+                class="product-form storage-multi-upload-form"
+                style="margin-top: 1rem;"
+            >
+                <div class="form-grid">
+                    <label class="field full-width">
+                        <span>🖼️ Select Multiple Photos / Videos</span>
+                        <input
+                            type="file"
+                            name="storage_media"
+                            accept="image/*,video/*"
+                            multiple
+                            required
+                        >
+                    </label>
+
+                    <label class="field full-width">
+                        <span>Caption / notes for this batch</span>
+                        <textarea
+                            name="caption"
+                            rows="2"
+                            placeholder="Optional note applied to every selected file"
+                        ></textarea>
+                    </label>
+                </div>
+
+                <p class="storage-mobile-help">
+                    Choose up to 30 photos or videos from your phone.
+                </p>
+
+                <div class="form-actions">
+                    <button type="submit" class="secondary-button">
+                        Upload Selected Media
+                    </button>
+                </div>
+            </form>
+        </section>
+
+        <section class="dashboard-panel">
+            <div class="dashboard-panel-heading">
+                <div>
+                    <p class="eyebrow">Folder contents</p>
+                    <h2>{{ media_records | length }} General Files</h2>
+                    <p>
+                        Assign a file to a pallet when you recognize its
+                        position, or leave it in this folder.
+                    </p>
+                </div>
+            </div>
+
+            {% if media_records %}
+            <div class="storage-media-grid">
+                {% for media in media_records %}
+                {% set lower_path = media.image_path | lower %}
+                {% set is_video =
+                    lower_path.endswith(".mp4")
+                    or lower_path.endswith(".mov")
+                    or lower_path.endswith(".m4v")
+                    or lower_path.endswith(".webm")
+                %}
+
+                <article class="storage-media-card">
+                    <div class="storage-media-preview">
+                        {% if is_video %}
+                        <video controls preload="metadata" playsinline>
+                            <source src="{{ media.image_path }}">
+                            Your browser cannot play this video.
+                        </video>
+                        {% else %}
+                        <a
+                            href="{{ media.image_path }}"
+                            target="_blank"
+                            rel="noopener"
+                        >
+                            <img
+                                src="{{ media.image_path }}"
+                                alt="{{ media.caption or gallery_settings.display_name }}"
+                                loading="lazy"
+                            >
+                        </a>
+                        {% endif %}
+                    </div>
+
+                    <div class="storage-media-body">
+                        <div class="media-type-label">
+                            {% if is_video %}Video{% else %}Photo{% endif %}
+                        </div>
+
+                        {% if media.caption %}
+                        <p>{{ media.caption }}</p>
+                        {% endif %}
+
+                        <form
+                            action="/storage-gallery/media/{{ media.photo_id }}/assign-slot"
+                            method="post"
+                            class="product-form"
+                        >
+                            <label class="field">
+                                <span>Move to pallet position</span>
+                                <select name="slot_code" required>
+                                    <option value="">Choose pallet</option>
+                                    {% for slot_option in slots %}
+                                    <option value="{{ slot_option.slot_code }}">
+                                        {{ slot_option.slot_code }} — Row
+                                        {{ slot_option.row_number }},
+                                        {{ slot_option.column_number }}
+                                    </option>
+                                    {% endfor %}
+                                </select>
+                            </label>
+
+                            <div class="form-actions">
+                                <button type="submit" class="primary-button">
+                                    Assign to Pallet
+                                </button>
+                            </div>
+                        </form>
+
+                        <form
+                            action="/storage-gallery/media/{{ media.photo_id }}/delete"
+                            method="post"
+                            style="margin-top: 0.65rem;"
+                        >
+                            <button type="submit" class="secondary-button">
+                                Delete
+                            </button>
+                        </form>
+                    </div>
+                </article>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="empty-product-gallery">
+                <p>No general trailer photos or videos yet.</p>
+            </div>
+            {% endif %}
+        </section>
+        {% endif %}
+
+        {% if gallery_mode == "slot" %}
+        <div class="storage-gallery-toolbar">
+            <div>
+                <p class="eyebrow">Pallet position</p>
+                <h2>{{ slot.slot_code }}</h2>
+
+                <p>
+                    {{ gallery_settings.display_name }}
+                    - Row {{ slot.row_number }}
+                    - {{ slot.column_number }}
+                </p>
+
+                <div class="storage-counts">
+                    <span class="storage-count-badge">
+                        {{ slot.inventory_units }} units
+                    </span>
+
+                    <span class="storage-count-badge">
+                        {{ slot.inventory_product_count }}
+                        {% if slot.inventory_product_count == 1 %}
+                            product
+                        {% else %}
+                            products
+                        {% endif %}
+                    </span>
+
+                    <span class="storage-count-badge">
+                        {{ slot.photo_count }} photos
+                    </span>
+
+                    <span class="storage-count-badge">
+                        {{ slot.video_count }} videos
+                    </span>
+                </div>
+            </div>
+
+            <a
+                class="secondary-button link-button"
+                href="/storage-gallery/{{ location.location_id }}"
+            >
+                Back to Load Map
+            </a>
+        </div>
+
+        <section class="form-card storage-upload-card">
+            <div class="section-heading">
+                <span>+</span>
+
+                <div>
+                    <h2>Add Photo or Video</h2>
+                    <p>
+                        Take a new picture/video or choose one already
+                        on this device.
+                    </p>
+                </div>
+            </div>
+
+            <form
+                action="/storage-gallery/{{ location.location_id }}/slot/{{ slot.slot_code }}/upload"
+                method="post"
+                enctype="multipart/form-data"
+                class="product-form"
+            >
+                <div class="form-grid">
+                    <label class="field full-width">
+                        <span>📷 Take Photo / Video — Back Camera</span>
+
+                        <input
+                            type="file"
+                            name="storage_media"
+                            accept="image/*,video/*"
+                            capture="environment"
+                            required
+                        >
+                    </label>
+
+                    <label class="field full-width">
+                        <span>Caption / notes</span>
+
+                        <textarea
+                            name="caption"
+                            rows="3"
+                            placeholder="Example: front view, mixed kitchen goods, loaded 8/9"
+                        ></textarea>
+                    </label>
+                </div>
+
+                <div class="form-actions">
+                    <button
+                        type="submit"
+                        class="primary-button"
+                    >
+                        Save Media
+                    </button>
+                </div>
+            </form>
+            <form
+                action="/storage-gallery/{{ location.location_id }}/slot/{{ slot.slot_code }}/upload-multiple"
+                method="post"
+                enctype="multipart/form-data"
+                class="product-form storage-multi-upload-form"
+                style="margin-top: 1rem;"
+            >
+                <div class="form-grid">
+                    <label class="field full-width">
+                        <span>🖼️ Select Multiple Photos / Videos</span>
+                        <input
+                            type="file"
+                            name="storage_media"
+                            accept="image/*,video/*"
+                            multiple
+                            required
+                        >
+                    </label>
+
+                    <label class="field full-width">
+                        <span>Caption / notes for this batch</span>
+                        <textarea
+                            name="caption"
+                            rows="2"
+                            placeholder="Optional note applied to all selected files"
+                        ></textarea>
+                    </label>
+                </div>
+
+                <p class="storage-mobile-help">
+                    Choose several files from your phone at once.
+                    Up to 30 files per upload.
+                </p>
+
+                <div class="form-actions">
+                    <button
+                        type="submit"
+                        class="secondary-button"
+                    >
+                        Upload Selected Media
+                    </button>
+                </div>
+            </form>
+
+        </section>
+
+        <section class="dashboard-panel">
+            <div class="dashboard-panel-heading">
+                <div>
+                    <p class="eyebrow">Pallet media</p>
+                    <h2>
+                        {{ slot.photo_count }} Photos
+                        -
+                        {{ slot.video_count }} Videos
+                    </h2>
+                </div>
+            </div>
+
+            {% if media_records %}
+            <div class="storage-media-grid">
+                {% for media in media_records %}
+                {% set lower_path = media.image_path | lower %}
+                {% set is_video =
+                    lower_path.endswith(".mp4")
+                    or lower_path.endswith(".mov")
+                    or lower_path.endswith(".m4v")
+                    or lower_path.endswith(".webm")
+                %}
+
+                <article class="storage-media-card">
+                    <div class="storage-media-preview">
+                        {% if is_video %}
+                        <video controls preload="metadata">
+                            <source src="{{ media.image_path }}">
+                            Your browser cannot play this video.
+                        </video>
+                        {% else %}
+                        <a
+                            href="{{ media.image_path }}"
+                            target="_blank"
+                            rel="noopener"
+                        >
+                            <img
+                                src="{{ media.image_path }}"
+                                alt="{{ media.caption or slot.slot_code }}"
+                                loading="lazy"
+                            >
+                        </a>
+                        {% endif %}
+                    </div>
+
+                    <div class="storage-media-body">
+                        <div class="media-type-label">
+                            {% if is_video %}
+                                Video
+                            {% else %}
+                                Photo
+                            {% endif %}
+                        </div>
+
+                        {% if media.caption %}
+                        <p>{{ media.caption }}</p>
+                        {% endif %}
+
+                        <form
+                            action="/storage-gallery/media/{{ media.photo_id }}/delete"
+                            method="post"
+                        >
+                            <button
+                                type="submit"
+                                class="secondary-button"
+                            >
+                                Delete
+                            </button>
+                        </form>
+                    </div>
+                </article>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="empty-product-gallery">
+                <p>
+                    No pictures or videos have been added to
+                    {{ slot.slot_code }} yet.
+                </p>
+            </div>
+            {% endif %}
+        </section>
+
+        <section class="dashboard-panel pallet-inventory-section">
+            <div class="dashboard-panel-heading">
+                <div>
+                    <p class="eyebrow">Pallet inventory</p>
+
+                    <h2>
+                        Inventory on {{ slot.slot_code }}
+                    </h2>
+
+                    <p>
+                        {{ slot.inventory_units }} total units across
+                        {{ slot.inventory_product_count }}
+                        {% if slot.inventory_product_count == 1 %}
+                            product.
+                        {% else %}
+                            products.
+                        {% endif %}
+                    </p>
+                </div>
+            </div>
+
+            {% if pallet_products %}
+            <div class="pallet-inventory-table-wrap">
+                <table class="pallet-inventory-table">
+                    <thead>
+                        <tr>
+                            <th>Product</th>
+                            <th>Barcode</th>
+                            <th>Qty</th>
+                            <th>Cost</th>
+                            <th>Price</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+
+                    <tbody>
+                        {% for item in pallet_products %}
+                        <tr>
+                            <td>
+                                <a
+                                    class="pallet-product-name"
+                                    href="/products/{{ item.product_id }}"
+                                >
+                                    {{ item.product_name }}
+                                </a>
+
+                                {% if item.brand %}
+                                <span class="pallet-product-brand">
+                                    {{ item.brand }}
+                                </span>
+                                {% endif %}
+                            </td>
+
+                            <td>
+                                {{ item.barcode or "No barcode" }}
+                            </td>
+
+                            <td class="pallet-quantity">
+                                {{ item.quantity_on_hand }}
+                            </td>
+
+                            <td>
+                                {% if item.average_cost is not none %}
+                                    ${{ "%.2f"|format(item.average_cost) }}
+                                {% else %}
+                                    -
+                                {% endif %}
+                            </td>
+
+                            <td>
+                                {% if item.store_price is not none %}
+                                    ${{ "%.2f"|format(item.store_price) }}
+                                {% else %}
+                                    -
+                                {% endif %}
+                            </td>
+
+                            <td>
+                                <div class="pallet-action-row">
+                                    <a
+                                        class="secondary-button link-button"
+                                        href="/products/{{ item.product_id }}"
+                                    >
+                                        View
+                                    </a>
+
+                                    {% if item.barcode %}
+                                    <a
+                                        class="primary-button link-button"
+                                        href="/inventory/adjust?barcode={{ item.barcode }}&location_id={{ location.location_id }}&container_id={{ slot.slot_code }}"
+                                    >
+                                        Adjust
+                                    </a>
+
+
+                                    <a
+                                        class="secondary-button link-button"
+                                        href="/inventory/transfer?barcode={{ item.barcode }}&source_location_id={{ location.location_id }}&source_container_id={{ slot.slot_code }}"
+                                    >
+                                        Transfer
+                                    </a>
+                                    {% endif %}
+                                </div>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <p>
+                No positive on-hand inventory is currently assigned
+                to {{ slot.slot_code }}.
+            </p>
+            {% endif %}
+        </section>
+        {% endif %}
+
+    </main>
+</body>
+</html>

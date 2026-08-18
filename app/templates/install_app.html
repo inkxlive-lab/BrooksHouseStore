@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta name="theme-color" content="#8f1f24">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="BrooksHouse">
+    <link rel="manifest" href="/static/manifest.webmanifest">
+    <link rel="apple-touch-icon" href="/static/pwa/apple-touch-icon.png">
+    <title>Install BrooksHouse</title>
+    <style>
+        :root{--red:#8f1f24;--cream:#f4ede5;--ink:#231e1b;--line:#decfc2;--green:#167348}
+        *{box-sizing:border-box}body{margin:0;background:var(--cream);color:var(--ink);font-family:Arial,sans-serif}main{max-width:920px;margin:auto;padding:24px 16px 50px}
+        .hero,.card{background:white;border:1px solid var(--line);border-radius:20px;padding:24px;box-shadow:0 10px 26px rgba(50,30,20,.07)}.hero{text-align:center;margin-bottom:18px}.logo{width:112px;height:112px;border-radius:26px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}.status{background:#f4f7f4;border-radius:12px;padding:13px;margin:15px 0;font-weight:700}button,.button{display:inline-block;border:0;border-radius:12px;background:var(--green);color:white;padding:14px 19px;font-weight:800;text-decoration:none;font-size:1rem}.secondary{background:var(--red)}li{margin:10px 0;line-height:1.4}.ios{background:#fff8df;padding:14px;border-radius:12px;margin-top:14px}nav{text-align:center;margin-bottom:16px}nav a{color:var(--red);font-weight:800}
+    </style>
+</head>
+<body><main>
+    <nav><a href="/dashboard">Dashboard</a> · <a href="/tools/notifications">Notifications</a></nav>
+    <section class="hero">
+        <img class="logo" src="/static/pwa/icon-192.png" alt="BrooksHouse">
+        <h1>Install The BrooksHouse Store</h1>
+        <p>Launch inventory, scanning, orders, storage, and alerts like an app.</p>
+        <div class="status" data-pwa-status>Checking this device…</div>
+        <button data-pwa-install>Install BrooksHouse</button>
+        <p><a class="button secondary" href="/dashboard">Open Dashboard</a></p>
+        <div class="ios" data-ios-instructions hidden><strong>iPhone/iPad:</strong> Open this page in Safari, tap Share, choose <em>Add to Home Screen</em>, turn on <em>Open as Web App</em>, then launch the new BrooksHouse icon.</div>
+    </section>
+    <div class="grid">
+        <section class="card"><h2>Android & Zebra</h2><ol><li>Open this page in Chrome.</li><li>Tap <strong>Install BrooksHouse</strong>.</li><li>Approve the installation.</li><li>Launch the BrooksHouse icon.</li><li>Enable notifications inside the installed app.</li></ol></section>
+        <section class="card"><h2>iPhone & iPad</h2><ol><li>Open this page in Safari.</li><li>Tap the Share icon.</li><li>Select <strong>Add to Home Screen</strong>.</li><li>Enable <strong>Open as Web App</strong>.</li><li>Open the new icon before enabling notifications.</li></ol></section>
+        <section class="card"><h2>What stays online</h2><p>BrooksHouse does not save scans or inventory changes offline. That prevents duplicate or missing inventory. If the server is unreachable, the app shows a clear offline screen.</p></section>
+    </div>
+</main><script src="/static/pwa.js"></script></body>
+</html>

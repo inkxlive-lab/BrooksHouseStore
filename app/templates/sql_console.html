@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>
+        SQL Console | BrooksHouse Store
+    </title>
+
+    <link
+        rel="stylesheet"
+        href="/static/store.css"
+    >
+
+    <style>
+        .sql-console-grid {
+            display: grid;
+            gap: 1rem;
+        }
+
+        .sql-editor {
+            width: 100%;
+            min-height: 300px;
+            resize: vertical;
+            box-sizing: border-box;
+            padding: 1rem;
+            border: 1px solid #cfcfcf;
+            border-radius: 12px;
+            font-family:
+                Consolas,
+                "Courier New",
+                monospace;
+            font-size: 0.95rem;
+            line-height: 1.5;
+            tab-size: 4;
+        }
+
+        .sql-toolbar {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: end;
+            gap: 0.75rem;
+            margin-top: 0.85rem;
+        }
+
+        .sql-mode-card {
+            border: 1px solid #d8d8d8;
+            border-radius: 12px;
+            padding: 0.85rem;
+            background: #ffffff;
+        }
+
+        .sql-danger {
+            border-color: #b42318;
+            background: #fff5f4;
+        }
+
+        .sql-confirmation {
+            display: none;
+            margin-top: 0.75rem;
+        }
+
+        .sql-confirmation.active {
+            display: block;
+        }
+
+        .sql-result-card {
+            margin-top: 1rem;
+        }
+
+        .sql-statement {
+            padding: 0.75rem;
+            border-radius: 10px;
+            background: #f6f6f6;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            word-break: break-word;
+            font-family:
+                Consolas,
+                "Courier New",
+                monospace;
+            font-size: 0.82rem;
+        }
+
+        .sql-table-wrap {
+            overflow: auto;
+            max-height: 560px;
+            border: 1px solid #dddddd;
+            border-radius: 10px;
+            margin-top: 0.75rem;
+        }
+
+        .sql-results-table {
+            width: max-content;
+            min-width: 100%;
+            border-collapse: collapse;
+            font-size: 0.86rem;
+        }
+
+        .sql-results-table th,
+        .sql-results-table td {
+            padding: 0.55rem 0.65rem;
+            border-bottom: 1px solid #eeeeee;
+            border-right: 1px solid #eeeeee;
+            text-align: left;
+            vertical-align: top;
+            white-space: nowrap;
+        }
+
+        .sql-results-table th {
+            position: sticky;
+            top: 0;
+            background: #f4f4f4;
+            z-index: 2;
+        }
+
+        .sql-null {
+            opacity: 0.55;
+            font-style: italic;
+        }
+
+        .sql-backup {
+            font-family:
+                Consolas,
+                "Courier New",
+                monospace;
+            word-break: break-all;
+        }
+
+        .sql-warning {
+            padding: 0.8rem 0.9rem;
+            border: 1px solid #e8b931;
+            border-radius: 10px;
+            margin-top: 0.75rem;
+        }
+
+        .sql-example-buttons {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+            margin-top: 0.75rem;
+        }
+
+        @media (max-width: 700px) {
+            .sql-editor {
+                min-height: 240px;
+                font-size: 16px;
+            }
+
+            .sql-toolbar {
+                display: grid;
+                grid-template-columns: 1fr;
+            }
+
+            .sql-toolbar button,
+            .sql-toolbar input {
+                min-height: 48px;
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <header class="store-header">
+        <div>
+            <p class="eyebrow">
+                The BrooksHouse Store
+            </p>
+
+            <h1>
+                SQL Console
+            </h1>
+
+            <p class="subtitle">
+                Query and maintain the BrooksHouse SQLite database.
+            </p>
+        </div>
+
+        <nav>
+            <a href="/dashboard">
+                Dashboard
+            </a>
+
+            <a href="/inventory/search">
+                Inventory Search
+            </a>
+
+            <a href="/inventory/replenishment">
+                Replenishment
+            </a>
+
+            <a href="/smart-scan">
+                Smart Scan
+            </a>
+
+            <a href="/tools/python">
+                Python Lab
+            </a>
+        </nav>
+    </header>
+
+    <main class="page-container">
+        {% if message %}
+        <section class="alert success">
+            <strong>{{ message }}</strong>
+
+            {% if backup_path %}
+            <div class="sql-backup">
+                Backup: {{ backup_path }}
+            </div>
+            {% endif %}
+        </section>
+        {% endif %}
+
+        {% if error %}
+        <section class="alert error">
+            <strong>{{ error }}</strong>
+        </section>
+        {% endif %}
+
+        <section class="dashboard-panel">
+            <div class="dashboard-panel-heading">
+                <div>
+                    <p class="eyebrow">
+                        Database tools
+                    </p>
+
+                    <h2>
+                        Run SQL
+                    </h2>
+
+                    <p>
+                        Read-only mode is the default.
+                        Database-changing scripts require
+                        explicit write mode and confirmation.
+                    </p>
+                </div>
+            </div>
+
+            <form
+                action="/tools/sql"
+                method="post"
+                id="sql-console-form"
+            >
+                <textarea
+                    class="sql-editor"
+                    name="sql_text"
+                    id="sql-text"
+                    spellcheck="false"
+                    required
+                >{{ sql_text }}</textarea>
+
+                <div class="sql-example-buttons">
+                    <button
+                        type="button"
+                        class="secondary-button"
+                        data-sql-example="tables"
+                    >
+                        Show Tables
+                    </button>
+
+                    <button
+                        type="button"
+                        class="secondary-button"
+                        data-sql-example="backroom"
+                    >
+                        Back Room Inventory
+                    </button>
+
+                    <button
+                        type="button"
+                        class="secondary-button"
+                        data-sql-example="blank_totes"
+                    >
+                        Blank Back Room Totes
+                    </button>
+                </div>
+
+                <div class="sql-toolbar">
+                    <label
+                        class="sql-mode-card"
+                        id="write-mode-card"
+                    >
+                        <input
+                            type="checkbox"
+                            name="allow_changes"
+                            value="yes"
+                            id="allow-changes"
+                            {% if write_mode %}checked{% endif %}
+                            {% if not is_local_client %}disabled{% endif %}
+                        >
+
+                        <strong>
+                            Allow database changes
+                        </strong>
+
+                        <div>
+                            UPDATE / INSERT / DELETE /
+                            CREATE / DROP / ALTER
+                        </div>
+                    </label>
+
+                    <button
+                        type="submit"
+                        class="primary-button"
+                        id="run-sql"
+                    >
+                        Run SQL
+                    </button>
+                </div>
+
+                {% if not is_local_client %}
+                <div class="sql-warning">
+                    Write mode is disabled on phones,
+                    Zebra devices, and other network clients.
+                    Open this page on the BrooksHouse server
+                    computer to modify the database.
+                </div>
+                {% endif %}
+
+                <div
+                    class="sql-confirmation {% if write_mode %}active{% endif %}"
+                    id="write-confirmation"
+                >
+                    <label class="field">
+                        <span>
+                            Type RUN WRITE SQL to confirm
+                        </span>
+
+                        <input
+                            type="text"
+                            name="confirmation"
+                            id="confirmation"
+                            autocomplete="off"
+                            placeholder="RUN WRITE SQL"
+                        >
+                    </label>
+
+                    <div class="sql-warning">
+                        A timestamped SQLite backup will be
+                        created before this script runs.
+                    </div>
+                </div>
+            </form>
+        </section>
+
+        {% for result in result_sets %}
+        <section
+            class="dashboard-panel sql-result-card"
+        >
+            <div class="dashboard-panel-heading">
+                <div>
+                    <p class="eyebrow">
+                        Statement {{ result.statement_number }}
+                    </p>
+
+                    <h2>
+                        {% if result.columns %}
+                            {{ result.row_count }} row(s)
+                        {% else %}
+                            {{ result.affected }} row change(s)
+                        {% endif %}
+                    </h2>
+                </div>
+            </div>
+
+            <div class="sql-statement">
+                {{ result.statement }}
+            </div>
+
+            {% if result.columns %}
+            <div class="sql-table-wrap">
+                <table class="sql-results-table">
+                    <thead>
+                        <tr>
+                            {% for column in result.columns %}
+                            <th>{{ column }}</th>
+                            {% endfor %}
+                        </tr>
+                    </thead>
+
+                    <tbody>
+                        {% for row in result.rows %}
+                        <tr>
+                            {% for value in row %}
+                            <td>
+                                {% if value is none %}
+                                <span class="sql-null">
+                                    NULL
+                                </span>
+                                {% else %}
+                                    {{ value }}
+                                {% endif %}
+                            </td>
+                            {% endfor %}
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+
+            {% if result.truncated %}
+            <div class="sql-warning">
+                Result display stopped at 500 rows.
+                Add a WHERE clause or LIMIT for a smaller result.
+            </div>
+            {% endif %}
+            {% endif %}
+        </section>
+        {% endfor %}
+    </main>
+
+    <script>
+        const sqlText = document.getElementById(
+            "sql-text"
+        );
+
+        const allowChanges = document.getElementById(
+            "allow-changes"
+        );
+
+        const confirmation = document.getElementById(
+            "write-confirmation"
+        );
+
+        function updateWriteMode() {
+            const enabled = Boolean(
+                allowChanges?.checked
+            );
+
+            confirmation?.classList.toggle(
+                "active",
+                enabled
+            );
+        }
+
+        allowChanges?.addEventListener(
+            "change",
+            updateWriteMode
+        );
+
+        updateWriteMode();
+
+        const examples = {
+            tables: `SELECT
+    name,
+    type
+FROM sqlite_master
+WHERE type IN ('table', 'view')
+ORDER BY type, name;`,
+
+            backroom: `SELECT
+    i.inventory_id,
+    i.product_id,
+    p.product_name,
+    i.container_id,
+    i.quantity_on_hand
+FROM inventory AS i
+JOIN products AS p
+  ON p.product_id = i.product_id
+WHERE i.location_id = 2
+  AND COALESCE(i.quantity_on_hand, 0) > 0
+ORDER BY i.container_id, p.product_name;`,
+
+            blank_totes: `SELECT
+    i.inventory_id,
+    i.product_id,
+    p.product_name,
+    i.quantity_on_hand,
+    i.container_id
+FROM inventory AS i
+JOIN products AS p
+  ON p.product_id = i.product_id
+WHERE i.location_id = 2
+  AND COALESCE(TRIM(i.container_id), '') = ''
+  AND COALESCE(i.quantity_on_hand, 0) > 0
+ORDER BY i.inventory_id;`
+        };
+
+        document.querySelectorAll(
+            "[data-sql-example]"
+        ).forEach(
+            (button) => {
+                button.addEventListener(
+                    "click",
+                    () => {
+                        const key = (
+                            button.dataset.sqlExample
+                        );
+
+                        if (
+                            sqlText
+                            && examples[key]
+                        ) {
+                            sqlText.value = (
+                                examples[key]
+                            );
+
+                            sqlText.focus();
+                        }
+                    }
+                );
+            }
+        );
+
+        sqlText?.addEventListener(
+            "keydown",
+            (event) => {
+                if (
+                    event.key === "Tab"
+                ) {
+                    event.preventDefault();
+
+                    const start = (
+                        sqlText.selectionStart
+                    );
+
+                    const end = (
+                        sqlText.selectionEnd
+                    );
+
+                    sqlText.value = (
+                        sqlText.value.substring(
+                            0,
+                            start
+                        )
+                        + "    "
+                        + sqlText.value.substring(
+                            end
+                        )
+                    );
+
+                    sqlText.selectionStart = (
+                        sqlText.selectionEnd
+                        = start + 4
+                    );
+                }
+
+                if (
+                    event.ctrlKey
+                    && event.key === "Enter"
+                ) {
+                    event.preventDefault();
+
+                    document.getElementById(
+                        "sql-console-form"
+                    )?.requestSubmit();
+                }
+            }
+        );
+    </script>
+</body>
+</html>

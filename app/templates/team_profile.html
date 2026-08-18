@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>My Profile | BrooksHouse</title>
+    <style>
+        :root{--red:#8f1f24;--ink:#201a18;--cream:#f7f2ea;--line:#e8ddd3;--muted:#6f6662}
+        *{box-sizing:border-box}body{margin:0;background:var(--cream);color:var(--ink);font:17px system-ui,sans-serif}
+        header{padding:18px 22px;color:#fff;background:linear-gradient(135deg,#641419,var(--red))}
+        header a{color:#fff;font-weight:800}.wrap{width:min(680px,94vw);margin:28px auto}.card{padding:24px;background:#fff;border:1px solid var(--line);border-radius:20px;box-shadow:0 10px 28px #371f1714}
+        .identity{display:flex;align-items:center;gap:18px;margin-bottom:22px}.avatar{width:112px;height:112px;flex:0 0 112px;display:grid;place-items:center;border-radius:50%;overflow:hidden;background:#f0e5dc;color:var(--red);font-size:2.5rem;font-weight:900;border:4px solid #fff;box-shadow:0 3px 16px #0002}
+        .avatar img{width:100%;height:100%;object-fit:cover}.identity h1{margin:0 0 5px}.identity p{margin:3px 0;color:var(--muted)}
+        .message,.error{padding:12px;border-radius:10px}.message{background:#dff4e8;color:#12643b}.error{background:#fde2e2;color:#88151c}
+        label{display:block;margin:18px 0 7px;font-weight:900}.camera{width:100%;padding:14px;border:2px dashed #cdbdb0;border-radius:12px;background:#fff}
+        button,.button{display:inline-block;margin-top:14px;padding:12px 16px;border:0;border-radius:10px;color:#fff;background:var(--red);font:inherit;font-weight:900;cursor:pointer;text-decoration:none}.delete{background:#6f6662}.hint{color:var(--muted);font-size:.92rem}
+        @media(max-width:520px){.identity{align-items:flex-start}.avatar{width:88px;height:88px;flex-basis:88px}}
+    </style>
+</head>
+<body>
+<header><b>The BrooksHouse Store</b><br><a href="/dashboard">← Dashboard</a></header>
+<main class="wrap"><section class="card">
+    {% if request.query_params.get('message') %}<p class="message">{{ request.query_params.get('message') }}</p>{% endif %}
+    {% if request.query_params.get('error') %}<p class="error">{{ request.query_params.get('error') }}</p>{% endif %}
+    <div class="identity">
+        <div class="avatar">
+            {% if user.profile_image_name %}<img src="/profile-photo/{{ user.user_id }}?v={{ user.profile_image_name }}" alt="{{ user.display_name }}">{% else %}{{ user.display_name[:1]|upper }}{% endif %}
+        </div>
+        <div><h1>{{ user.display_name }}</h1><p>@{{ user.username }}</p><p>{{ user.role_label }}</p></div>
+    </div>
+    <h2>My profile picture</h2>
+    <p>Take a new picture with this device or choose one you already have.</p>
+    <form method="post" action="/profile/photo" enctype="multipart/form-data">
+        <label for="photo">Take or choose a picture</label>
+        <input class="camera" id="photo" name="photo" type="file" accept="image/jpeg,image/png,image/webp" capture="user" required>
+        <p class="hint">JPG, PNG, or WebP. Maximum size: 8 MB.</p>
+        <button type="submit">Save Profile Picture</button>
+    </form>
+    {% if user.profile_image_name %}<form method="post" action="/profile/photo/delete" onsubmit="return confirm('Remove your profile picture?')"><button class="delete" type="submit">Remove Picture</button></form>{% endif %}
+</section></main>
+</body></html>

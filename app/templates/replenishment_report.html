@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+    <title>Replenishment | BrooksHouse Store</title>
+    <link rel="stylesheet" href="/static/store.css">
+
+    <style>
+        .replenishment-flow {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 0.75rem;
+            margin-bottom: 1rem;
+        }
+
+        .flow-tier,
+        .summary-card {
+            border: 1px solid #dddddd;
+            border-radius: 12px;
+            padding: 0.85rem;
+            background: #ffffff;
+        }
+
+        .flow-tier strong {
+            display: block;
+            margin-bottom: 0.25rem;
+        }
+
+        .replenishment-filter {
+            margin-bottom: 1rem;
+        }
+
+        .filter-actions {
+            margin-top: 0.75rem;
+        }
+
+        .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 0.75rem;
+            margin-bottom: 1rem;
+        }
+
+        .summary-value {
+            font-size: 1.55rem;
+            font-weight: 800;
+        }
+
+        .emergency-card {
+            border-color: #b42318;
+        }
+
+        .emergency-badge,
+        .normal-badge {
+            display: inline-block;
+            padding: 0.25rem 0.5rem;
+            border-radius: 999px;
+            font-size: 0.75rem;
+            font-weight: 800;
+        }
+
+        .emergency-badge {
+            background: #fee4e2;
+            color: #b42318;
+        }
+
+        .normal-badge {
+            background: #eef4ff;
+        }
+
+        .source-breakdown {
+            font-size: 0.78rem;
+            margin-top: 0.25rem;
+            opacity: 0.8;
+        }
+
+        .quantity-strong {
+            font-weight: 800;
+            font-size: 1.05rem;
+        }
+
+        .replenishment-warning {
+            padding: 0.8rem;
+            border-radius: 10px;
+            border: 1px solid #f5c2c0;
+            background: #fff5f4;
+            margin-top: 0.75rem;
+        }
+
+        .replenishment-pagination {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+            margin-top: 1rem;
+        }
+
+        .replenishment-pagination-actions,
+        .row-actions {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+        }
+
+        @media (max-width: 900px) {
+            .replenishment-flow,
+            .summary-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        @media (max-width: 700px) {
+            .replenishment-filter select,
+            .replenishment-filter input,
+            .replenishment-filter button {
+                min-height: 48px;
+            }
+
+            .replenishment-table {
+                min-width: 1000px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <header class="store-header">
+        <div>
+            <p class="eyebrow">The BrooksHouse Store</p>
+            <h1>Replenishment Work Queue</h1>
+            <p class="subtitle">
+                Deep Reserve → Back Stock → Storefront Pickslot
+            </p>
+        </div>
+
+        <nav>
+            <a href="/dashboard">Dashboard</a>
+            <a href="/smart-scan">Smart Scan</a>
+            <a href="/inventory/receive">Receive</a>
+            <a href="/inventory/transfer">Transfer</a>
+            <a href="/storage-gallery">Storage Gallery</a>
+        </nav>
+    </header>
+
+    <main class="page-container">
+
+        {% if error %}
+        <section class="alert error">
+            <strong>{{ error }}</strong>
+        </section>
+        {% endif %}
+
+        <section class="replenishment-flow">
+            <div class="flow-tier">
+                <strong>DEEP RESERVE</strong>
+                Trailers, Storage Container, Warehouse
+            </div>
+
+            <div class="flow-tier">
+                <strong>RESERVE / BACK STOCK</strong>
+                Store Back Room
+            </div>
+
+            <div class="flow-tier">
+                <strong>PICKSLOT</strong>
+                BrooksHouse Storefront
+            </div>
+        </section>
+
+        <section class="dashboard-panel replenishment-filter">
+            <div class="dashboard-panel-heading">
+                <div>
+                    <p class="eyebrow">Build your pull list</p>
+                    <h2>Select Replenishment Flow</h2>
+                </div>
+            </div>
+
+            <form
+                action="/inventory/replenishment"
+                method="get"
+                class="report-filter-form"
+            >
+                <input type="hidden" name="page" value="1">
+
+                <div class="form-grid">
+                    <label class="field">
+                        <span>Replenish From</span>
+
+                        <select
+                            name="source_location"
+                            id="source-location"
+                            required
+                        >
+                            {% for source in source_choices %}
+                            <option
+                                value="{{ source.value }}"
+                                {% if source_location == source.value %}selected{% endif %}
+                            >
+                                {{ source.tier }} - {{ source.label }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </label>
+
+                    <label class="field">
+                        <span>Replenish To</span>
+
+                        <select
+                            name="destination_location_id"
+                            id="destination-location"
+                            required
+                        >
+                            {% for location in destination_choices %}
+                            <option
+                                value="{{ location.location_id }}"
+                                {% if destination_location_id == location.location_id %}selected{% endif %}
+                            >
+                                {% if backroom_location and location.location_id == backroom_location.location_id %}
+                                    RESERVE -
+                                {% else %}
+                                    PICKSLOT -
+                                {% endif %}
+                                {{ location.location_name }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </label>
+
+                    <label class="field">
+                        <span>Storefront Minimum</span>
+                        <input
+                            type="number"
+                            name="storefront_minimum"
+                            value="{{ storefront_minimum }}"
+                            min="1"
+                            max="999"
+                        >
+                    </label>
+
+                    <label class="field">
+                        <span>Back Stock Minimum</span>
+                        <input
+                            type="number"
+                            name="backstock_minimum"
+                            value="{{ backstock_minimum }}"
+                            min="1"
+                            max="999"
+                        >
+                    </label>
+
+                    <label class="field">
+                        <span>Rows Per Page</span>
+                        <select name="page_size">
+                            {% for size in [15, 25, 50, 100] %}
+                            <option
+                                value="{{ size }}"
+                                {% if pagination.page_size == size %}selected{% endif %}
+                            >
+                                {{ size }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </label>
+                </div>
+
+                <div class="filter-actions">
+                    <button type="submit" class="primary-button">
+                        Build Pull List
+                    </button>
+                </div>
+            </form>
+
+            {% if
+                selected_source_kind == "deep"
+                and storefront_location
+                and destination_location_id == storefront_location.location_id
+            %}
+            <div class="replenishment-warning">
+                <strong>Emergency flow only:</strong>
+                Deep Reserve → Storefront only shows products
+                with 0 in Storefront AND 0 in Store Back Room.
+            </div>
+            {% endif %}
+        </section>
+
+        <section class="summary-grid">
+            <div class="summary-card">
+                <div class="eyebrow">Pull-list products</div>
+                <div class="summary-value">
+                    {{ summary.ready_products }}
+                </div>
+            </div>
+
+            <div class="summary-card">
+                <div class="eyebrow">Suggested units</div>
+                <div class="summary-value">
+                    {{ summary.ready_units }}
+                </div>
+            </div>
+
+            <div class="summary-card emergency-card">
+                <div class="eyebrow">Emergency replenishment</div>
+                <div class="summary-value">
+                    {{ summary.emergency_products }}
+                </div>
+            </div>
+        </section>
+
+        <section class="dashboard-panel">
+            <div class="dashboard-panel-heading">
+                <div>
+                    <p class="eyebrow">Current work queue</p>
+                    <h2>
+                        {{ source_label }} → {{ destination_label }}
+                    </h2>
+                    <p>
+                        🚨 Emergency = Storefront 0 + Back Room 0
+                        + positive inventory in Deep Reserve.
+                    </p>
+                </div>
+            </div>
+
+            {% if rows %}
+            <div class="table-wrap">
+                <table class="replenishment-table">
+                    <thead>
+                        <tr>
+                            <th>Status</th>
+                            <th>Product</th>
+                            <th>Barcode</th>
+                            <th>From QOH</th>
+                            <th>To QOH</th>
+                            <th>Storefront</th>
+                            <th>Back Room</th>
+                            <th>Deep Reserve</th>
+                            <th>Suggested</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+
+                    <tbody>
+                        {% for row in rows %}
+                        <tr>
+                            <td>
+                                {% if row.emergency %}
+                                <span class="emergency-badge">
+                                    🚨 EMERGENCY
+                                </span>
+                                {% else %}
+                                <span class="normal-badge">
+                                    NORMAL
+                                </span>
+                                {% endif %}
+                            </td>
+
+                            <td>
+                                <strong>{{ row.product_name }}</strong>
+
+                                {% if row.brand %}
+                                <div>{{ row.brand }}</div>
+                                {% endif %}
+
+                                {% if row.source_breakdown %}
+                                <div class="source-breakdown">
+                                    {% for item in row.source_breakdown %}
+                                        {{ item.location_name }}
+                                        {% if item.container_id %}
+                                            / {{ item.container_id }}
+                                        {% endif %}
+                                        : {{ item.quantity }}
+                                        {% if not loop.last %} · {% endif %}
+                                    {% endfor %}
+                                </div>
+                                {% endif %}
+                            </td>
+
+                            <td>{{ row.barcode or "No barcode" }}</td>
+                            <td class="quantity-strong">{{ row.source_quantity }}</td>
+                            <td>{{ row.destination_quantity }}</td>
+                            <td>{{ row.storefront_quantity }}</td>
+                            <td>{{ row.backroom_quantity }}</td>
+                            <td>{{ row.deep_reserve_quantity }}</td>
+                            <td class="quantity-strong">{{ row.suggested_quantity }}</td>
+
+                            <td>
+                                <div class="row-actions">
+                                    {% if row.barcode and row.transfer_source_location_id %}
+                                    <a
+                                        class="primary-button link-button"
+                                        href="/inventory/transfer?barcode={{ row.barcode }}&source_location_id={{ row.transfer_source_location_id }}&destination_location_id={{ row.transfer_destination_location_id }}"
+                                    >
+                                        Transfer
+                                    </a>
+                                    {% endif %}
+
+                                    {% if
+                                        row.emergency
+                                        and storefront_location
+                                        and row.transfer_source_location_id
+                                        and row.barcode
+                                        and row.transfer_destination_location_id != storefront_location.location_id
+                                    %}
+                                    <a
+                                        class="secondary-button link-button"
+                                        href="/inventory/transfer?barcode={{ row.barcode }}&source_location_id={{ row.transfer_source_location_id }}&destination_location_id={{ storefront_location.location_id }}"
+                                    >
+                                        🚨 To Storefront
+                                    </a>
+                                    {% endif %}
+                                </div>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="replenishment-pagination">
+                <div>
+                    Showing {{ pagination.start_row }}
+                    - {{ pagination.end_row }}
+                    of {{ pagination.total_rows }}
+                </div>
+
+                <div class="replenishment-pagination-actions">
+                    {% if pagination.has_previous %}
+                    <a
+                        class="secondary-button link-button"
+                        href="/inventory/replenishment?source_location={{ source_location }}&destination_location_id={{ destination_location_id }}&storefront_minimum={{ storefront_minimum }}&backstock_minimum={{ backstock_minimum }}&page_size={{ pagination.page_size }}&page={{ pagination.previous_page }}"
+                    >
+                        Previous
+                    </a>
+                    {% endif %}
+
+                    <strong>
+                        Page {{ pagination.page }}
+                        of {{ pagination.total_pages }}
+                    </strong>
+
+                    {% if pagination.has_next %}
+                    <a
+                        class="secondary-button link-button"
+                        href="/inventory/replenishment?source_location={{ source_location }}&destination_location_id={{ destination_location_id }}&storefront_minimum={{ storefront_minimum }}&backstock_minimum={{ backstock_minimum }}&page_size={{ pagination.page_size }}&page={{ pagination.next_page }}"
+                    >
+                        Next
+                    </a>
+                    {% endif %}
+                </div>
+            </div>
+
+            {% else %}
+            <div class="empty-state">
+                <h3>No replenishment work for this flow</h3>
+                <p>
+                    Try another source/destination combination
+                    or adjust the minimum.
+                </p>
+            </div>
+            {% endif %}
+        </section>
+
+    </main>
+
+    <script>
+        const sourceSelect = document.getElementById(
+            "source-location"
+        );
+
+        const destinationSelect = document.getElementById(
+            "destination-location"
+        );
+
+        const backroomId = (
+            {% if backroom_location %}
+                "{{ backroom_location.location_id }}"
+            {% else %}
+                ""
+            {% endif %}
+        );
+
+        const storefrontId = (
+            {% if storefront_location %}
+                "{{ storefront_location.location_id }}"
+            {% else %}
+                ""
+            {% endif %}
+        );
+
+        sourceSelect?.addEventListener(
+            "change",
+            () => {
+                if (!destinationSelect) {
+                    return;
+                }
+
+                if (sourceSelect.value === backroomId) {
+                    destinationSelect.value = storefrontId;
+                } else {
+                    destinationSelect.value = backroomId;
+                }
+            }
+        );
+    </script>
+</body>
+</html>

@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Container → Shelf | BrooksHouse OS</title>
+<style>
+:root{font-family:Inter,system-ui,-apple-system,Segoe UI,sans-serif;color:#172033;background:#f3f6fb}
+*{box-sizing:border-box}
+body{margin:0;padding:16px}
+.wrap{max-width:980px;margin:auto}
+h1{margin:0 0 4px;font-size:clamp(1.7rem,5vw,2.5rem)}
+.sub{color:#5f6b7a;margin:0 0 18px}
+.card{background:#fff;border:1px solid #dbe2ea;border-radius:16px;padding:16px;margin:12px 0;box-shadow:0 4px 16px rgba(20,35,60,.06)}
+.step{font-weight:800;font-size:.82rem;letter-spacing:.08em;text-transform:uppercase;color:#5f6b7a}
+.scanrow{display:grid;grid-template-columns:1fr auto;gap:10px;margin-top:8px}
+input{width:100%;font-size:1.15rem;padding:14px;border:2px solid #c9d3df;border-radius:12px}
+button,.btn{border:0;border-radius:12px;padding:14px 18px;font-size:1rem;font-weight:800;cursor:pointer;text-decoration:none;display:inline-block}
+.primary{background:#172033;color:white}
+.move{background:#178046;color:white;width:100%;font-size:1.15rem}
+.secondary{background:#e9eef5;color:#172033}
+.danger{background:#f7e4e4;color:#9b2323}
+.banner{padding:13px;border-radius:12px;margin-top:10px;font-weight:800}
+.ok{background:#e6f6ec;color:#17633a}
+.err{background:#fdeaea;color:#8c2222}
+.info{background:#edf3ff;color:#244f95}
+.summary{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}
+.pill{background:#eef2f7;border-radius:999px;padding:7px 11px;font-weight:700}
+.items{display:grid;gap:8px;margin-top:12px}
+.item{border:1px solid #dde4ec;border-radius:12px;padding:11px;display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center}
+.item strong{display:block}
+.meta{font-size:.9rem;color:#687587}
+.qty{font-size:1.05rem;font-weight:900;white-space:nowrap}
+.selected{border-color:#55a978;background:#f2fbf5}
+.small{font-size:.9rem;color:#667}
+.destination{font-size:1.25rem;font-weight:900}
+.hidden{display:none!important}
+.toplinks{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+@media(max-width:600px){body{padding:10px}.card{padding:13px}.scanrow{grid-template-columns:1fr}.scanrow button{width:100%}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div class="toplinks">
+  <a class="btn secondary" href="/admin/location-builder">← Location Builder</a>
+  <a class="btn secondary" href="/inventory/search">Inventory Search</a>
+</div>
+<h1>📦 Container → Shelf</h1>
+<p class="sub">Scan one representative barcode per product. BrooksHouse moves the quantity already counted in the old container.</p>
+
+<div id="message"></div>
+
+<section class="card">
+  <div class="step">1 · Old container</div>
+  <div class="scanrow">
+    <input id="source" autocomplete="off" autocapitalize="characters" placeholder="Scan BR-TOTE-, TOTE-, container ID…">
+    <button class="primary" id="loadSource">Load Container</button>
+  </div>
+  <div id="sourceSummary"></div>
+  <div id="sourceItems" class="items"></div>
+</section>
+
+<section class="card">
+  <div class="step">2 · Select products already counted</div>
+  <p class="small">Scan <b>one barcode from each product</b>. Repeated scans do not add quantity.</p>
+  <div class="scanrow">
+    <input id="productScan" inputmode="none" autocomplete="off" placeholder="Scan one product barcode…" disabled>
+    <button class="primary" id="addProduct" disabled>Select Item</button>
+  </div>
+  <div id="selectedSummary"></div>
+  <div id="selectedItems" class="items"></div>
+</section>
+
+<section class="card">
+  <div class="step">3 · New shelf / section</div>
+  <div class="scanrow">
+    <input id="destination" autocomplete="off" autocapitalize="characters" placeholder="Scan LOC-SF-… label" disabled>
+    <button class="primary" id="checkDestination" disabled>Set Destination</button>
+  </div>
+  <div id="destinationSummary"></div>
+</section>
+
+<section class="card">
+  <div class="step">4 · Move existing quantities</div>
+  <div id="review" class="small">Load a container, select products, and scan the destination.</div>
+  <button id="commit" class="move" disabled>MOVE SELECTED INVENTORY</button>
+</section>
+</div>
+
+<script>
+const source=document.getElementById('source');
+const productScan=document.getElementById('productScan');
+const destination=document.getElementById('destination');
+const msg=document.getElementById('message');
+let sourceData=null;
+let selected=new Map();
+let destinationData=null;
+
+function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function notice(text,type='info'){msg.innerHTML=`<div class="banner ${type}">${esc(text)}</div>`; if(type==='ok')setTimeout(()=>{if(msg.textContent===text)msg.innerHTML=''},5000)}
+async function getJSON(url){const r=await fetch(url);return await r.json()}
+
+function renderSource(){
+ const sum=document.getElementById('sourceSummary'), list=document.getElementById('sourceItems');
+ if(!sourceData){sum.innerHTML='';list.innerHTML='';return}
+ sum.innerHTML=`<div class="summary"><span class="pill">${esc(sourceData.container_id)}</span><span class="pill">${sourceData.product_count} products</span><span class="pill">${sourceData.unit_count} units</span></div>`;
+ const selectedIds=new Set(selected.keys());
+ list.innerHTML=sourceData.items.map(x=>`<div class="item ${selectedIds.has(x.product_id)?'selected':''}"><div><strong>${esc(x.product_name)}</strong><div class="meta">${esc(x.barcode||'No barcode')} · ${esc((x.source_locations||[]).join(', '))}${x.reserved?` · ⚠ ${x.reserved} reserved`:''}</div></div><div class="qty">Qty ${x.quantity}</div></div>`).join('');
+}
+
+function renderSelected(){
+ const list=document.getElementById('selectedItems'), sum=document.getElementById('selectedSummary');
+ const vals=[...selected.values()];
+ const units=vals.reduce((a,x)=>a+Number(x.quantity||0),0);
+ sum.innerHTML=vals.length?`<div class="summary"><span class="pill">${vals.length} selected products</span><span class="pill">${units} existing units</span><button class="btn danger" onclick="clearSelected()">Clear Selected</button></div>`:'';
+ list.innerHTML=vals.map(x=>`<div class="item selected"><div><strong>${esc(x.product_name)}</strong><div class="meta">${esc(x.barcode)}</div></div><div><span class="qty">Qty ${x.quantity}</span> <button class="btn danger" onclick="removeSelected(${x.product_id})">×</button></div></div>`).join('');
+ renderSource(); updateReview();
+}
+window.removeSelected=id=>{selected.delete(id);renderSelected()}
+window.clearSelected=()=>{selected.clear();renderSelected()}
+
+function renderDestination(){
+ const box=document.getElementById('destinationSummary');
+ if(!destinationData){box.innerHTML='';return}
+ box.innerHTML=`<div class="banner ok"><div class="small">ACTIVE DESTINATION</div><div class="destination">${esc(destinationData.location_code)}</div><div>${esc(destinationData.zone_name||'')} ${destinationData.section?`· Section ${esc(destinationData.section)}`:''} ${destinationData.level?`· Level ${esc(destinationData.level)}`:''}</div></div>`;
+ updateReview();
+}
+
+function updateReview(){
+ const review=document.getElementById('review'), commit=document.getElementById('commit');
+ const vals=[...selected.values()];
+ const units=vals.reduce((a,x)=>a+Number(x.quantity||0),0);
+ if(sourceData&&vals.length&&destinationData){
+   review.innerHTML=`<b>${esc(sourceData.container_id)}</b> → <b>${esc(destinationData.location_code)}</b><br>${vals.length} products · ${units} existing units`;
+   commit.disabled=false;
+ }else{
+   review.textContent='Load a container, select products, and scan the destination.';
+   commit.disabled=true;
+ }
+}
+
+async function loadSource(){
+ const value=source.value.trim();
+ if(!value)return;
+ notice('Loading container…');
+ const data=await getJSON(`/inventory/container-to-shelf/source?container_id=${encodeURIComponent(value)}`);
+ if(!data.found){notice(data.error||'Container not found.','err');return}
+ sourceData=data; source.value=data.container_id; selected.clear(); destinationData=null;
+ productScan.disabled=false; document.getElementById('addProduct').disabled=false;
+ destination.disabled=false; document.getElementById('checkDestination').disabled=false;
+ renderSource();renderSelected();renderDestination();notice(`${data.product_count} products / ${data.unit_count} units loaded from ${data.container_id}.`,'ok');
+ productScan.focus();
+}
+
+async function selectProduct(){
+ if(!sourceData)return;
+ const barcode=productScan.value.trim(); if(!barcode)return;
+ const data=await getJSON(`/inventory/container-to-shelf/select?container_id=${encodeURIComponent(sourceData.container_id)}&barcode=${encodeURIComponent(barcode)}`);
+ productScan.value='';
+ if(!data.found){notice(data.error||'Product not found in this container.','err');productScan.focus();return}
+ if(selected.has(data.product_id)){notice(`${data.product_name} is already selected.`,'info');productScan.focus();return}
+ selected.set(data.product_id,data);renderSelected();
+ notice(`${data.product_name}: selected existing Qty ${data.quantity}.`,'ok');productScan.focus();
+}
+
+async function setDestination(){
+ const value=destination.value.trim(); if(!value)return;
+ const data=await getJSON(`/inventory/container-to-shelf/destination?value=${encodeURIComponent(value)}`);
+ if(!data.found){notice(data.error||'Destination not found.','err');return}
+ destinationData=data; destination.value=data.location_code; renderDestination();
+ notice(`Destination set to ${data.location_code}.`,'ok');
+}
+
+document.getElementById('loadSource').onclick=loadSource;
+document.getElementById('addProduct').onclick=selectProduct;
+document.getElementById('checkDestination').onclick=setDestination;
+source.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();loadSource()}});
+productScan.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();selectProduct()}});
+destination.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();setDestination()}});
+
+document.getElementById('commit').onclick=async()=>{
+ if(!sourceData||!destinationData||!selected.size)return;
+ const vals=[...selected.values()];
+ const units=vals.reduce((a,x)=>a+Number(x.quantity||0),0);
+ if(!confirm(`Move ${vals.length} products / ${units} existing units from ${sourceData.container_id} to ${destinationData.location_code}?`))return;
+ const btn=document.getElementById('commit');btn.disabled=true;btn.textContent='MOVING…';
+ try{
+   const r=await fetch('/inventory/container-to-shelf/commit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({container_id:sourceData.container_id,destination:destinationData.location_code,product_ids:vals.map(x=>x.product_id)})});
+   const data=await r.json();
+   if(!data.ok){notice(data.error||'Move failed.','err');return}
+   notice(`Moved ${data.moved_products} products / ${data.moved_units} units to ${data.destination}. Reference ${data.reference}.`,'ok');
+   sourceData=data.remaining;selected.clear();destinationData=null;destination.value='';
+   renderSource();renderSelected();renderDestination();
+   if(sourceData.product_count===0){productScan.disabled=true;destination.disabled=true;notice(`${sourceData.container_id} is now empty. All recorded inventory has been relocated.`,'ok')}
+   else productScan.focus();
+ }catch(e){notice(`Move failed: ${e}`,'err')}
+ finally{btn.textContent='MOVE SELECTED INVENTORY';updateReview()}
+};
+source.focus();
+</script>
+</body>
+</html>

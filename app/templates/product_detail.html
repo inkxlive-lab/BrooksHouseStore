@@ -1,0 +1,657 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>{{ product.product_name }} | BrooksHouse Store</title>
+
+    <link
+        rel="stylesheet"
+        href="/static/store.css"
+    >
+    <style>
+        .product-edit-actions { display:flex; gap:10px; flex-wrap:wrap; margin:18px 0 0; }
+        .edit-product-button { background:#991b1b; color:#fff; font-weight:800; }
+        .product-edit-panel { margin:0 0 22px; padding:22px; background:#fff; border:1px solid #decfc3; border-radius:14px; }
+        .product-edit-panel.hidden { display:none; }
+        .product-edit-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
+        .product-edit-field { display:flex; flex-direction:column; gap:6px; }
+        .product-edit-field.full-width { grid-column:1 / -1; }
+        .product-edit-field label { font-weight:800; }
+        .product-edit-field input, .product-edit-field textarea { padding:11px; border:1px solid #b9afa8; border-radius:8px; font:inherit; }
+        .product-edit-field textarea { min-height:120px; resize:vertical; }
+        .product-edit-checks { display:flex; gap:22px; flex-wrap:wrap; margin-top:16px; }
+        .product-edit-checks label { font-weight:800; }
+        .edit-images { grid-column:1 / -1; padding:14px; border:1px solid #d6ccc4; border-radius:10px; background:#faf7f5; }
+        .edit-image-list { display:flex; flex-wrap:wrap; gap:14px; margin-top:10px; }
+        .edit-image-option { width:150px; padding:9px; border:1px solid #d6ccc4; border-radius:9px; background:#fff; }
+        .edit-image-option img { width:100%; height:105px; object-fit:contain; display:block; margin-bottom:8px; background:#fff; }
+        .edit-image-option label { color:#991b1b; font-weight:800; cursor:pointer; }
+        .fallback-delete-option { margin-top:10px; padding:10px; border:1px solid #fca5a5; border-radius:8px; background:#fff1f2; }
+        .placement-table { width:100%; border-collapse:collapse; }
+        .placement-table th, .placement-table td { padding:11px; border-bottom:1px solid #e5ddd7; text-align:left; vertical-align:top; }
+        .placement-table th { background:#29211e; color:#fff; }
+        .placement-form { min-width:290px; padding:10px; border:1px solid #d6ccc4; border-radius:9px; background:#faf7f5; }
+        .placement-form-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+        .placement-form label { display:flex; flex-direction:column; gap:4px; font-size:13px; font-weight:800; }
+        .placement-form input, .placement-form select { padding:8px; border:1px solid #b9afa8; border-radius:7px; }
+        .placement-form .full-width { grid-column:1 / -1; }
+        .fix-placement-button { background:#7f1d1d; color:#fff; font-weight:800; width:100%; margin-top:8px; }
+        .placement-note { color:#57534e; font-size:13px; }
+        .save-product-button { background:#166534; color:#fff; font-weight:800; }
+        .cancel-product-button { background:#d6d3d1; color:#111827; font-weight:800; }
+        .product-message { margin:0 0 18px; padding:13px 16px; border-radius:10px; font-weight:800; }
+        .product-message.success { background:#dcfce7; color:#166534; border:1px solid #86efac; }
+        .product-message.error { background:#fee2e2; color:#991b1b; border:1px solid #fca5a5; }
+        @media (max-width:700px) { .product-edit-grid { grid-template-columns:1fr; } .product-edit-field.full-width { grid-column:auto; } }
+    </style>
+</head>
+
+<body>
+    <header class="store-header">
+        <div>
+            <p class="eyebrow">The BrooksHouse Store</p>
+            <h1>{{ product.product_name }}</h1>
+
+            <p class="subtitle">
+                {{ product.brand or "No brand entered" }}
+            </p>
+        </div>
+
+        <nav>
+            <a href="/storage-gallery">Storage Gallery</a>
+
+            <a href="/smart-scan">Smart Scan</a>
+
+            <a href="/channels/amazon/mapping">Amazon Mapping</a>
+            <a href="/dashboard">Dashboard</a>
+            <a href="/channels/shopify/reconcile">Shopify Compare</a>
+            <a href="/channels/shopify/storefront-import">Storefront Import</a>
+            <a href="/channels/shopify/settings">Shopify Settings</a>
+            <a href="/channels/shopify/approve">Approval Queue</a>
+            <a href="/inventory/search">Inventory Search</a>
+            <a href="/inventory/replenishment">
+                Replenishment
+            </a>
+            <a href="/scan">Scan Item</a>
+            <a href="/inventory/receive">Receive Inventory</a>
+            <a href="/inventory/transfer">Transfer Inventory</a>
+            <a href="/inventory/adjust">Adjust Inventory</a>
+            <a href="/products">All Products</a>
+            <a href="/products/add">Add Product</a>
+        </nav>
+    </header>
+
+    <main class="page-container">
+        {% if updated %}
+        <div class="product-message success">Product details were updated successfully.</div>
+        {% endif %}
+        {% if edit_error %}
+        <div class="product-message error">{{ edit_error }}</div>
+        {% endif %}
+        {% if placement_updated %}
+        <div class="product-message success">Inventory location/container was updated and added to transaction history.</div>
+        {% endif %}
+        {% if placement_error %}
+        <div class="product-message error">{{ placement_error }}</div>
+        {% endif %}
+
+        <section id="productEditPanel" class="product-edit-panel {% if not edit_mode %}hidden{% endif %}">
+            <p class="eyebrow">Product maintenance</p>
+            <h2>Edit Product Details</h2>
+            <form method="post" action="/products/{{ product.product_id }}/edit">
+                <div class="product-edit-grid">
+                    <div class="product-edit-field full-width">
+                        <label for="editProductName">Product name</label>
+                        <input id="editProductName" name="product_name" maxlength="200" required value="{{ product.product_name }}">
+                    </div>
+                    <div class="product-edit-field">
+                        <label for="editBarcode">Primary barcode</label>
+                        <input id="editBarcode" name="barcode" maxlength="50" required value="{{ primary_barcode_value }}">
+                    </div>
+                    <div class="product-edit-field">
+                        <label for="editBrand">Brand</label>
+                        <input id="editBrand" name="brand" maxlength="120" value="{{ product.brand or '' }}">
+                    </div>
+                    <div class="product-edit-field">
+                        <label for="editCategory">Category</label>
+                        <input id="editCategory" name="category" maxlength="100" value="{{ product.category or '' }}">
+                    </div>
+                    <div class="product-edit-field">
+                        <label for="editPackQuantity">Pack quantity</label>
+                        <input id="editPackQuantity" name="pack_quantity" type="number" min="1" step="1" required value="{{ product.pack_quantity }}">
+                    </div>
+                    <div class="product-edit-field">
+                        <label for="editSizeValue">Size value</label>
+                        <input id="editSizeValue" name="size_value" type="number" min="0" step="0.01" value="{{ product.size_value if product.size_value is not none else '' }}">
+                    </div>
+                    <div class="product-edit-field">
+                        <label for="editSizeUnit">Size unit</label>
+                        <input id="editSizeUnit" name="size_unit" maxlength="30" placeholder="oz, lb, in, count..." value="{{ product.size_unit or '' }}">
+                    </div>
+                    <div class="product-edit-field">
+                        <label for="editAverageCost">Average cost</label>
+                        <input id="editAverageCost" name="average_cost" type="number" min="0" step="0.01" value="{{ product.average_cost if product.average_cost is not none else '' }}">
+                    </div>
+                    <div class="product-edit-field">
+                        <label for="editStorePrice">Store price</label>
+                        <input id="editStorePrice" name="store_price" type="number" min="0" step="0.01" value="{{ product.store_price if product.store_price is not none else '' }}">
+                    </div>
+                    <div class="product-edit-field">
+                        <label for="editRetailPrice">Suggested retail</label>
+                        <input id="editRetailPrice" name="suggested_retail_price" type="number" min="0" step="0.01" value="{{ product.suggested_retail_price if product.suggested_retail_price is not none else '' }}">
+                    </div>
+                    <div class="product-edit-field full-width">
+                        <label for="editDescription">Description</label>
+                        <textarea id="editDescription" name="description">{{ product.description or '' }}</textarea>
+                    </div>
+                    {% if product.images or enrichment_image_url or walmart_image_url %}
+                    <div class="edit-images">
+                        <strong>Product pictures</strong>
+                        <p>Select any picture you want removed, then press Save Changes.</p>
+                        {% if product.images %}
+                        <div class="edit-image-list">
+                            {% for image in product.images %}
+                                {% set edit_image_source = image.image_url or image.image_path or image.url or image.source_url or image.external_url %}
+                                {% if edit_image_source %}
+                                <div class="edit-image-option">
+                                    <img src="{{ edit_image_source }}" alt="Product picture {{ loop.index }}">
+                                    <label>
+                                        <input type="checkbox" name="remove_image_ids" value="{{ image.image_id }}">
+                                        Delete this picture
+                                    </label>
+                                </div>
+                                {% endif %}
+                            {% endfor %}
+                        </div>
+                        {% endif %}
+                        {% if enrichment_image_url or walmart_image_url %}
+                        <div class="fallback-delete-option">
+                            <label>
+                                <input type="checkbox" name="remove_fallback_image" value="1">
+                                Delete the displayed {% if enrichment_image_url %}internet{% else %}Walmart{% endif %} picture
+                            </label>
+                            <div>This clears the saved fallback image URL for this product barcode.</div>
+                        </div>
+                        {% endif %}
+                    </div>
+                    {% endif %}
+                </div>
+                <div class="product-edit-checks">
+                    <label><input type="checkbox" name="taxable" value="1" {% if product.taxable %}checked{% endif %}> Taxable</label>
+                    <label><input type="checkbox" name="active" value="1" {% if product.active %}checked{% endif %}> Active product</label>
+                </div>
+                <div class="product-edit-actions">
+                    <button type="submit" class="save-product-button">Save Changes</button>
+                    <button type="button" class="cancel-product-button" onclick="toggleProductEditor(false)">Cancel</button>
+                </div>
+            </form>
+        </section>
+
+        <section id="inventory-placement" class="dashboard-panel product-history-panel">
+            <div class="dashboard-panel-heading">
+                <div>
+                    <p class="eyebrow">One-stop item repair</p>
+                    <h2>Fix Inventory Placement</h2>
+                    <p>Move all or part of a row, change its tote/container, or correct its count.</p>
+                </div>
+                <span class="dashboard-badge">{{ inventory_rows | length }}</span>
+            </div>
+
+            {% if inventory_rows %}
+            <div class="dashboard-table-wrap">
+                <table class="placement-table">
+                    <thead>
+                        <tr><th>Current location</th><th>Container ID</th><th>Quantity</th><th>Fix / Move</th></tr>
+                    </thead>
+                    <tbody>
+                        {% for inventory in inventory_rows %}
+                        <tr>
+                            <td>{{ inventory.location.location_name if inventory.location else "Unknown" }}</td>
+                            <td><strong>{{ inventory.container_id or "No container" }}</strong></td>
+                            <td><strong>{{ inventory.quantity_on_hand }}</strong>{% if inventory.quantity_reserved %}<div>{{ inventory.quantity_reserved }} reserved</div>{% endif %}</td>
+                            <td>
+                                <form class="placement-form" method="post" action="/products/{{ product.product_id }}/inventory/{{ inventory.inventory_id }}/fix">
+                                    <div class="placement-form-grid">
+                                        <label class="full-width">Action
+                                            <select name="action" onchange="updatePlacementForm(this)">
+                                                <option value="move">Move / change location or container</option>
+                                                <option value="correct_count">Correct the current count</option>
+                                            </select>
+                                        </label>
+                                        <label class="move-field">Quantity to move
+                                            <input name="quantity_to_move" type="number" min="1" max="{{ inventory.quantity_on_hand - inventory.quantity_reserved }}" value="{{ inventory.quantity_on_hand - inventory.quantity_reserved }}">
+                                        </label>
+                                        <label class="count-field" hidden>Correct quantity
+                                            <input name="corrected_quantity" type="number" min="0" value="{{ inventory.quantity_on_hand }}">
+                                        </label>
+                                        <label class="move-field">New location
+                                            <select name="destination_location_id">
+                                                {% for location in active_locations %}
+                                                <option value="{{ location.location_id }}" {% if location.location_id == inventory.location_id %}selected{% endif %}>{{ location.location_name }}</option>
+                                                {% endfor %}
+                                            </select>
+                                        </label>
+                                        <label class="move-field full-width">New container ID
+                                            <input name="destination_container_id" maxlength="120" value="{{ inventory.container_id or '' }}" placeholder="Leave blank for no container">
+                                        </label>
+                                        <label>Reason
+                                            <select name="reason">
+                                                <option value="placement_correction">Wrong location/container</option>
+                                                <option value="tote_audit">Tote audit</option>
+                                                <option value="count_correction">Count correction</option>
+                                                <option value="replenishment">Replenishment</option>
+                                                <option value="other">Other</option>
+                                            </select>
+                                        </label>
+                                        <label>Notes
+                                            <input name="notes" maxlength="500" placeholder="Optional details">
+                                        </label>
+                                    </div>
+                                    <p class="placement-note">Storefront should only be selected when the merchandise is physically on the sales floor.</p>
+                                    <button type="submit" class="fix-placement-button" onclick="return confirm('Save this inventory correction?')">Save Inventory Fix</button>
+                                </form>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div class="empty-history"><h3>No inventory rows</h3><p>Receive inventory first, then placement controls will appear here.</p></div>
+            {% endif %}
+        </section>
+
+        <section class="product-detail-layout">
+            <article class="product-image-card">
+                {% if primary_image_url %}
+                <img
+                    src="{{ primary_image_url }}"
+                    alt="{{ product.product_name }}"
+                >
+                {% else %}
+                <div class="image-placeholder">
+                    <span>No product image</span>
+                </div>
+                {% endif %}
+            </article>
+
+            <article class="product-detail-card">
+                <div class="detail-row">
+                    <span>Product ID</span>
+                    <strong>{{ product.product_id }}</strong>
+                </div>
+
+                <div class="detail-row">
+                    <span>Barcode</span>
+
+                    <strong>
+                        {% if product.barcodes %}
+                            {{ product.barcodes[0].barcode }}
+                        {% else %}
+                            Not entered
+                        {% endif %}
+                    </strong>
+                </div>
+
+                <div class="detail-row">
+                    <span>Category</span>
+                    <strong>{{ product.category or "Uncategorized" }}</strong>
+                </div>
+
+                <div class="detail-row">
+                    <span>Size</span>
+
+                    <strong>
+                        {% if product.size_value is not none %}
+                            {{ product.size_value }}
+                            {{ product.size_unit or "" }}
+                        {% else %}
+                            Not entered
+                        {% endif %}
+                    </strong>
+                </div>
+
+                <div class="detail-row">
+                    <span>Pack quantity</span>
+                    <strong>{{ product.pack_quantity }}</strong>
+                </div>
+
+                <div class="detail-row">
+                    <span>Average cost</span>
+
+                    <strong>
+                        {% if product.average_cost is not none %}
+                            ${{ "%.2f" | format(product.average_cost) }}
+                        {% else %}
+                            Not entered
+                        {% endif %}
+                    </strong>
+                </div>
+
+                <div class="detail-row price-row">
+                    <span>Store price</span>
+
+                    <strong>
+                        {% if product.store_price is not none %}
+                            ${{ "%.2f" | format(product.store_price) }}
+                        {% else %}
+                            Not priced
+                        {% endif %}
+                    </strong>
+                </div>
+
+                <div class="detail-row">
+                    <span>Suggested retail</span>
+
+                    <strong>
+                        {% if product.suggested_retail_price is not none %}
+                            ${{ "%.2f" | format(product.suggested_retail_price) }}
+                        {% else %}
+                            Not entered
+                        {% endif %}
+                    </strong>
+                </div>
+
+                <div class="detail-row">
+                    <span>Quantity on hand</span>
+
+                    <strong>
+                        {{
+                            product.inventory_records
+                            | sum(attribute="quantity_on_hand")
+                        }}
+                    </strong>
+                </div>
+
+                {% if product.description %}
+                <div class="description-block">
+                    <span>Description</span>
+                    <p>{{ product.description }}</p>
+                </div>
+                {% endif %}
+                <div class="product-edit-actions">
+                    <button type="button" class="edit-product-button" onclick="toggleProductEditor(true)">Edit Product</button>
+                </div>
+            </article>
+        </section>
+    
+        
+        <section class="dashboard-panel product-image-gallery">
+            <div class="dashboard-panel-heading">
+                <div>
+                    <p class="eyebrow">Product pictures</p>
+
+                    <h2>Image Gallery</h2>
+
+                    <p>
+                        Shopify and locally stored images for this product.
+                    </p>
+                </div>
+
+                <span class="dashboard-badge">
+                    {{ display_image_count }}
+                </span>
+            </div>
+
+            {% if product.images %}
+            <div class="product-gallery-grid">
+                {% for image in product.images %}
+                    {% set image_source =
+                        image.image_url
+                        or image.image_path
+                        or image.url
+                        or image.source_url
+                        or image.external_url
+                    %}
+
+                    {% if image_source %}
+                    <figure
+                        class="
+                            product-gallery-item
+                            {% if image.is_primary %}
+                                primary-product-image
+                            {% endif %}
+                        "
+                    >
+                        <a
+                            href="{{ image_source }}"
+                            target="_blank"
+                            rel="noopener"
+                        >
+                            <img
+                                src="{{ image_source }}"
+                                alt="{{ image.alt_text or product.product_name }}"
+                                loading="lazy"
+                            >
+                        </a>
+
+                        <figcaption>
+                            {% if image.is_primary %}
+                            <span class="primary-image-badge">
+                                Primary image
+                            </span>
+                            {% endif %}
+
+                            <span>
+                                {{
+                                    image.alt_text
+                                    or product.product_name
+                                }}
+                            </span>
+                        </figcaption>
+                    </figure>
+                    {% endif %}
+                {% endfor %}
+            </div>
+            {% elif enrichment_image_url or walmart_image_url %}
+            {% set fallback_image_url =
+                enrichment_image_url or walmart_image_url
+            %}
+            <div class="product-gallery-grid">
+                <figure class="product-gallery-item primary-product-image">
+                    <a href="{{ fallback_image_url }}" target="_blank" rel="noopener">
+                        <img
+                            src="{{ fallback_image_url }}"
+                            alt="{{ product.product_name }}"
+                            loading="lazy"
+                        >
+                    </a>
+                    <figcaption>
+                        <span class="primary-image-badge">
+                            {% if enrichment_image_url %}
+                                Internet image
+                            {% else %}
+                                Walmart image
+                            {% endif %}
+                        </span>
+                        <span>{{ product.product_name }}</span>
+                    </figcaption>
+                </figure>
+            </div>
+            {% else %}
+            <div class="empty-product-gallery">
+                <div class="large-image-placeholder">
+                    No product image available
+                </div>
+
+                <p>
+                    Images imported from Shopify will appear here.
+                </p>
+            </div>
+            {% endif %}
+        </section>
+
+
+        <section class="dashboard-panel product-history-panel">
+            <div class="dashboard-panel-heading">
+                <div>
+                    <p class="eyebrow">Inventory audit trail</p>
+
+                    <h2>Transaction History</h2>
+
+                    <p>
+                        Receiving, transfers, and adjustments for this
+                        product.
+                    </p>
+                </div>
+
+                <span class="dashboard-badge">
+                    {{ transaction_history | length }}
+                </span>
+            </div>
+
+            {% if transaction_history %}
+            <div class="dashboard-table-wrap">
+                <table class="dashboard-table transaction-history-table">
+                    <thead>
+                        <tr>
+                            <th>Transaction</th>
+                            <th>Location</th>
+                            <th>Quantity Change</th>
+                            <th>Unit Cost</th>
+                            <th>Performed By</th>
+                            <th>Reference</th>
+                            <th>Notes</th>
+                            <th>Record</th>
+                        </tr>
+                    </thead>
+
+                    <tbody>
+                        {% for transaction in transaction_history %}
+                        <tr>
+                            <td>
+                                <span
+                                    class="
+                                        transaction-type
+                                        transaction-{{ transaction.transaction_type }}
+                                    "
+                                >
+                                    {{
+                                        transaction.transaction_type
+                                        | replace("_", " ")
+                                        | title
+                                    }}
+                                </span>
+                            </td>
+
+                            <td>
+                                {% if transaction.location %}
+                                    {{ transaction.location.location_name }}
+                                {% else %}
+                                    Unknown location
+                                {% endif %}
+                            </td>
+
+                            <td>
+                                <strong
+                                    class="
+                                        {% if transaction.quantity_change > 0 %}
+                                            positive-change
+                                        {% elif transaction.quantity_change < 0 %}
+                                            negative-change
+                                        {% endif %}
+                                    "
+                                >
+                                    {% if transaction.quantity_change > 0 %}
+                                        +{{ transaction.quantity_change }}
+                                    {% else %}
+                                        {{ transaction.quantity_change }}
+                                    {% endif %}
+                                </strong>
+                            </td>
+
+                            <td>
+                                {% if transaction.unit_cost is not none %}
+                                    ${{ "%.2f" | format(transaction.unit_cost) }}
+                                {% else %}
+                                    —
+                                {% endif %}
+                            </td>
+
+                            <td>
+                                {{ transaction.performed_by_name or "Unknown / Legacy" }}
+                                {% if transaction.performed_by_user_id %}
+                                <div class="transaction-date">
+                                    User ID {{ transaction.performed_by_user_id }}
+                                    {% if transaction.performed_by_role %}
+                                        · {{ transaction.performed_by_role | replace("_", " ") | title }}
+                                    {% endif %}
+                                </div>
+                                {% endif %}
+                            </td>
+
+                            <td>
+                                {{
+                                    transaction.reference_number
+                                    or "—"
+                                }}
+                            </td>
+
+                            <td class="transaction-notes">
+                                {{ transaction.notes or "—" }}
+                            </td>
+
+                            <td>
+                                #{{ transaction.transaction_id }}
+
+                                {% if transaction.created_at %}
+                                <div class="transaction-date">
+                                    {{ transaction.created_at }}
+                                </div>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div class="empty-history">
+                <h3>No inventory activity yet</h3>
+
+                <p>
+                    Receiving, transfer, and adjustment records will
+                    appear here.
+                </p>
+
+                <a
+                    class="primary-button link-button"
+                    href="/inventory/receive"
+                >
+                    Receive Inventory
+                </a>
+            </div>
+            {% endif %}
+        </section>
+
+    </main>
+
+    <script
+        src="/static/product-channel-badges.js"
+        defer
+    ></script>
+    <script>
+        function toggleProductEditor(show) {
+            const panel = document.getElementById("productEditPanel");
+            panel.classList.toggle("hidden", !show);
+            if (show) {
+                panel.scrollIntoView({ behavior: "smooth", block: "start" });
+                document.getElementById("editProductName").focus();
+            }
+        }
+        function updatePlacementForm(select) {
+            const form = select.closest("form");
+            const correcting = select.value === "correct_count";
+            form.querySelectorAll(".move-field").forEach(element => element.hidden = correcting);
+            form.querySelectorAll(".count-field").forEach(element => element.hidden = !correcting);
+        }
+    </script>
+
+</body>
+</html>

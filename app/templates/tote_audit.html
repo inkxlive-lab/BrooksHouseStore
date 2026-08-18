@@ -1,0 +1,1142 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>Tote Audit | BrooksHouse Store</title>
+
+    <link
+        rel="stylesheet"
+        href="/static/store.css"
+    >
+
+    <style>
+        .audit-card {
+            margin-bottom: 20px;
+        }
+
+        .audit-lock {
+            padding: 12px;
+            margin-top: 12px;
+            font-weight: 700;
+            border: 2px solid #198754;
+            border-radius: 8px;
+            display: none;
+        }
+
+        .audit-summary {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 14px;
+            margin: 14px 0;
+        }
+
+        .audit-summary-box {
+            padding: 10px 14px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+        }
+
+        .audit-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .audit-table th,
+        .audit-table td {
+            padding: 8px;
+            border-bottom: 1px solid #ddd;
+            text-align: left;
+        }
+
+        .audit-diff-zero {
+            font-weight: 700;
+        }
+
+        .audit-diff-bad {
+            font-weight: 700;
+        }
+
+        #audit-scan-panel {
+            display: none;
+        }
+
+        #audit-review-panel {
+            display: none;
+        }
+
+        .audit-warning {
+            padding: 12px;
+            margin: 12px 0;
+            border: 2px solid #b26a00;
+            border-radius: 8px;
+            display: none;
+        }
+    </style>
+</head>
+
+<body>
+
+<header class="store-header">
+    <div>
+        <p class="eyebrow">
+            The BrooksHouse Store
+        </p>
+
+        <h1>Tote Audit</h1>
+
+        <p class="subtitle">
+            Physically count a tote and reconcile
+            BrooksHouse inventory.
+        </p>
+    </div>
+
+    <nav>
+        <a href="/dashboard">Dashboard</a>
+        <a href="/inventory/search">Inventory Search</a>
+        <a href="/inventory/replenishment">Replenishment</a>
+        <a href="/inventory/adjust/batch">Batch Scan</a>
+        <a href="/smart-scan">Smart Scan</a>
+        <a href="/storage-gallery">Storage Gallery</a>
+    </nav>
+</header>
+
+<main class="page-container">
+
+    <section class="form-card audit-card">
+
+        <div class="section-heading">
+            <div>
+                <h2>1. Select Location & Tote</h2>
+
+                <p>
+                    The tote must already exist
+                    systematically at the selected location.
+                </p>
+            </div>
+        </div>
+
+        <div class="form-grid">
+
+            <label class="field">
+                <span>Audit Location</span>
+
+                <select id="audit-location">
+                    <option value="">
+                        Select location
+                    </option>
+
+                    {% for location in locations %}
+                    <option
+                        value="{{ location.location_id }}"
+                    >
+                        {{ location.location_name }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </label>
+
+            <label class="field">
+                <span>Tote Barcode</span>
+
+                <input
+                    id="audit-tote"
+                    type="text"
+                    placeholder="BR-TOTE-016"
+                    autocomplete="off"
+                >
+            </label>
+
+            <label class="field">
+                <span>Reason Code</span>
+
+                <select
+                    id="audit-reason"
+                    disabled
+                >
+                    <option
+                        value="Found Inventory"
+                        selected
+                    >
+                        Found Inventory
+                    </option>
+                </select>
+            </label>
+
+        </div>
+
+        <div class="form-actions">
+            <button
+                type="button"
+                id="verify-tote"
+                class="primary-button"
+            >
+                Verify Tote
+            </button>
+        </div>
+
+        <div
+            id="tote-status"
+            class="audit-lock"
+        ></div>
+
+    </section>
+
+
+    <section
+        id="audit-scan-panel"
+        class="form-card audit-card"
+    >
+
+        <div class="section-heading">
+            <div>
+                <h2>2. Rapid Scan Physical Contents</h2>
+
+                <p>
+                    Scan every unit physically
+                    inside the tote.
+                </p>
+            </div>
+        </div>
+
+        <div class="form-grid">
+
+            <label class="field">
+                <span>Barcode</span>
+
+                <input
+                    id="audit-barcode"
+                    type="text"
+                    autocomplete="off"
+                >
+            </label>
+
+            <label class="field">
+                <span>Quantity</span>
+
+                <input
+                    id="audit-quantity"
+                    type="number"
+                    min="1"
+                    value="1"
+                >
+            </label>
+
+        </div>
+
+        <div class="form-actions">
+
+            <button
+                type="button"
+                id="audit-add"
+                class="primary-button"
+            >
+                Add
+            </button>
+
+            <button
+                type="button"
+                id="audit-clear"
+                class="secondary-button"
+            >
+                Clear Physical Count
+            </button>
+
+        </div>
+
+        <p id="audit-scan-status"></p>
+
+        <div class="audit-summary">
+
+            <div class="audit-summary-box">
+                Products:
+                <strong id="physical-products">0</strong>
+            </div>
+
+            <div class="audit-summary-box">
+                Units:
+                <strong id="physical-units">0</strong>
+            </div>
+
+        </div>
+
+        <div class="dashboard-table-wrap">
+            <table class="audit-table">
+                <thead>
+                    <tr>
+                        <th>Product</th>
+                        <th>Barcode</th>
+                        <th>Counted</th>
+                        <th></th>
+                    </tr>
+                </thead>
+
+                <tbody id="physical-lines">
+                    <tr>
+                        <td colspan="4">
+                            No merchandise scanned yet.
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="form-actions">
+            <button
+                type="button"
+                id="review-audit"
+                class="primary-button"
+            >
+                Review Audit
+            </button>
+        </div>
+
+    </section>
+
+
+    <section
+        id="audit-review-panel"
+        class="form-card audit-card"
+    >
+
+        <div class="section-heading">
+            <div>
+                <h2>3. Review & Confirm</h2>
+            </div>
+        </div>
+
+        <div class="audit-summary">
+            <div class="audit-summary-box">
+                System Units:
+                <strong id="system-units">0</strong>
+            </div>
+
+            <div class="audit-summary-box">
+                Physical Units:
+                <strong id="review-physical-units">0</strong>
+            </div>
+
+            <div class="audit-summary-box">
+                Differences:
+                <strong id="difference-count">0</strong>
+            </div>
+        </div>
+
+        <div
+            id="missing-warning"
+            class="audit-warning"
+        ></div>
+
+        <div class="dashboard-table-wrap">
+            <table class="audit-table">
+                <thead>
+                    <tr>
+                        <th>Product</th>
+                        <th>System</th>
+                        <th>Counted</th>
+                        <th>Difference</th>
+                    </tr>
+                </thead>
+
+                <tbody id="audit-review-body"></tbody>
+            </table>
+        </div>
+
+        <div class="form-actions">
+
+            <button
+                type="button"
+                id="back-to-count"
+                class="secondary-button"
+            >
+                Back to Count
+            </button>
+
+            <button
+                type="button"
+                id="save-audit"
+                class="primary-button"
+            >
+                Confirm & Save Audit
+            </button>
+
+        </div>
+
+        <p id="save-status"></p>
+
+    </section>
+
+</main>
+
+
+<script src="/static/offline-mode.js"></script>
+<script>
+
+const locationSelect =
+    document.querySelector("#audit-location");
+
+const toteInput =
+    document.querySelector("#audit-tote");
+
+const verifyButton =
+    document.querySelector("#verify-tote");
+
+const toteStatus =
+    document.querySelector("#tote-status");
+
+const scanPanel =
+    document.querySelector("#audit-scan-panel");
+
+const reviewPanel =
+    document.querySelector("#audit-review-panel");
+
+const barcodeInput =
+    document.querySelector("#audit-barcode");
+
+const quantityInput =
+    document.querySelector("#audit-quantity");
+
+const addButton =
+    document.querySelector("#audit-add");
+
+const scanStatus =
+    document.querySelector("#audit-scan-status");
+
+const physicalBody =
+    document.querySelector("#physical-lines");
+
+const reviewBody =
+    document.querySelector("#audit-review-body");
+
+let systemItems = [];
+let countedItems = [];
+
+let lockedLocationId = null;
+let lockedContainerId = "";
+
+let scanInProgress = false;
+let barcodeScanTimer;
+
+
+function cleanBarcode(value) {
+    return String(value || "")
+        .replace(/\D/g, "");
+}
+
+
+function physicalUnitTotal() {
+    return countedItems.reduce(
+        (total, item) =>
+            total + Number(item.quantity || 0),
+        0
+    );
+}
+
+
+function renderPhysical() {
+
+    physicalBody.innerHTML = "";
+
+    if (!countedItems.length) {
+
+        physicalBody.innerHTML = `
+            <tr>
+                <td colspan="4">
+                    No merchandise scanned yet.
+                </td>
+            </tr>
+        `;
+
+    } else {
+
+        countedItems.forEach(
+            (item, index) => {
+
+                const row =
+                    document.createElement("tr");
+
+                row.innerHTML = `
+                    <td>${item.product_name}</td>
+
+                    <td>${item.barcode}</td>
+
+                    <td>
+                        <input
+                            class="physical-qty"
+                            type="number"
+                            min="0"
+                            value="${item.quantity}"
+                            data-index="${index}"
+                        >
+                    </td>
+
+                    <td>
+                        <button
+                            type="button"
+                            class="remove-count"
+                            data-index="${index}"
+                        >
+                            Remove
+                        </button>
+                    </td>
+                `;
+
+                physicalBody.appendChild(row);
+            }
+        );
+    }
+
+    document.querySelector(
+        "#physical-products"
+    ).textContent = countedItems.length;
+
+    document.querySelector(
+        "#physical-units"
+    ).textContent = physicalUnitTotal();
+}
+
+
+async function verifyTote() {
+
+    const locationId =
+        locationSelect.value;
+
+    const tote =
+        toteInput.value.trim();
+
+    if (!locationId) {
+        toteStatus.style.display = "block";
+        toteStatus.textContent =
+            "Select an audit location first.";
+        return;
+    }
+
+    if (!tote) {
+        toteStatus.style.display = "block";
+        toteStatus.textContent =
+            "Scan or enter a tote barcode.";
+        return;
+    }
+
+    verifyButton.disabled = true;
+
+    try {
+
+        const response = await fetch(
+            "/inventory/tote-audit/check-tote"
+            + "?location_id="
+            + encodeURIComponent(locationId)
+            + "&container_id="
+            + encodeURIComponent(tote)
+        );
+
+        const result =
+            await response.json();
+
+        if (!result.found) {
+
+            toteStatus.style.display = "block";
+            toteStatus.textContent =
+                result.error
+                || "Tote not found.";
+
+            return;
+        }
+
+        systemItems =
+            result.system_items || [];
+
+        lockedLocationId =
+            result.location_id;
+
+        lockedContainerId =
+            result.container_id;
+
+        locationSelect.disabled = true;
+        toteInput.readOnly = true;
+
+        toteInput.value =
+            lockedContainerId;
+
+        toteStatus.style.display = "block";
+
+        toteStatus.textContent =
+            "TOTE LOCKED: "
+            + lockedContainerId
+            + " | "
+            + result.location_name
+            + " | "
+            + result.system_products
+            + " products / "
+            + result.system_units
+            + " units";
+
+        scanPanel.style.display = "block";
+
+        barcodeInput.focus();
+
+    } catch (error) {
+        const result = await BrooksHouseOffline.tote(locationId, tote);
+        toteStatus.style.display = "block";
+        if (!result.found) toteStatus.textContent = result.error || "Tote is not in the offline snapshot.";
+        else {
+            systemItems=result.system_items||[]; lockedLocationId=result.location_id; lockedContainerId=result.container_id;
+            locationSelect.disabled=true; toteInput.readOnly=true; toteInput.value=lockedContainerId;
+            toteStatus.textContent="OFFLINE TOTE LOCKED: "+lockedContainerId+" | "+result.location_name+" | "+result.system_products+" products / "+result.system_units+" units";
+            scanPanel.style.display="block"; barcodeInput.focus();
+        }
+
+    } finally {
+
+        verifyButton.disabled = false;
+    }
+}
+
+
+async function addScannedItem() {
+
+    if (scanInProgress) {
+        return;
+    }
+
+    const barcode =
+        cleanBarcode(
+            barcodeInput.value
+        );
+
+    const quantity =
+        Number(
+            quantityInput.value || 0
+        );
+
+    if (!barcode) {
+        scanStatus.textContent =
+            "Scan a merchandise barcode.";
+        barcodeInput.focus();
+        return;
+    }
+
+    if (
+        !Number.isInteger(quantity)
+        || quantity < 1
+    ) {
+        scanStatus.textContent =
+            "Quantity must be at least 1.";
+        return;
+    }
+
+    scanInProgress = true;
+    addButton.disabled = true;
+
+    scanStatus.textContent =
+        "Looking up product...";
+
+    try {
+
+        const response = await fetch(
+            "/inventory/adjust/batch/lookup"
+            + "?barcode="
+            + encodeURIComponent(barcode)
+        );
+
+        const result =
+            await response.json();
+
+        if (!result.found) {
+
+            scanStatus.textContent =
+                result.error
+                || "Product not found.";
+
+            barcodeInput.select();
+            return;
+        }
+
+        const existing =
+            countedItems.find(
+                item =>
+                    item.product_id
+                    === result.product_id
+            );
+
+        if (existing) {
+
+            existing.quantity += quantity;
+
+            scanStatus.textContent =
+                result.product_name
+                + " updated to "
+                + existing.quantity
+                + " units.";
+
+        } else {
+
+            countedItems.push({
+                product_id:
+                    result.product_id,
+
+                product_name:
+                    result.product_name,
+
+                barcode:
+                    result.barcode
+                    || barcode,
+
+                quantity:
+                    quantity,
+            });
+
+            scanStatus.textContent =
+                result.product_name
+                + " added.";
+        }
+
+        renderPhysical();
+
+        barcodeInput.value = "";
+        quantityInput.value = "1";
+
+        barcodeInput.focus();
+
+    } catch (error) {
+        const result = await BrooksHouseOffline.lookupBarcode(barcode);
+        if (!result.found) scanStatus.textContent=result.error||"Product is not in the offline snapshot.";
+        else { const existing=countedItems.find(item=>item.product_id===result.product_id); if(existing)existing.quantity+=quantity; else countedItems.push({product_id:result.product_id,product_name:result.product_name,barcode:result.barcode||barcode,quantity}); renderPhysical(); barcodeInput.value=""; quantityInput.value="1"; scanStatus.textContent=result.product_name+" added from offline inventory."; }
+
+    } finally {
+
+        scanInProgress = false;
+        addButton.disabled = false;
+    }
+}
+
+
+function renderReview() {
+
+    reviewBody.innerHTML = "";
+
+    const productIds =
+        new Set();
+
+    systemItems.forEach(
+        item =>
+            productIds.add(
+                item.product_id
+            )
+    );
+
+    countedItems.forEach(
+        item =>
+            productIds.add(
+                item.product_id
+            )
+    );
+
+    let differenceCount = 0;
+    let missingCount = 0;
+
+    productIds.forEach(
+        productId => {
+
+            const system =
+                systemItems.find(
+                    item =>
+                        item.product_id
+                        === productId
+                );
+
+            const counted =
+                countedItems.find(
+                    item =>
+                        item.product_id
+                        === productId
+                );
+
+            const systemQty =
+                system
+                ? Number(system.quantity || 0)
+                : 0;
+
+            const countedQty =
+                counted
+                ? Number(counted.quantity || 0)
+                : 0;
+
+            const difference =
+                countedQty - systemQty;
+
+            if (difference !== 0) {
+                differenceCount += 1;
+            }
+
+            if (
+                systemQty > 0
+                && countedQty === 0
+            ) {
+                missingCount += 1;
+            }
+
+            const name =
+                counted?.product_name
+                || system?.product_name
+                || "Unknown";
+
+            const row =
+                document.createElement("tr");
+
+            row.innerHTML = `
+                <td>${name}</td>
+                <td>${systemQty}</td>
+                <td>${countedQty}</td>
+                <td>
+                    ${
+                        difference > 0
+                        ? "+"
+                        : ""
+                    }${difference}
+                </td>
+            `;
+
+            reviewBody.appendChild(row);
+        }
+    );
+
+    const systemUnits =
+        systemItems.reduce(
+            (total, item) =>
+                total
+                + Number(item.quantity || 0),
+            0
+        );
+
+    document.querySelector(
+        "#system-units"
+    ).textContent =
+        systemUnits;
+
+    document.querySelector(
+        "#review-physical-units"
+    ).textContent =
+        physicalUnitTotal();
+
+    document.querySelector(
+        "#difference-count"
+    ).textContent =
+        differenceCount;
+
+    const warning =
+        document.querySelector(
+            "#missing-warning"
+        );
+
+    if (missingCount > 0) {
+
+        warning.style.display =
+            "block";
+
+        warning.textContent =
+            "WARNING: "
+            + missingCount
+            + " system item(s) were not "
+            + "physically scanned. "
+            + "Confirming this audit will "
+            + "set those tote quantities to 0.";
+
+    } else {
+
+        warning.style.display =
+            "none";
+    }
+
+    reviewPanel.style.display =
+        "block";
+}
+
+
+async function saveAudit() {
+
+    if (
+        !lockedLocationId
+        || !lockedContainerId
+    ) {
+        return;
+    }
+
+    const button =
+        document.querySelector(
+            "#save-audit"
+        );
+
+    const statusBox =
+        document.querySelector(
+            "#save-status"
+        );
+
+    if (
+        !confirm(
+            "Confirm this physical tote count? "
+            + "BrooksHouse inventory for "
+            + lockedContainerId
+            + " will be updated to match."
+        )
+    ) {
+        return;
+    }
+
+    button.disabled = true;
+
+    statusBox.textContent =
+        "Saving audit...";
+
+    try {
+
+        const response = await fetch(
+            "/inventory/tote-audit/save",
+            {
+                method: "POST",
+
+                headers: {
+                    "Content-Type":
+                        "application/json"
+                },
+
+                body: JSON.stringify({
+                    location_id:
+                        lockedLocationId,
+
+                    container_id:
+                        lockedContainerId,
+
+                    reason:
+                        "Found Inventory",
+
+                    counted_items:
+                        countedItems,
+                }),
+            }
+        );
+
+        const result =
+            await response.json();
+
+        if (!result.success) {
+
+            statusBox.textContent =
+                result.error
+                || "Audit could not be saved.";
+
+            return;
+        }
+
+        statusBox.textContent =
+            "AUDIT SAVED: "
+            + result.container_id
+            + " | "
+            + result.changed_count
+            + " inventory line(s) corrected | "
+            + result.audit_time;
+
+        barcodeInput.disabled = true;
+        quantityInput.disabled = true;
+        addButton.disabled = true;
+        button.disabled = true;
+
+    } catch (error) {
+        await BrooksHouseOffline.queue("tote_audit", {location_id:lockedLocationId,container_id:lockedContainerId,reason:"Found Inventory",baseline_items:systemItems,counted_items:countedItems});
+        statusBox.textContent="Audit saved offline. It will sync after reconnecting; conflicting tote changes will be held for admin review.";
+        barcodeInput.disabled=true; quantityInput.disabled=true; addButton.disabled=true;
+
+    } finally {
+
+        if (
+            !barcodeInput.disabled
+        ) {
+            button.disabled = false;
+        }
+    }
+}
+
+
+verifyButton.addEventListener(
+    "click",
+    verifyTote
+);
+
+toteInput.addEventListener(
+    "keydown",
+    event => {
+        if (event.key === "Enter") {
+            event.preventDefault();
+            verifyTote();
+        }
+    }
+);
+
+addButton.addEventListener(
+    "click",
+    addScannedItem
+);
+
+barcodeInput.addEventListener(
+    "keydown",
+    event => {
+
+        if (event.key !== "Enter") {
+            return;
+        }
+
+        event.preventDefault();
+
+        clearTimeout(
+            barcodeScanTimer
+        );
+
+        quantityInput.value = "1";
+
+        addScannedItem();
+    }
+);
+
+barcodeInput.addEventListener(
+    "input",
+    function () {
+
+        clearTimeout(
+            barcodeScanTimer
+        );
+
+        barcodeScanTimer =
+            setTimeout(
+                function () {
+
+                    const barcode =
+                        cleanBarcode(
+                            barcodeInput.value
+                        );
+
+                    if (
+                        barcode.length >= 8
+                        && !scanInProgress
+                    ) {
+                        quantityInput.value =
+                            "1";
+
+                        addScannedItem();
+                    }
+                },
+                250
+            );
+    }
+);
+
+physicalBody.addEventListener(
+    "input",
+    event => {
+
+        if (
+            !event.target.classList.contains(
+                "physical-qty"
+            )
+        ) {
+            return;
+        }
+
+        const index =
+            Number(
+                event.target.dataset.index
+            );
+
+        countedItems[index].quantity =
+            Math.max(
+                0,
+                Number(
+                    event.target.value || 0
+                )
+            );
+
+        renderPhysical();
+    }
+);
+
+physicalBody.addEventListener(
+    "click",
+    event => {
+
+        if (
+            !event.target.classList.contains(
+                "remove-count"
+            )
+        ) {
+            return;
+        }
+
+        const index =
+            Number(
+                event.target.dataset.index
+            );
+
+        countedItems.splice(
+            index,
+            1
+        );
+
+        renderPhysical();
+    }
+);
+
+document.querySelector(
+    "#audit-clear"
+).addEventListener(
+    "click",
+    () => {
+
+        if (
+            confirm(
+                "Clear the physical count?"
+            )
+        ) {
+            countedItems = [];
+            renderPhysical();
+            barcodeInput.focus();
+        }
+    }
+);
+
+document.querySelector(
+    "#review-audit"
+).addEventListener(
+    "click",
+    renderReview
+);
+
+document.querySelector(
+    "#back-to-count"
+).addEventListener(
+    "click",
+    () => {
+        reviewPanel.style.display =
+            "none";
+
+        barcodeInput.focus();
+    }
+);
+
+document.querySelector(
+    "#save-audit"
+).addEventListener(
+    "click",
+    saveAudit
+);
+
+renderPhysical();
+
+</script>
+
+</body>
+</html>

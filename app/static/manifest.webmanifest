@@ -1,0 +1,35 @@
+{
+  "id": "/dashboard",
+  "name": "The BrooksHouse Store",
+  "short_name": "BrooksHouse",
+  "description": "BrooksHouse inventory, scanning, storage, and marketplace operations.",
+  "start_url": "/dashboard?source=pwa",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+  "orientation": "any",
+  "background_color": "#f4ede5",
+  "theme_color": "#8f1f24",
+  "categories": ["business", "productivity", "shopping"],
+  "icons": [
+    {
+      "src": "/static/pwa/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/pwa/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {"name": "Smart Scan", "short_name": "Scan", "url": "/smart-scan"},
+    {"name": "Marketplace Orders", "short_name": "Orders", "url": "/channels/orders"},
+    {"name": "Inventory Search", "short_name": "Inventory", "url": "/inventory/search"},
+    {"name": "Offline Center", "short_name": "Offline", "url": "/offline"},
+    {"name": "Notifications", "short_name": "Alerts", "url": "/tools/notifications"}
+  ]
+}

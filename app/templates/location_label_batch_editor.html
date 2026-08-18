@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Label Batch Control | BrooksHouse Store</title>
+<style>
+:root{--red:#9d252b;--ink:#27221f;--paper:#f4efe7;--line:#ded4c8;--muted:#6b625b}
+*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font-family:Arial,sans-serif}
+.head{background:linear-gradient(105deg,#171717,#522423);color:#fff;border-bottom:3px solid #c93535}.head-inner{max-width:1450px;margin:auto;padding:18px 22px;display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap}.head h1{margin:2px 0}.nav{display:flex;gap:8px;flex-wrap:wrap}.nav a{color:#fff;text-decoration:none;border:1px solid #ffffff55;border-radius:9px;padding:9px 12px;font-weight:850}
+.main{max-width:1450px;margin:20px auto 50px;padding:0 18px}.panel{background:#fff;border:1px solid var(--line);border-radius:15px;padding:17px}.hero{margin-bottom:14px}.hero h2{margin:0 0 5px}.meta{color:var(--muted);line-height:1.45}
+.workspace{display:grid;grid-template-columns:390px minmax(0,1fr);gap:14px}.control{position:sticky;top:10px;align-self:start}.grid2{display:grid;grid-template-columns:1fr 1fr;gap:9px}.full{grid-column:1/-1}label{font-size:.82rem;font-weight:850}input,select{width:100%;margin-top:4px;padding:9px 10px;border:1px solid #cfc4b8;border-radius:9px;font:inherit}.check{display:flex;align-items:center;gap:8px;padding:8px 0}.check input{width:auto;margin:0}.button,button{border:0;border-radius:9px;min-height:40px;padding:9px 12px;font-weight:850;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center}.primary{background:#7d252a;color:#fff}.secondary{background:#eee5db;color:#332d29}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.row{border:1px solid var(--line);border-radius:10px;padding:10px;display:flex;gap:8px;align-items:flex-start}.row input{width:auto;margin-top:3px}.code{font-family:Consolas,monospace;color:var(--red);font-weight:900}.toolbar{display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px}.note{padding:10px;border-radius:9px;background:#fbf3e7;color:#684d23;font-size:.88rem}.preset-box{margin-top:14px;padding-top:14px;border-top:1px solid var(--line)}
+@media(max-width:950px){.workspace{grid-template-columns:1fr}.control{position:static}.list{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header class="head"><div class="head-inner"><div><small>THE BROOKSHOUSE STORE</small><h1>🏷 Label Batch Control</h1></div><nav class="nav"><a href="/admin/location-builder">Bulk Builder</a><a href="/pallet-labels">Label Center</a><a href="/dashboard">Dashboard</a></nav></div></header>
+<main class="main">
+<section class="panel hero"><h2>{{ batch.batch_name }}</h2><div class="meta">{{ rows|length }} saved locations · {{ batch.area_name or '' }}{% if batch.zone_name %} · {{ batch.zone_name }}{% endif %}</div></section>
+<div class="workspace">
+
+<section class="panel control">
+<h3 style="margin-top:0">Print controls</h3>
+<form id="print-form" method="post" action="/admin/location-builder/batches/{{ batch.batch_id }}/preview">
+<div class="grid2">
+<label>Copies per location<input type="number" name="copies" id="copies" min="1" max="20" value="1"></label>
+<label>Start at sheet position<input type="number" name="start_position" id="start_position" min="1" value="1"></label>
+<label>Sort order<select name="sort_by" id="sort_by"><option value="section_level">Section → Level → Position</option><option value="level_section">Level → Section → Position</option><option value="location">Location code A–Z</option><option value="reverse">Location code Z–A</option></select></label>
+<label>Label size<select name="label_size" id="label_size"><option value="small">Address / small</option><option value="compact">Compact</option><option value="full">Large storage</option></select></label>
+<label>Location-code size %<input type="number" name="code_scale" id="code_scale" min="70" max="160" value="100"></label>
+<label>Barcode height %<input type="number" name="barcode_scale" id="barcode_scale" min="60" max="160" value="100"></label>
+</div>
+<div style="margin-top:12px">
+<label class="check"><input type="checkbox" name="show_area" id="show_area" checked> Show area name</label>
+<label class="check"><input type="checkbox" name="show_zone" id="show_zone" checked> Show zone name</label>
+<label class="check"><input type="checkbox" name="show_purpose" id="show_purpose" checked> Show PICK / RESERVE purpose</label>
+<label class="check"><input type="checkbox" name="show_detail" id="show_detail" checked> Show section / level / position</label>
+<label class="check"><input type="checkbox" name="show_barcode_text" id="show_barcode_text" checked> Show barcode text under bars</label>
+</div>
+<div class="note">Start position is for partially used sheets. Example: enter 8 to leave the first 7 label spots blank.</div>
+<div class="actions"><button class="primary" type="submit">Preview Selected Labels</button></div>
+</form>
+
+<div class="preset-box">
+<h3>Saved print presets</h3>
+<label>Load preset<select id="preset-select"><option value="">Choose saved preset</option></select></label>
+<div class="actions"><button type="button" class="secondary" id="load-preset">Load</button></div>
+<form id="preset-form" method="post" action="/admin/location-builder/batches/{{ batch.batch_id }}/preset/save">
+<label>Preset name<input name="preset_name" required placeholder="Avery 5160 Shelf Labels"></label>
+<div id="preset-hidden"></div>
+<div class="actions"><button class="secondary" type="submit">Save Current Settings</button></div>
+</form>
+</div>
+</section>
+
+<section class="panel">
+<div class="toolbar"><div><h3 style="margin:0">Choose labels</h3><div class="meta"><span id="selected-count">{{ rows|length }}</span> selected</div></div><div class="actions"><button type="button" class="secondary" id="all">Select all</button><button type="button" class="secondary" id="none">Clear</button></div></div>
+<div class="list">
+{% for row in rows %}
+<label class="row"><input form="print-form" class="loc-check" type="checkbox" name="exact_location_id" value="{{ row.exact_location_id }}" checked><span><span class="code">{{ row.location_code }}</span><br><span class="meta">{{ row.zone_name }} · {{ row.location_type }} · {{ row.barcode }}</span></span></label>
+{% endfor %}
+</div>
+</section>
+</div>
+</main>
+
+<script>
+(function(){
+ const checks=[...document.querySelectorAll('.loc-check')], count=document.getElementById('selected-count');
+ function update(){count.textContent=checks.filter(x=>x.checked).length}
+ document.getElementById('all').addEventListener('click',()=>{checks.forEach(x=>x.checked=true);update()});
+ document.getElementById('none').addEventListener('click',()=>{checks.forEach(x=>x.checked=false);update()});
+ checks.forEach(x=>x.addEventListener('change',update));
+
+ const ids=['copies','start_position','sort_by','label_size','code_scale','barcode_scale','show_area','show_zone','show_purpose','show_detail','show_barcode_text'];
+ const hidden=document.getElementById('preset-hidden');
+ function syncPreset(){
+   hidden.innerHTML='';
+   ids.forEach(id=>{
+     const src=document.getElementById(id);
+     if(!src)return;
+     if(src.type==='checkbox'&&!src.checked)return;
+     const i=document.createElement('input');i.type='hidden';i.name=id;i.value=src.type==='checkbox'?'1':src.value;hidden.appendChild(i);
+   });
+ }
+ document.getElementById('preset-form').addEventListener('submit',syncPreset);
+
+ let presets=[];
+ fetch('/api/location-label-presets').then(r=>r.json()).then(data=>{
+   presets=data;
+   const select=document.getElementById('preset-select');
+   data.forEach(p=>{const o=document.createElement('option');o.value=p.preset_id;o.textContent=p.preset_name;select.appendChild(o)});
+ }).catch(()=>{});
+
+ document.getElementById('load-preset').addEventListener('click',()=>{
+   const id=Number(document.getElementById('preset-select').value||0);
+   const p=presets.find(x=>Number(x.preset_id)===id);if(!p)return;
+   const s=p.settings||{};
+   ids.forEach(key=>{
+     const el=document.getElementById(key);if(!el)return;
+     if(el.type==='checkbox')el.checked=Boolean(s[key]);
+     else if(s[key]!==undefined)el.value=s[key];
+   });
+ });
+ update();
+})();
+</script>
+</body></html>

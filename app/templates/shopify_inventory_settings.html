@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>Shopify Inventory Settings | BrooksHouse Store</title>
+
+    <link
+        rel="stylesheet"
+        href="/static/store.css"
+    >
+</head>
+
+<body>
+    <header class="store-header">
+        <div>
+            <p class="eyebrow">The BrooksHouse Store</p>
+
+            <h1>Shopify Inventory Settings</h1>
+
+            <p class="subtitle">
+                Choose which BrooksHouse locations count as inventory
+                available for Shopify.
+            </p>
+        </div>
+
+        <nav>
+            <a href="/storage-gallery">Storage Gallery</a>
+
+            <a href="/smart-scan">Smart Scan</a>
+
+            <a href="/channels/amazon/mapping">Amazon Mapping</a>
+            <a href="/dashboard">Dashboard</a>
+            <a href="/channels/shopify/reconcile">Shopify Compare</a>
+            <a href="/channels/shopify/storefront-import">Storefront Import</a>
+            <a href="/channels/shopify/settings">Shopify Settings</a>
+            <a href="/channels/shopify/approve">Approval Queue</a>
+            <a href="/inventory/search">Inventory Search</a>
+            <a href="/inventory/replenishment">
+                Replenishment
+            </a>
+            <a href="/products">Products</a>
+        </nav>
+    </header>
+
+    <main class="page-container">
+        {% if message %}
+        <section class="alert success">
+            <strong>{{ message }}</strong>
+        </section>
+        {% endif %}
+
+        {% if error %}
+        <section class="alert error">
+            <strong>{{ error }}</strong>
+        </section>
+        {% endif %}
+
+        <section class="dashboard-panel">
+            <div class="dashboard-panel-heading">
+                <div>
+                    <p class="eyebrow">Online availability</p>
+
+                    <h2>Locations included in Shopify quantity</h2>
+
+                    <p>
+                        Inventory from checked locations will be added
+                        together during Shopify reconciliation.
+                    </p>
+                </div>
+            </div>
+
+            <form
+                action="/channels/shopify/settings"
+                method="post"
+                class="shopify-location-form"
+            >
+                <div class="location-setting-list">
+                    {% for location in locations %}
+                    <label class="location-setting-row">
+                        <input
+                            type="checkbox"
+                            name="location_ids"
+                            value="{{ location.location_id }}"
+                            {% if location.location_id in selected_location_ids %}
+                                checked
+                            {% endif %}
+                        >
+
+                        <div>
+                            <strong>
+                                {{ location.location_name }}
+                            </strong>
+
+                            <span>
+                                {{ location.location_type }}
+
+                                {% if location.description %}
+                                    — {{ location.description }}
+                                {% endif %}
+                            </span>
+                        </div>
+                    </label>
+                    {% endfor %}
+                </div>
+
+                <section class="shopify-setting-warning">
+                    <strong>Important:</strong>
+
+                    Shopify will eventually receive the combined quantity
+                    from these selected locations. Do not include damaged,
+                    reserved, or unavailable inventory.
+                </section>
+
+                <div class="form-actions">
+                    <a
+                        class="secondary-button link-button"
+                        href="/channels/shopify/reconcile"
+                    >
+                        Cancel
+                    </a>
+
+                    <button
+                        type="submit"
+                        class="primary-button"
+                    >
+                        Save Shopify Locations
+                    </button>
+                </div>
+            </form>
+        </section>
+    </main>
+</body>
+</html>

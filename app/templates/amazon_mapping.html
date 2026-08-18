@@ -1,0 +1,418 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>Amazon Mapping | BrooksHouse Store</title>
+
+    <link
+        rel="stylesheet"
+        href="/static/store.css"
+    >
+</head>
+
+<body>
+    <header class="store-header">
+        <div>
+            <p class="eyebrow">
+                The BrooksHouse Store
+            </p>
+
+            <h1>Amazon Product Mapping</h1>
+
+            <p class="subtitle">
+                Connect Amazon-approved listings to BrooksHouse products.
+            </p>
+        </div>
+
+        <nav>
+            <a href="/storage-gallery">Storage Gallery</a>
+
+            <a href="/smart-scan">Smart Scan</a>
+
+            <a href="/dashboard">
+                Dashboard
+            </a>
+
+            <a href="/channels/amazon/mapping">
+                Amazon Mapping
+            </a>
+
+            <a href="/inventory/search">
+                Inventory
+            </a>
+
+            <a href="/scan">
+                Scan
+            </a>
+
+            <a href="/products">
+                Products
+            </a>
+        </nav>
+    </header>
+
+    <main class="page-container">
+        {% if message %}
+        <section class="alert success">
+            {{ message }}
+        </section>
+        {% endif %}
+
+        {% if error %}
+        <section class="alert error">
+            {{ error }}
+        </section>
+        {% endif %}
+
+        <section class="amazon-summary-grid">
+            <article class="dashboard-card">
+                <span>Amazon approved</span>
+
+                <strong>
+                    {{ summary.total or 0 }}
+                </strong>
+            </article>
+
+            <article class="dashboard-card">
+                <span>Linked</span>
+
+                <strong>
+                    {{ summary.linked or 0 }}
+                </strong>
+            </article>
+
+            <article class="dashboard-card">
+                <span>Needs mapping</span>
+
+                <strong>
+                    {{ summary.unmatched or 0 }}
+                </strong>
+            </article>
+
+            <article class="dashboard-card">
+                <span>Amazon in stock</span>
+
+                <strong>
+                    {{ summary.in_stock or 0 }}
+                </strong>
+            </article>
+
+            <article class="dashboard-card">
+                <span>Amazon out of stock</span>
+
+                <strong>
+                    {{ summary.out_of_stock or 0 }}
+                </strong>
+            </article>
+
+            <article class="dashboard-card">
+                <span>Quantity unknown</span>
+
+                <strong>
+                    {{ summary.quantity_unknown or 0 }}
+                </strong>
+            </article>
+        </section>
+
+        <section class="dashboard-panel">
+            <form
+                class="amazon-mapping-controls"
+                method="get"
+                action="/channels/amazon/mapping"
+            >
+                <label>
+                    Search local products
+
+                    <input
+                        type="search"
+                        name="q"
+                        value="{{ search_term }}"
+                        placeholder="Product, barcode, or %wildcard%"
+                        title="Wildcards: % or * = any text; _ or ? = one character"
+                        autofocus
+                    >
+                </label>
+
+                <label>
+                    Show mappings
+
+                    <select name="status">
+                        <option
+                            value="unmatched"
+                            {% if mapping_filter == "unmatched" %}
+                            selected
+                            {% endif %}
+                        >
+                            Needs mapping
+                        </option>
+
+                        <option
+                            value="linked"
+                            {% if mapping_filter == "linked" %}
+                            selected
+                            {% endif %}
+                        >
+                            Linked
+                        </option>
+
+                        <option
+                            value="all"
+                            {% if mapping_filter == "all" %}
+                            selected
+                            {% endif %}
+                        >
+                            All Amazon listings
+                        </option>
+                    </select>
+                </label>
+
+                <button type="submit">
+                    Search
+                </button>
+            </form>
+        </section>
+
+        <section class="dashboard-panel">
+            <div class="dashboard-panel-heading">
+                <div>
+                    <p class="eyebrow">
+                        Amazon catalog
+                    </p>
+
+                    <h2>
+                        Amazon Listings
+                    </h2>
+                </div>
+
+                <span class="dashboard-badge">
+                    {{ amazon_rows | length }}
+                </span>
+            </div>
+
+            {% if amazon_rows %}
+            <div class="amazon-mapping-list">
+                {% for amazon in amazon_rows %}
+                <article class="amazon-mapping-card">
+                    <div class="amazon-listing-heading">
+                        <div>
+                            <span class="amazon-approved-badge">
+                                Amazon Approved
+                            </span>
+
+                            <h3>
+                                {{ amazon.seller_sku }}
+                            </h3>
+
+                            <p>
+                                ASIN:
+                                <strong>
+                                    {{ amazon.asin }}
+                                </strong>
+                            </p>
+                        </div>
+
+                        <div class="amazon-listing-stats">
+                            <span>
+                                Price
+                                <strong>
+                                    {% if amazon.amazon_price is not none %}
+                                    ${{ "%.2f" | format(amazon.amazon_price) }}
+                                    {% else %}
+                                    —
+                                    {% endif %}
+                                </strong>
+                            </span>
+
+                            <span>
+                                Quantity
+                                <strong>
+                                    {% if amazon.amazon_quantity is none %}
+                                    Unknown
+                                    {% else %}
+                                    {{ amazon.amazon_quantity }}
+                                    {% endif %}
+                                </strong>
+                            </span>
+
+                            {% if amazon.inventory_status == "in_stock" %}
+                            <span class="amazon-stock-in">
+                                In stock
+                            </span>
+
+                            {% elif amazon.inventory_status == "out_of_stock" %}
+                            <span class="amazon-stock-out">
+                                Out of stock
+                            </span>
+
+                            {% else %}
+                            <span class="amazon-stock-unknown">
+                                Quantity unknown
+                            </span>
+                            {% endif %}
+                        </div>
+                    </div>
+
+                    {% if amazon.match_status == "linked" %}
+                        {% set linked_product =
+                            linked_products.get(
+                                amazon.product_id
+                            )
+                        %}
+
+                        <div class="amazon-linked-product">
+                            {% if linked_product %}
+                                {% if linked_product.image_url %}
+                                <img
+                                    src="{{ linked_product.image_url }}"
+                                    alt="{{ linked_product.product_name }}"
+                                >
+                                {% else %}
+                                <div class="amazon-product-placeholder">
+                                    No image
+                                </div>
+                                {% endif %}
+
+                                <div>
+                                    <span>
+                                        Linked BrooksHouse product
+                                    </span>
+
+                                    <a
+                                        href="/products/{{ linked_product.product_id }}"
+                                    >
+                                        <strong>
+                                            {{ linked_product.product_name }}
+                                        </strong>
+                                    </a>
+
+                                    <small>
+                                        {{
+                                            linked_product.barcodes
+                                            or "No barcode"
+                                        }}
+                                    </small>
+                                </div>
+                            {% else %}
+                                <div>
+                                    Product ID:
+                                    {{ amazon.product_id }}
+                                </div>
+                            {% endif %}
+
+                            <form
+                                method="post"
+                                action="/channels/amazon/unlink"
+                            >
+                                <input
+                                    type="hidden"
+                                    name="amazon_listing_id"
+                                    value="{{ amazon.amazon_listing_id }}"
+                                >
+
+                                <button
+                                    class="danger-button"
+                                    type="submit"
+                                >
+                                    Unlink
+                                </button>
+                            </form>
+                        </div>
+
+                    {% else %}
+                        <div class="amazon-unmatched-warning">
+                            This Amazon-approved listing is not yet connected
+                            to a BrooksHouse barcode.
+                        </div>
+
+                        {% if products %}
+                        <div class="amazon-product-choices">
+                            {% for product in products %}
+                            <form
+                                class="amazon-product-choice"
+                                method="post"
+                                action="/channels/amazon/link"
+                            >
+                                <input
+                                    type="hidden"
+                                    name="amazon_listing_id"
+                                    value="{{ amazon.amazon_listing_id }}"
+                                >
+
+                                <input
+                                    type="hidden"
+                                    name="product_id"
+                                    value="{{ product.product_id }}"
+                                >
+
+                                {% if product.image_url %}
+                                <img
+                                    src="{{ product.image_url }}"
+                                    alt="{{ product.product_name }}"
+                                    loading="lazy"
+                                >
+                                {% else %}
+                                <div class="amazon-product-placeholder">
+                                    No image
+                                </div>
+                                {% endif %}
+
+                                <div class="amazon-product-choice-info">
+                                    <strong>
+                                        {{ product.product_name }}
+                                    </strong>
+
+                                    <span>
+                                        Barcode:
+                                        {{
+                                            product.barcodes
+                                            or "No barcode"
+                                        }}
+                                    </span>
+
+                                    {% if product.product_sku %}
+                                    <span>
+                                        SKU:
+                                        {{ product.product_sku }}
+                                    </span>
+                                    {% endif %}
+                                </div>
+
+                                <button type="submit">
+                                    Link Product
+                                </button>
+                            </form>
+                            {% endfor %}
+                        </div>
+
+                        {% elif search_term %}
+                        <p>
+                            No BrooksHouse products matched
+                            “{{ search_term }}”.
+                        </p>
+
+                        {% else %}
+                        <p>
+                            Scan a barcode or search a product name above
+                            to find the BrooksHouse product.
+                        </p>
+                        {% endif %}
+                    {% endif %}
+                </article>
+                {% endfor %}
+            </div>
+
+            {% else %}
+            <p>
+                No Amazon listings matched this filter.
+            </p>
+            {% endif %}
+        </section>
+    </main>
+</body>
+</html>

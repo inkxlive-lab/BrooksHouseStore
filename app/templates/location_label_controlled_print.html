@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Location Label Print Preview | BrooksHouse Store</title>
+<style>
+:root{
+--page-width:8.5in;--page-height:11in;
+--label-width:{{ layout.label_width }}in;--label-height:{{ layout.label_height }}in;
+--cols:{{ layout.columns }};--rows:{{ layout.rows }};
+--mt:{{ layout.margin_top }}in;--mr:{{ layout.margin_right }}in;--mb:{{ layout.margin_bottom }}in;--ml:{{ layout.margin_left }}in;
+--cg:{{ layout.column_gap }}in;--rg:{{ layout.row_gap }}in;
+--code-scale:{{ code_scale / 100 }};
+--barcode-scale:{{ barcode_scale / 100 }};
+}
+*{box-sizing:border-box}body{margin:0;background:#f4efe7;font-family:Arial,sans-serif;color:#222}.top{max-width:1300px;margin:16px auto;padding:14px 18px;background:#fff;border:1px solid #ded4c8;border-radius:12px;display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap}.top h1{font-size:1.2rem;margin:0}.actions{display:flex;gap:8px;flex-wrap:wrap}.button,button{border:0;border-radius:8px;padding:9px 12px;font-weight:850;cursor:pointer;text-decoration:none;background:#7d252a;color:#fff}.secondary{background:#eee5db;color:#332d29}
+.pages{display:grid;gap:20px;justify-content:center;margin:20px auto}.page{width:var(--page-width);height:var(--page-height);padding:var(--mt) var(--mr) var(--mb) var(--ml);display:grid;grid-template-columns:repeat(var(--cols),var(--label-width));grid-template-rows:repeat(var(--rows),var(--label-height));column-gap:var(--cg);row-gap:var(--rg);align-content:start;justify-content:start;background:#fff;box-shadow:0 3px 14px rgba(0,0,0,.12);overflow:hidden}.slot.blank{visibility:hidden}.label{width:var(--label-width);height:var(--label-height);border:1.4px solid #111;border-radius:6px;padding:.07in .09in;display:flex;flex-direction:column;justify-content:space-between;overflow:hidden;background:#fff}.brand{font-size:.48rem;font-weight:900;display:flex;justify-content:space-between;gap:6px}.code{font-size:calc(.80rem * var(--code-scale));font-weight:950;line-height:1;margin:.02in 0}.loc{font-size:.53rem;font-weight:800}.detail{font-size:.48rem}.barcode svg{display:block;width:100%;height:calc(28px * var(--barcode-scale));margin:auto}.barcode-text{font-size:.42rem;text-align:center;font-weight:800;letter-spacing:.06em}
+body[data-size="compact"] .code{font-size:calc(1rem * var(--code-scale))}body[data-size="compact"] .barcode svg{height:calc(32px * var(--barcode-scale))}
+body[data-size="full"] .code{font-size:calc(1.18rem * var(--code-scale))}body[data-size="full"] .barcode svg{height:calc(45px * var(--barcode-scale))}
+@media print{@page{size:8.5in 11in;margin:0}.top{display:none}.pages{display:block;margin:0}.page{margin:0;box-shadow:none;break-after:page;page-break-after:always}.page:last-child{break-after:auto;page-break-after:auto}}
+</style>
+</head>
+<body data-size="{{ label_size }}">
+<div class="top"><div><h1>{{ batch.batch_name }}</h1><small>{{ selected_count }} locations · {{ copies }} cop{{ 'y' if copies==1 else 'ies' }} each · start position {{ start_position }}</small></div><div class="actions"><a class="button secondary" href="/admin/location-builder/batches/{{ batch.batch_id }}/edit">Back to Batch Control</a><button onclick="window.print()">Print Labels</button></div></div>
+<div class="pages" id="pages"></div>
+<div id="source" style="display:none">
+{% for label in labels %}
+<article class="label">
+<div><div class="brand"><span>BROOKSHOUSE STORE</span><span>{{ label.type }}</span></div><div class="code">{{ label.code }}</div>{% if label.location %}<div class="loc">{{ label.location }}</div>{% endif %}{% if label.detail %}<div class="detail">{{ label.detail }}</div>{% endif %}</div>
+<div><div class="barcode">{{ label.barcode_svg|safe }}</div>{% if show_barcode_text %}<div class="barcode-text">{{ label.barcode_value }}</div>{% endif %}</div>
+</article>
+{% endfor %}
+</div>
+<script>
+(function(){
+ const source=[...document.querySelectorAll('#source .label')],pages=document.getElementById('pages');
+ const per={{ layout.columns * layout.rows }}, start=Math.max(1,{{ start_position }});
+ const blanks=(start-1)%per;
+ const items=[];
+ for(let i=0;i<blanks;i++)items.push(null);
+ source.forEach(x=>items.push(x));
+ for(let i=0;i<items.length;i+=per){
+   const page=document.createElement('section');page.className='page';
+   items.slice(i,i+per).forEach(item=>{
+     if(item)page.appendChild(item.cloneNode(true));
+     else{const blank=document.createElement('div');blank.className='slot blank';page.appendChild(blank)}
+   });
+   pages.appendChild(page);
+ }
+})();
+</script>
+</body></html>

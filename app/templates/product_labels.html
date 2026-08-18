@@ -1,0 +1,107 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Product Barcode Labels | BrooksHouse Store</title>
+    <link rel="stylesheet" href="/static/store.css">
+    <style>
+        * { box-sizing: border-box; }
+        .label-center { width: min(1400px, calc(100% - 32px)); margin: 24px auto 50px; }
+        .workspace { display: grid; grid-template-columns: minmax(330px, 430px) minmax(0, 1fr); gap: 24px; align-items: start; }
+        .panel { background: #fff; border: 1px solid #e7ddd6; border-radius: 18px; padding: 22px; box-shadow: 0 12px 30px rgba(43,30,25,.08); }
+        .kicker { margin: 0 0 6px; color: #c92d22; font-size: .75rem; font-weight: 900; letter-spacing: .12em; text-transform: uppercase; }
+        h2 { margin: 0; }
+        .helper { color: #655b56; line-height: 1.45; }
+        .tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 18px 0; }
+        .tab { display: flex; align-items: center; justify-content: center; min-height: 44px; padding: 10px; border: 1px solid #d8cbc3; border-radius: 12px; color: #2d2521; font-weight: 800; text-decoration: none; }
+        .tab.active { color: #fff; background: #24201e; border-color: #24201e; }
+        .field { display: grid; gap: 7px; margin-top: 14px; }
+        .field span { font-size: .82rem; font-weight: 850; }
+        .field input { width: 100%; min-height: 46px; padding: 10px 12px; border: 1px solid #d8cbc3; border-radius: 10px; font: inherit; }
+        .search-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+        button { min-height: 46px; padding: 0 16px; border-radius: 10px; font-weight: 900; cursor: pointer; }
+        .results { margin-top: 14px; display: grid; gap: 8px; max-height: 340px; overflow: auto; }
+        .result { display: block; padding: 12px; border: 1px solid #e0d5ce; border-radius: 10px; color: inherit; text-decoration: none; }
+        .result:hover { border-color: #c92d22; background: #fff9f7; }
+        .result small { display: block; margin-top: 3px; color: #716660; }
+        .selected-box { margin-top: 18px; padding: 15px; border-radius: 12px; background: #f7f2ef; }
+        .part-number { margin-top: 5px; font-weight: 900; color: #b7251c; }
+        .action-grid { display: grid; grid-template-columns: 100px 1fr; gap: 10px; align-items: end; }
+        .notice { margin-bottom: 16px; padding: 13px 15px; border-radius: 10px; font-weight: 750; }
+        .notice.success { background: #e7f7ec; color: #17622d; }
+        .notice.error { background: #fdebea; color: #9b1d17; }
+        .preview-heading { display: flex; justify-content: space-between; align-items: end; gap: 12px; padding-bottom: 14px; border-bottom: 1px solid #eee6e1; }
+        .preview-empty { display: grid; place-items: center; min-height: 420px; color: #756a64; text-align: center; }
+        .label-sheet { display: grid; grid-template-columns: repeat(3, 2.45in); gap: .12in; justify-content: center; margin-top: 20px; }
+        .product-label { width: 2.45in; height: 1.2in; padding: .08in .1in; border: 1px solid #111; border-radius: 5px; background: #fff; color: #000; display: flex; flex-direction: column; justify-content: space-between; overflow: hidden; break-inside: avoid; }
+        .label-top { display: flex; justify-content: space-between; gap: 8px; font-size: .48rem; font-weight: 900; letter-spacing: .05em; text-transform: uppercase; }
+        .product-name { margin: 3px 0 1px; font-size: .68rem; line-height: 1.05; font-weight: 900; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .label-info { display: flex; justify-content: space-between; gap: 8px; font-size: .5rem; font-weight: 800; }
+        .price { font-size: .76rem; font-weight: 950; }
+        .barcode-svg svg { display: block; width: 100%; height: 28px; }
+        .barcode-text { text-align: center; font-size: .43rem; font-weight: 800; letter-spacing: .07em; }
+        @media (max-width: 950px) { .workspace { grid-template-columns: 1fr; } .label-sheet { grid-template-columns: 1fr; } }
+        @media print {
+            @page { size: letter portrait; margin: .3in; }
+            .store-header, .screen-only { display: none !important; }
+            body { margin: 0; background: #fff; }
+            .label-center, .panel { width: 100%; margin: 0; padding: 0; border: 0; box-shadow: none; }
+            .workspace { display: block; }
+            .label-sheet { margin: 0; justify-content: start; }
+        }
+    </style>
+</head>
+<body>
+    <header class="store-header screen-only">
+        <div><p class="eyebrow">The BrooksHouse Store</p><h1>Product Barcode Labels</h1><p class="subtitle">Assign safe internal barcodes to products without a usable UPC.</p></div>
+        <nav><a href="/dashboard">Dashboard</a><a href="/products">Products</a><a href="/smart-scan">Smart Scan</a><a href="/pallet-labels">Storage Labels</a></nav>
+    </header>
+    <main class="label-center">
+        {% if message %}<div class="notice success screen-only">{{ message }}</div>{% endif %}
+        {% if error %}<div class="notice error screen-only">{{ error }}</div>{% endif %}
+        <div class="workspace">
+            <section class="panel screen-only">
+                <p class="kicker">BrooksHouse Label Center</p><h2>Find a product</h2>
+                <p class="helper">Search by product name, brand, UPC, or existing barcode. Wildcards: % or * for any text.</p>
+                <div class="tabs"><a class="tab" href="/pallet-labels">ðŸ“¦ Storage &amp; Location</a><a class="tab active" href="/product-labels">ðŸ·ï¸ Product Barcode</a></div>
+                <form action="/product-labels" method="get">
+                    <label class="field"><span>Product search</span><div class="search-row"><input name="search" value="{{ search }}" placeholder="Type a name, brand, or scan a barcode" autofocus><button class="primary-button" type="submit">Search</button></div></label>
+                </form>
+                {% if products %}<div class="results">
+                    {% for product in products %}
+                    <a class="result" href="/product-labels?product_id={{ product.product_id }}&amp;search={{ search | urlencode }}"><strong>{{ product.product_name }}</strong><small>{{ product.brand or "No brand" }} Â· Product #{{ product.product_id }}{% if product.store_price is not none %} Â· ${{ "%.2f"|format(product.store_price) }}{% endif %}</small></a>
+                    {% endfor %}
+                </div>{% elif search %}<p class="helper">No matching products were found.</p>{% endif %}
+
+                {% if selected_product %}
+                <div class="selected-box"><strong>{{ selected_product.product_name }}</strong><div>{{ selected_product.brand or "No brand" }}</div><div class="part-number">Part {{ label.part_number }}</div><small>Internal barcode: {{ label.barcode }}</small></div>
+                <form action="/product-labels/assign" method="post">
+                    <input type="hidden" name="product_id" value="{{ selected_product.product_id }}">
+                    <div class="action-grid">
+                        <label class="field"><span>Copies</span><input type="number" name="copies" value="{{ copies }}" min="1" max="100"></label>
+                        <button class="primary-button" type="submit">{% if internal_barcode_record %}Prepare Reprint{% else %}Assign Barcode{% endif %}</button>
+                    </div>
+                </form>
+                {% if internal_barcode_record %}<button class="secondary-button" style="width:100%;margin-top:10px" type="button" onclick="window.print()">Print Labels</button>{% endif %}
+                {% endif %}
+            </section>
+
+            <section class="panel">
+                <div class="preview-heading screen-only"><div><p class="kicker">Print preview</p><h2>{% if selected_product %}{{ selected_product.product_name }}{% else %}Select a product{% endif %}</h2></div>{% if selected_product %}<strong>{{ copies }} copies</strong>{% endif %}</div>
+                {% if selected_product %}
+                <div class="label-sheet">
+                    {% for copy_number in range(copies) %}
+                    <article class="product-label">
+                        <div><div class="label-top"><span>BrooksHouse Store</span><span>{{ label.part_number }}</span></div><div class="product-name">{{ label.product_name }}</div><div class="label-info"><span>{{ label.brand }}</span>{% if label.store_price is not none %}<span class="price">${{ "%.2f"|format(label.store_price) }}</span>{% endif %}</div></div>
+                        <div><div class="barcode-svg">{{ label.barcode_svg | safe }}</div><div class="barcode-text">*{{ label.barcode }}*</div></div>
+                    </article>
+                    {% endfor %}
+                </div>
+                {% else %}<div class="preview-empty screen-only"><div><div style="font-size:3rem">ðŸ·ï¸</div><strong>Search for and select a product.</strong><br>Its BrooksHouse part number and label will appear here.</div></div>{% endif %}
+            </section>
+        </div>
+    </main>
+</body>
+</html>
+

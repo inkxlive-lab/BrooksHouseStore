@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tote Manager | BrooksHouse Store</title>
+    <style>
+        :root{--red:#8f1f24;--dark:#241d1b;--cream:#f7f2ea;--card:#fff;--line:#e2d6cc;--green:#26734d;--blue:#185f9e;--amber:#986000;--muted:#6d625d}
+        *{box-sizing:border-box}body{margin:0;background:var(--cream);color:var(--dark);font-family:Arial,Helvetica,sans-serif}.topbar{background:linear-gradient(135deg,#561014,var(--red));padding:14px 18px;color:#fff}.topbar a{color:#fff;text-decoration:none;font-weight:800;margin-right:18px;display:inline-block;padding:6px 0}main{width:min(1280px,calc(100% - 24px));margin:22px auto 60px}h1{margin:0 0 5px}.intro{margin:0 0 18px;color:var(--muted)}.card{background:var(--card);border:1px solid var(--line);border-radius:15px;padding:18px;margin:14px 0;box-shadow:0 6px 18px rgba(55,37,28,.06)}.search{display:flex;gap:10px;align-items:end;flex-wrap:wrap}.field{display:grid;gap:6px;flex:1 1 230px;font-weight:800}.field input,.field select,.field textarea{width:100%;min-height:46px;padding:10px 12px;border:1px solid #bfaea2;border-radius:9px;font:inherit;background:#fff}.field input{text-transform:uppercase}.field textarea{text-transform:none;min-height:70px}button,.button{min-height:46px;border:0;border-radius:9px;padding:11px 17px;background:var(--red);color:#fff;font-weight:800;font-size:.96rem;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center}.button.blue,button.blue{background:var(--blue)}button.green,.button.green{background:var(--green)}button.amber{background:var(--amber)}.notice{padding:13px 15px;border-radius:9px;margin:12px 0;font-weight:800}.success{background:#e4f5eb;color:#165f3c;border:1px solid #a5d5b8}.error{background:#fde8e8;color:#842323;border:1px solid #e4aaaa}.warning{background:#fff6d9;border:1px solid #dfc56b;padding:13px;border-radius:10px}.summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.metric{background:#fff;border:1px solid var(--line);border-radius:12px;padding:14px}.metric small{display:block;text-transform:uppercase;color:var(--muted);font-weight:800}.metric strong{display:block;font-size:1.35rem;margin-top:5px}.tools{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.tools h2,.card h2{margin-top:0}.table-wrap{overflow-x:auto}table{width:100%;border-collapse:collapse;min-width:950px}th,td{padding:10px;border-bottom:1px solid #eee4dc;text-align:left;vertical-align:top}th{font-size:.76rem;text-transform:uppercase;background:#faf6f1}.qty{font-weight:900;font-size:1.08rem}.line-form{display:grid;grid-template-columns:115px 105px 170px 190px minmax(190px,1fr) auto;gap:7px;align-items:end}.line-form input,.line-form select{width:100%;min-height:40px;padding:7px;border:1px solid #bfaea2;border-radius:7px}.line-form button{min-height:40px;padding:8px 11px}.muted,small{color:var(--muted)}.location-choice{padding:10px;border:1px solid var(--line);border-radius:9px;margin:7px 0}.history td{font-size:.88rem}.empty{text-align:center;padding:28px}.danger-note{color:#862727;font-weight:800}.hidden{display:none}
+        @media(max-width:850px){.summary,.tools{grid-template-columns:1fr 1fr}.line-form{grid-template-columns:1fr 1fr}.line-form .reason{grid-column:1/-1}}
+        @media(max-width:560px){main{width:calc(100% - 12px);margin-top:10px}.summary,.tools{grid-template-columns:1fr}.card{padding:13px}.search button{width:100%}.line-form{grid-template-columns:1fr}.line-form .reason{grid-column:auto}}
+    </style>
+</head>
+<body>
+<nav class="topbar"><a href="/dashboard">Dashboard</a><a href="/inventory/search">Inventory Search</a><a href="/inventory/tote-audit">Rapid Tote Audit</a><a href="/inventory/tote-repair">Unassigned Repair</a></nav>
+<main>
+    <h1>Tote Manager</h1>
+    <p class="intro">One stop to inspect, correct, move, merge, and audit a tote. Every saved inventory change records a reason.</p>
+    {% if message %}<div class="notice success">{{ message }}</div>{% endif %}
+    {% if error %}<div class="notice error">{{ error }}</div>{% endif %}
+    <form class="card search" method="get" action="/inventory/tote-manager">
+        <label class="field">Tote / Container ID<input name="container_id" value="{{ container_id }}" placeholder="Scan or enter tote label" autofocus autocomplete="off" required></label>
+        <button type="submit">Open Tote</button>
+    </form>
+
+    {% if container_id and tote_locations|length > 1 and not selected_location_id %}
+    <section class="card"><h2>Choose the physical location</h2><p class="warning">This tote ID exists at more than one location. Choose the location you are physically repairing—Tote Manager will never guess.</p>
+        {% for location in tote_locations %}<div class="location-choice"><a class="button blue" href="/inventory/tote-manager?container_id={{ container_id }}&location_id={{ location.location_id }}">{{ location.location_name }}</a></div>{% endfor %}
+    </section>
+    {% elif container_id and not rows %}
+    <section class="card empty"><h2>Tote not found</h2><p>No inventory rows use <strong>{{ container_id }}</strong>{% if selected_location_id %} at the selected location{% endif %}.</p><p>Use <a href="/inventory/tote-repair">Unassigned Repair</a> if the products were scanned without a tote.</p></section>
+    {% elif rows %}
+    <section class="summary">
+        <div class="metric"><small>Tote</small><strong>{{ container_id }}</strong></div><div class="metric"><small>Location</small><strong>{{ rows[0].location_name }}</strong></div><div class="metric"><small>Products</small><strong>{{ rows|length }}</strong></div><div class="metric"><small>Units / Reserved</small><strong>{{ total_units }} / {{ total_reserved }}</strong></div>
+    </section>
+    <section class="card"><div class="search"><div><h2 style="margin-bottom:4px">Tote contents</h2><small>Use each product row to correct its count or move units to another tote/location.</small></div><a class="button green" href="/inventory/tote-audit">Start Rapid Tote Audit</a></div>
+        <div class="table-wrap"><table><thead><tr><th>Product</th><th>Barcode</th><th>Qty</th><th>Reserved</th><th>Repair one line</th></tr></thead><tbody>
+        {% for row in rows %}<tr><td><strong>{{ row.product_name }}</strong>{% if row.brand %}<br><small>{{ row.brand }}</small>{% endif %}<br><small>Inventory #{{ row.inventory_id }}</small></td><td>{{ row.barcode or "No barcode" }}</td><td class="qty">{{ row.quantity }}</td><td>{{ row.reserved }}</td><td>
+            <form class="line-form" method="post" action="/inventory/tote-manager/line" onsubmit="return confirmLine(this)">
+                <input type="hidden" name="inventory_id" value="{{ row.inventory_id }}"><label><small>Action</small><select name="action" onchange="toggleLine(this)"><option value="correct">Correct total</option><option value="move">Move units</option></select></label><label><small>Quantity</small><input type="number" name="quantity" min="0" value="{{ row.quantity }}" required></label><label class="destination hidden"><small>Destination</small><select name="destination_location_id"><option value="0">Choose location</option>{% for location in locations %}<option value="{{ location.location_id }}">{{ location.location_name }}</option>{% endfor %}</select></label><label class="destination hidden"><small>Destination tote</small><input name="destination_container_id" placeholder="Blank = no tote"></label><label class="reason"><small>Required reason</small><input name="reason" placeholder="What did you physically verify?" required style="text-transform:none"></label><button type="submit">Save</button>
+            </form>
+        </td></tr>{% endfor %}</tbody></table></div>
+    </section>
+    <section class="tools">
+        <form class="card" method="post" action="/inventory/tote-manager/rename" onsubmit="return confirm('Rename this entire tote? Existing matching rows will be merged safely.')"><h2>Correct or merge tote ID</h2><p>Fix a mistyped label. If the new tote already exists here, matching product rows are merged.</p><input type="hidden" name="source_container_id" value="{{ container_id }}"><input type="hidden" name="source_location_id" value="{{ rows[0].location_id }}"><label class="field">Correct tote ID<input name="destination_container_id" required></label><label class="field">Required reason<textarea name="reason" required>Tote label correction</textarea></label><button class="amber" type="submit">Rename / Merge Tote</button></form>
+        <form class="card" method="post" action="/inventory/tote-manager/move" onsubmit="return confirm('Move every product in this tote to the selected destination?')"><h2>Move entire tote</h2><p>Moves all contents together. The destination is always explicit—Storefront is never assumed.</p><input type="hidden" name="source_container_id" value="{{ container_id }}"><input type="hidden" name="source_location_id" value="{{ rows[0].location_id }}"><label class="field">Destination location<select name="destination_location_id" required><option value="">Choose location</option>{% for location in locations %}<option value="{{ location.location_id }}">{{ location.location_name }}</option>{% endfor %}</select></label><label class="field">Destination tote ID<input name="destination_container_id" value="{{ container_id }}" required></label><label class="field">Required reason<textarea name="reason" required>Tote moved</textarea></label><button class="blue" type="submit">Move Entire Tote</button></form>
+    </section>
+    {% endif %}
+
+    {% if history %}<section class="card"><h2>Recent tote history</h2><p class="muted">Latest 75 transactions recorded under this tote ID.</p><div class="table-wrap"><table class="history"><thead><tr><th>Date</th><th>Product</th><th>Location</th><th>Type</th><th>Change</th><th>Performed By</th><th>Reference / Notes</th></tr></thead><tbody>{% for item in history %}<tr><td>{{ item.created_at.strftime("%m/%d/%Y %I:%M %p") if item.created_at else "" }}</td><td>{{ item.product.product_name }}</td><td>{{ item.location.location_name }}</td><td>{{ item.transaction_type }}</td><td class="qty">{% if item.quantity_change > 0 %}+{% endif %}{{ item.quantity_change }}</td><td>{{ item.performed_by_name or "Unknown / Legacy" }}{% if item.performed_by_user_id %}<br><small>User ID {{ item.performed_by_user_id }}</small>{% endif %}</td><td>{{ item.reference_number or "" }}<br><small>{{ item.notes or "" }}</small></td></tr>{% endfor %}</tbody></table></div></section>{% endif %}
+</main>
+<script>
+function toggleLine(select){const moving=select.value==='move';select.closest('form').querySelectorAll('.destination').forEach(el=>el.classList.toggle('hidden',!moving));}
+function confirmLine(form){const action=form.elements.action.value;const qty=form.elements.quantity.value;return window.confirm(action==='move'?`Move ${qty} available unit(s)?`:`Set the physical total to ${qty}?`);}
+</script>
+</body></html>

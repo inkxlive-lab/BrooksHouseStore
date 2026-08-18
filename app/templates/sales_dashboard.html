@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sales Dashboard | BrooksHouse Store</title>
+    <link rel="stylesheet" href="/static/store.css">
+    <style>
+        :root { --red:#8f1f24; --dark:#641419; --ink:#201a18; --muted:#6f6662; --cream:#f7f2ea; --card:#fff; --line:#e8ddd3; --green:#26734d; --amber:#a76100; }
+        * { box-sizing:border-box; }
+        body { margin:0; color:var(--ink); background:var(--cream); }
+        header { color:#fff; background:linear-gradient(135deg,var(--dark),var(--red)); }
+        .head,.shell { max-width:1450px; margin:auto; padding:18px 22px; }
+        .head { display:flex; align-items:center; justify-content:space-between; gap:15px; }
+        .head p,.head h1 { margin:0; } .head p { opacity:.8; font-weight:800; font-size:.75rem; letter-spacing:.12em; text-transform:uppercase; }
+        nav { display:flex; gap:8px; flex-wrap:wrap; } nav a { color:#fff; font-weight:800; text-decoration:none; padding:10px; border-radius:9px; } nav a:hover { background:#ffffff22; }
+        .shell { padding-top:25px; padding-bottom:50px; }
+        .title-row { display:flex; justify-content:space-between; align-items:end; gap:16px; flex-wrap:wrap; }
+        h2 { margin:0; font-size:clamp(1.65rem,3vw,2.4rem); } .subtitle { margin:6px 0 0; color:var(--muted); }
+        .filters { margin:20px 0; padding:16px; display:flex; gap:12px; align-items:end; flex-wrap:wrap; background:#fff; border:1px solid var(--line); border-radius:15px; }
+        label { display:grid; gap:5px; color:var(--muted); font-size:.78rem; font-weight:900; text-transform:uppercase; }
+        select,input,button,.button { min-height:42px; padding:9px 12px; border:1px solid #d8c9bd; border-radius:9px; background:#fff; color:var(--ink); font:inherit; }
+        button,.button { cursor:pointer; color:#fff; background:var(--red); border-color:var(--red); font-weight:900; text-decoration:none; text-transform:none; }
+        .button.secondary { color:var(--red); background:#fff; }
+        .metrics { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:11px; margin-bottom:20px; }
+        .metric,.panel { background:var(--card); border:1px solid var(--line); border-radius:15px; box-shadow:0 7px 20px #37251c10; }
+        .metric { padding:16px; } .metric span { display:block; color:var(--muted); font-size:.73rem; font-weight:900; text-transform:uppercase; }
+        .metric strong { display:block; margin-top:7px; font-size:1.45rem; } .metric small { color:var(--muted); }
+        .panel { padding:19px; margin-bottom:18px; overflow:auto; } .panel h3 { margin:0 0 5px; } .panel-note { margin:0 0 15px; color:var(--muted); }
+        .channel-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
+        .channel { padding:16px; border:1px solid var(--line); border-radius:13px; } .channel h4 { margin:0 0 12px; text-transform:capitalize; }
+        .channel dl { margin:0; display:grid; grid-template-columns:1fr auto; gap:7px; } dt { color:var(--muted); } dd { margin:0; font-weight:900; }
+        table { width:100%; border-collapse:collapse; min-width:850px; } th,td { padding:11px 9px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
+        th { color:var(--muted); font-size:.72rem; text-transform:uppercase; } .money,.number { text-align:right; white-space:nowrap; }
+        .badge { display:inline-block; padding:4px 8px; border-radius:999px; background:#eee8e2; font-size:.72rem; font-weight:900; text-transform:capitalize; }
+        .shopify { background:#e9f7ee; color:#17623b; } .walmart { background:#e8f3ff; color:#075da8; } .amazon { background:#fff2d7; color:#825100; }
+        .warning { padding:14px; border-left:5px solid var(--amber); background:#fff5df; border-radius:10px; }
+        .error { padding:15px; color:#8b1a1a; background:#ffe8e8; border-radius:12px; }
+        .bar-chart { height:150px; display:flex; align-items:end; gap:6px; padding-top:15px; }
+        .bar-wrap { min-width:16px; flex:1; text-align:center; } .bar { min-height:3px; background:var(--red); border-radius:5px 5px 0 0; } .bar-wrap small { display:block; overflow:hidden; font-size:.6rem; color:var(--muted); }
+        @media(max-width:1050px){.metrics{grid-template-columns:repeat(3,1fr)}.channel-grid{grid-template-columns:1fr}}
+        @media(max-width:620px){.head{align-items:flex-start;flex-direction:column}.metrics{grid-template-columns:repeat(2,1fr)}.metric strong{font-size:1.15rem}.filters{display:grid;grid-template-columns:1fr 1fr}.filters label{min-width:0}.filters select,.filters input{width:100%}}
+    </style>
+</head>
+<body>
+<header><div class="head"><div><p>The BrooksHouse Store</p><h1>Sales Dashboard</h1></div><nav><a href="/dashboard">Dashboard</a><a href="/channels/orders">Orders</a><a href="/sales/shopify-cost-rules">Cost Rules</a><a href="/inventory/search">Inventory</a></nav></div></header>
+<main class="shell">
+    <div class="title-row"><div><h2>Sales performance</h2><p class="subtitle">Shopify, Walmart, and Amazon in one view.</p></div><form method="post" action="/sales/refresh"><button type="submit">Refresh Foundation</button></form></div>
+    <form class="filters" method="get" action="/sales">
+        <label>Period<select name="period"><option value="today" {% if filters.period=='today' %}selected{% endif %}>Today</option><option value="7" {% if filters.period=='7' %}selected{% endif %}>Last 7 days</option><option value="30" {% if filters.period=='30' %}selected{% endif %}>Last 30 days</option><option value="month" {% if filters.period=='month' %}selected{% endif %}>This month</option><option value="custom" {% if filters.period=='custom' %}selected{% endif %}>Custom</option><option value="all" {% if filters.period=='all' %}selected{% endif %}>All history</option></select></label>
+        <label>Start<input type="date" name="start" value="{{ filters.start }}"></label><label>End<input type="date" name="end" value="{{ filters.end }}"></label>
+        <label>Channel<select name="channel"><option value="all" {% if filters.channel=='all' %}selected{% endif %}>All channels</option><option value="shopify" {% if filters.channel=='shopify' %}selected{% endif %}>Shopify</option><option value="walmart" {% if filters.channel=='walmart' %}selected{% endif %}>Walmart</option><option value="amazon" {% if filters.channel=='amazon' %}selected{% endif %}>Amazon</option></select></label>
+        <button type="submit">Run Report</button><a class="button secondary" href="/sales/export.csv?period={{ filters.period }}&start={{ filters.start }}&end={{ filters.end }}&channel={{ filters.channel }}">Export CSV</a>
+    </form>
+    {% if error %}<p class="error"><strong>Could not load sales:</strong> {{ error }}</p>{% else %}
+    <section class="metrics">
+        <article class="metric"><span>Orders</span><strong>{{ summary.orders }}</strong><small>Completed and open</small></article>
+        <article class="metric"><span>Units sold</span><strong>{{ summary.units }}</strong><small>Across sales lines</small></article>
+        <article class="metric"><span>Net sales</span><strong>${{ '%.2f'|format(summary.net_sales) }}</strong><small>Before operating expenses</small></article>
+        <article class="metric"><span>Known + est. cost</span><strong>${{ '%.2f'|format(summary.estimated_cost) }}</strong><small>${{ '%.2f'|format(summary.rule_cost) }} from quick-sale rules</small></article>
+        <article class="metric"><span>Est. gross profit</span><strong>${{ '%.2f'|format(summary.estimated_profit) }}</strong><small>{{ summary.profit_coverage }}% sales coverage</small></article>
+        <article class="metric"><span>Product match</span><strong>{{ summary.match_rate }}%</strong><small>{{ summary.matched_lines }} of {{ summary.total_lines }} lines</small></article>
+    </section>
+    {% if summary.uncovered_lines %}<p class="warning"><strong>{{ summary.uncovered_lines }} sales lines have no cost:</strong> revenue is included, but profit excludes them. <a href="/sales/shopify-cost-rules">Review Shopify Quick Sale Cost Rules</a>.</p>{% elif summary.rule_lines %}<p class="warning"><strong>{{ summary.rule_lines }} lines use quick-sale estimates.</strong> Their cost and profit are estimates rather than product-specific values. <a href="/sales/shopify-cost-rules">Review rules</a>.</p>{% endif %}
+    <section class="panel"><h3>Channel comparison</h3><p class="panel-note">Order count, units, and sales for the selected period.</p><div class="channel-grid">{% for row in channels %}<article class="channel"><h4><span class="badge {{ row.sales_channel }}">{{ row.sales_channel }}</span></h4><dl><dt>Orders</dt><dd>{{ row.orders }}</dd><dt>Units</dt><dd>{{ row.units }}</dd><dt>Net sales</dt><dd>${{ '%.2f'|format(row.net_sales) }}</dd><dt>Collected total</dt><dd>${{ '%.2f'|format(row.collected_total) }}</dd></dl></article>{% else %}<p>No sales found for this period.</p>{% endfor %}</div></section>
+    {% if daily %}<section class="panel"><h3>Daily sales trend</h3><div class="bar-chart">{% set peak = daily|map(attribute='net_sales')|max %}{% for row in daily %}<div class="bar-wrap" title="{{ row.sales_date }}: ${{ '%.2f'|format(row.net_sales) }}"><div class="bar" style="height:{{ ((row.net_sales / peak * 120) if peak else 3)|round }}px"></div><small>{{ row.sales_date[5:] }}</small></div>{% endfor %}</div></section>{% endif %}
+    <section class="panel"><h3>Top products by channel</h3><p class="panel-note">Profit is only shown where a BrooksHouse product and average cost are available.</p><table><thead><tr><th>Product</th><th>Barcode</th><th>Channel</th><th class="number">Units</th><th class="money">Sales</th><th class="money">Known cost</th><th class="money">Est. profit</th><th>Quality</th></tr></thead><tbody>{% for row in top_products %}<tr><td>{% if row.product_id %}<a href="/products/{{ row.product_id }}">{{ row.product_name }}</a>{% else %}{{ row.product_name }}{% endif %}</td><td>{{ row.barcode or '—' }}</td><td><span class="badge {{ row.sales_channel }}">{{ row.sales_channel }}</span></td><td class="number">{{ row.units }}</td><td class="money">${{ '%.2f'|format(row.net_sales or 0) }}</td><td class="money">{% if row.estimated_cost is not none %}${{ '%.2f'|format(row.estimated_cost) }}{% else %}—{% endif %}</td><td class="money">{% if row.estimated_profit is not none %}${{ '%.2f'|format(row.estimated_profit) }}{% else %}—{% endif %}</td><td>{% if row.amount_quality=='allocated_order_total' %}Walmart estimate{% else %}Exact line amount{% endif %}</td></tr>{% else %}<tr><td colspan="8">No products found.</td></tr>{% endfor %}</tbody></table></section>
+    <section class="panel"><h3>Unmatched product worklist</h3><p class="panel-note">Match these first to improve profit accuracy.</p><table><thead><tr><th>Product</th><th>SKU</th><th>Barcode</th><th>Channel</th><th class="number">Lines</th><th class="number">Units</th><th class="money">Sales</th></tr></thead><tbody>{% for row in unmatched %}<tr><td>{{ row.product_name }}</td><td>{{ row.sku or '—' }}</td><td>{{ row.barcode or '—' }}</td><td><span class="badge {{ row.sales_channel }}">{{ row.sales_channel }}</span></td><td class="number">{{ row.lines }}</td><td class="number">{{ row.units }}</td><td class="money">${{ '%.2f'|format(row.net_sales or 0) }}</td></tr>{% else %}<tr><td colspan="7">All visible sales lines are matched.</td></tr>{% endfor %}</tbody></table></section>
+    <section class="panel"><h3>Recent orders</h3><table><thead><tr><th>Date</th><th>Channel</th><th>Order</th><th>Status</th><th>Fulfillment</th><th class="money">Net sales</th><th class="money">Collected</th></tr></thead><tbody>{% for row in recent_orders %}<tr><td>{{ row.ordered_at or '—' }}</td><td><span class="badge {{ row.sales_channel }}">{{ row.sales_channel }}</span></td><td>{{ row.order_number or row.external_order_id }}</td><td>{{ row.order_status or '—' }}</td><td>{{ row.fulfillment_status or '—' }}</td><td class="money">${{ '%.2f'|format(row.net_sales or 0) }}</td><td class="money">${{ '%.2f'|format(row.order_total or 0) }}</td></tr>{% else %}<tr><td colspan="7">No orders found.</td></tr>{% endfor %}</tbody></table></section>
+    {% endif %}
+</main>
+</body></html>

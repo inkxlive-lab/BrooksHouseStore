@@ -1,0 +1,68 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Shopify Transaction Details</title>
+  <style>
+    *{box-sizing:border-box}body{font-family:Arial,sans-serif;background:#f4f1eb;color:#181818;margin:0}.wrap{max-width:1180px;margin:auto;padding:20px}.top,.summary,.section-head,.line-head,.payment-head{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap}.back,.button{display:inline-block;background:#86151d;color:#fff;text-decoration:none;border-radius:9px;padding:10px 14px;font-weight:700}.eyebrow{font-size:12px;letter-spacing:1.4px;font-weight:800;color:#86151d;text-transform:uppercase}.panel,.metric,.line,.payment,.task{background:#fff;border-radius:14px;padding:16px;box-shadow:0 3px 12px #0001}.summary{display:grid;grid-template-columns:repeat(4,1fr);margin:16px 0}.metric strong{display:block;font-size:24px;margin-top:5px}.muted{color:#666}.section{margin-top:18px}.section h2{margin:0 0 10px}.line,.payment,.task{margin:10px 0}.line-grid{display:grid;grid-template-columns:minmax(0,2fr) repeat(3,minmax(90px,1fr));gap:12px;margin-top:10px}.label{font-size:11px;text-transform:uppercase;letter-spacing:.8px;color:#666;font-weight:700}.value{font-weight:700;margin-top:4px;overflow-wrap:anywhere}.badge{display:inline-block;border-radius:20px;padding:5px 9px;font-size:12px;font-weight:800;background:#eee}.matched,.success,.completed{background:#dcfce7;color:#166534}.unmatched,.ambiguous,.blocked{background:#fee2e2;color:#991b1b}.open,.in_progress{background:#fef3c7;color:#92400e}.empty{background:#fff;border-radius:14px;padding:18px}.total-row{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid #eee}.total-row.grand{font-size:20px;font-weight:800;border-bottom:0}.id{font-family:monospace;font-size:12px;overflow-wrap:anywhere}@media(max-width:760px){.wrap{padding:12px}.summary{grid-template-columns:1fr 1fr}.line-grid{grid-template-columns:1fr 1fr}.top h1{font-size:25px;margin:7px 0}.metric strong{font-size:20px}}@media(max-width:420px){.summary,.line-grid{grid-template-columns:1fr}.back{width:100%;text-align:center}}
+  </style>
+</head>
+<body>
+<main class="wrap">
+  <div class="top">
+    <div><div class="eyebrow">Shopify POS sale</div><h1>Transaction Details</h1></div>
+    <div><a class="back" href="/operations/work-queue">Back to Work Queue</a> <a class="back" href="/channels/shopify/sales">Sales History</a></div>
+  </div>
+
+  {% if error %}<div class="empty">{{ error }}</div>{% endif %}
+  {% if order %}
+  <section class="summary">
+    <div class="metric"><span class="label">Order</span><strong>{{ order['order_name'] or order['order_number'] }}</strong><span class="muted">{{ order['processed_at'] or 'Date unavailable' }}</span></div>
+    <div class="metric"><span class="label">Total</span><strong>{{ order['currency'] }} {{ '%.2f'|format(order['total_amount'] or 0) }}</strong><span class="muted">{{ order['financial_status'] or 'Unknown status' }}</span></div>
+    <div class="metric"><span class="label">POS location</span><strong>{{ location_name or 'Not provided' }}</strong><span class="muted">{{ order['source_name'] or 'Shopify' }}</span></div>
+    <div class="metric"><span class="label">Refunded</span><strong>{{ order['currency'] }} {{ '%.2f'|format(order['refund_amount'] or 0) }}</strong><span class="muted">{{ order['fulfillment_status'] or 'No fulfillment status' }}</span></div>
+  </section>
+
+  <section class="panel section">
+    <div class="section-head"><h2>Sale totals</h2><span class="id">{{ order['shopify_order_id'] }}</span></div>
+    <div class="total-row"><span>Subtotal</span><strong>{{ order['currency'] }} {{ '%.2f'|format(order['subtotal_amount'] or 0) }}</strong></div>
+    <div class="total-row"><span>Discounts</span><strong>-{{ order['currency'] }} {{ '%.2f'|format(order['discount_amount'] or 0) }}</strong></div>
+    <div class="total-row"><span>Tax</span><strong>{{ order['currency'] }} {{ '%.2f'|format(order['tax_amount'] or 0) }}</strong></div>
+    <div class="total-row grand"><span>Total</span><span>{{ order['currency'] }} {{ '%.2f'|format(order['total_amount'] or 0) }}</span></div>
+  </section>
+
+  <section class="section">
+    <div class="section-head"><h2>Items ({{ lines|length }})</h2></div>
+    {% for line in lines %}
+    <article class="line">
+      <div class="line-head"><strong>{{ line['title'] or 'Unnamed item' }}{% if line['variant_title'] %} - {{ line['variant_title'] }}{% endif %}</strong><span class="badge {{ line['match_status'] }}">{{ line['match_status']|replace('_',' ')|upper }}</span></div>
+      <div class="line-grid">
+        <div><div class="label">Barcode / SKU</div><div class="value">{{ line['barcode'] or 'No barcode' }}{% if line['sku'] %}<br><span class="muted">SKU {{ line['sku'] }}</span>{% endif %}</div></div>
+        <div><div class="label">Quantity</div><div class="value">{{ line['quantity'] }}</div></div>
+        <div><div class="label">Unit price</div><div class="value">{{ order['currency'] }} {{ '%.2f'|format(line['unit_price'] or 0) }}</div></div>
+        <div><div class="label">Net amount</div><div class="value">{{ order['currency'] }} {{ '%.2f'|format(line['net_amount'] or 0) }}</div></div>
+      </div>
+      <div class="muted" style="margin-top:10px">BrooksHouse match: {{ line['brookshouse_product_name'] or 'Not matched' }}{% if line['product_id'] %} (product #{{ line['product_id'] }}){% endif %}{% if line['match_method'] %} by {{ line['match_method']|replace('_',' ') }}{% endif %}</div>
+    </article>
+    {% else %}<div class="empty">No line items were saved for this transaction.</div>{% endfor %}
+  </section>
+
+  <section class="section">
+    <div class="section-head"><h2>Payments and refunds ({{ transactions|length }})</h2></div>
+    {% for payment in transactions %}
+    <article class="payment">
+      <div class="payment-head"><strong>{{ payment['kind'] or 'Payment' }} - {{ payment['gateway'] or 'Unknown gateway' }}</strong><span class="badge {{ (payment['status'] or '')|lower }}">{{ payment['status'] or 'Unknown' }}</span></div>
+      <div class="line-grid"><div><div class="label">Amount</div><div class="value">{{ payment['currency'] }} {{ '%.2f'|format(payment['amount'] or 0) }}</div></div><div><div class="label">Processed</div><div class="value">{{ payment['processed_at'] or 'Unavailable' }}</div></div><div><div class="label">Payment ID</div><div class="value id">{{ payment['payment_id'] or 'Unavailable' }}</div></div><div><div class="label">Transaction ID</div><div class="value id">{{ payment['shopify_transaction_id'] }}</div></div></div>
+    </article>
+    {% else %}<div class="empty">No payment records were saved for this transaction.</div>{% endfor %}
+  </section>
+
+  <section class="section">
+    <div class="section-head"><h2>Related work ({{ related_tasks|length }})</h2></div>
+    {% for task in related_tasks %}<article class="task"><div class="line-head"><strong>#{{ task['task_id'] }} - {{ task['title'] }}</strong><span class="badge {{ task['status'] }}">{{ task['status']|replace('_',' ')|upper }}</span></div><p>{{ task['details'] or '' }}</p>{% if task['resolution_notes'] %}<div class="muted">Notes: {{ task['resolution_notes'] }}</div>{% endif %}</article>{% else %}<div class="empty">No work-queue tasks are tied to this transaction.</div>{% endfor %}
+  </section>
+  {% endif %}
+</main>
+</body>
+</html>

@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>Shopify Approval Queue | BrooksHouse Store</title>
+
+    <link
+        rel="stylesheet"
+        href="/static/store.css"
+    >
+</head>
+
+<body>
+    <header class="store-header">
+        <div>
+            <p class="eyebrow">The BrooksHouse Store</p>
+
+            <h1>Shopify Inventory Approval Queue</h1>
+
+            <p class="subtitle">
+                Review and approve local quantities before anything
+                is sent to Shopify.
+            </p>
+        </div>
+
+        <nav>
+            <a href="/storage-gallery">Storage Gallery</a>
+
+            <a href="/smart-scan">Smart Scan</a>
+
+            <a href="/channels/amazon/mapping">Amazon Mapping</a>
+            <a href="/channels/shopify/storefront-import">Storefront Import</a>
+            <a href="/dashboard">Dashboard</a>
+            <a href="/inventory/replenishment">
+                Replenishment
+            </a>
+
+            <a href="/channels/shopify/reconcile">
+                Shopify Compare
+            </a>
+
+            <a href="/channels/shopify/settings">
+                Shopify Settings
+            </a>
+
+            <a href="/channels/shopify/approve">
+                Approval Queue
+            </a>
+
+            <a href="/products">Products</a>
+        </nav>
+    </header>
+
+    <main class="page-container">
+        {% if message %}
+        <section class="alert success">
+            <strong>{{ message }}</strong>
+        </section>
+        {% endif %}
+
+        {% if error %}
+        <section class="alert error">
+            <strong>{{ error }}</strong>
+        </section>
+        {% endif %}
+
+        <section class="approval-summary">
+            <article class="dashboard-card">
+                <span>Quantity mismatches</span>
+
+                <strong>
+                    {{ summary.total }}
+                </strong>
+
+                <p>
+                    Safe single-listing barcode matches.
+                </p>
+            </article>
+
+            <article class="dashboard-card">
+                <span>Approved</span>
+
+                <strong>
+                    {{ summary.approved }}
+                </strong>
+
+                <p>
+                    Saved for the future Shopify push.
+                </p>
+            </article>
+
+            <article class="dashboard-card">
+                <span>Awaiting approval</span>
+
+                <strong>
+                    {{ summary.pending }}
+                </strong>
+
+                <p>
+                    Mismatches that have not been selected.
+                </p>
+            </article>
+
+            <article class="dashboard-card">
+                <span>Stale approvals</span>
+
+                <strong>
+                    {{ summary.stale }}
+                </strong>
+
+                <p>
+                    Quantities changed after approval.
+                </p>
+            </article>
+        </section>
+
+        <section class="shopify-setting-warning">
+            <strong>No Shopify quantities are changed here.</strong>
+
+            This page only saves your approval choices. The next step
+            will perform a final safety review before any API update.
+        </section>
+
+        <section class="dashboard-panel approval-panel">
+            <form
+                action="/channels/shopify/approve"
+                method="post"
+            >
+                <div class="dashboard-panel-heading">
+                    <div>
+                        <p class="eyebrow">Approval review</p>
+
+                        <h2>Inventory mismatches</h2>
+
+                        <p>
+                            Select only the local quantities you want
+                            prepared for Shopify.
+                        </p>
+                    </div>
+
+                    <label class="select-all-control">
+                        <input
+                            type="checkbox"
+                            id="select-all-approvals"
+                        >
+
+                        Select all
+                    </label>
+                </div>
+
+                {% if candidates %}
+                <div class="dashboard-table-wrap">
+                    <table class="dashboard-table approval-table">
+                        <thead>
+                            <tr>
+                                <th>Approve</th>
+                                <th>Status</th>
+                                <th>Product</th>
+                                <th>Barcode</th>
+                                <th>Local</th>
+                                <th>Shopify</th>
+                                <th>Difference</th>
+                                <th>Match</th>
+                                <th>Approval</th>
+                            </tr>
+                        </thead>
+
+                        <tbody>
+                            {% for row in candidates %}
+                            <tr
+                                class="
+                                    {% if row.stale %}
+                                        stale-approval-row
+                                    {% endif %}
+                                "
+                            >
+                                <td>
+                                    <input
+                                        class="approval-checkbox"
+                                        type="checkbox"
+                                        name="approval_keys"
+                                        value="{{ row.approval_key }}"
+                                        {% if row.approved and not row.stale %}
+                                            checked
+                                        {% endif %}
+                                    >
+                                </td>
+
+                                <td>
+                                    <span
+                                        class="
+                                            reconciliation-status
+                                            reconciliation-{{ row.status }}
+                                        "
+                                    >
+                                        {{ row.status_label }}
+                                    </span>
+                                </td>
+
+                                <td>
+                                    <a
+                                        href="/products/{{ row.product_id }}"
+                                    >
+                                        <strong>
+                                            {{ row.product_name }}
+                                        </strong>
+                                    </a>
+                                </td>
+
+                                <td>
+                                    {{ row.barcode }}
+                                </td>
+
+                                <td>
+                                    <strong>
+                                        {{ row.local_quantity }}
+                                    </strong>
+                                </td>
+
+                                <td>
+                                    {{ row.shopify_quantity }}
+                                </td>
+
+                                <td>
+                                    <strong
+                                        class="
+                                            {% if row.difference > 0 %}
+                                                positive-change
+                                            {% else %}
+                                                negative-change
+                                            {% endif %}
+                                        "
+                                    >
+                                        {% if row.difference > 0 %}
+                                            +{{ row.difference }}
+                                        {% else %}
+                                            {{ row.difference }}
+                                        {% endif %}
+                                    </strong>
+                                </td>
+
+                                <td>
+                                    {{ row.match_method }}
+                                </td>
+
+                                <td>
+                                    {% if row.stale %}
+                                    <span class="approval-stale">
+                                        Stale—review again
+                                    </span>
+
+                                    {% elif row.approved %}
+                                    <span class="approval-saved">
+                                        Approved
+                                    </span>
+
+                                    {% else %}
+                                    <span class="approval-pending">
+                                        Pending
+                                    </span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="form-actions approval-actions">
+                    <a
+                        class="secondary-button link-button"
+                        href="/channels/shopify/reconcile"
+                    >
+                        Back to Comparison
+                    </a>
+
+                    <button
+                        type="submit"
+                        class="primary-button"
+                    >
+                        Save Selected Approvals
+                    </button>
+                </div>
+                {% else %}
+                <div class="empty-history">
+                    <h3>No safe quantity mismatches found</h3>
+
+                    <p>
+                        Matching quantities, duplicate barcodes, and
+                        unmatched products do not appear in this queue.
+                    </p>
+
+                    <a
+                        class="primary-button link-button"
+                        href="/channels/shopify/reconcile"
+                    >
+                        View Shopify Comparison
+                    </a>
+                </div>
+                {% endif %}
+            </form>
+        </section>
+
+        {% if summary.approved %}
+        <section class="dashboard-panel clear-approval-panel">
+            <div>
+                <h2>Clear saved approvals</h2>
+
+                <p>
+                    This removes all approval snapshots. It does not
+                    change Shopify or BrooksHouse inventory.
+                </p>
+            </div>
+
+            <form
+                action="/channels/shopify/approve/clear"
+                method="post"
+            >
+                <button
+                    type="submit"
+                    class="secondary-button danger-button"
+                >
+                    Clear All Approvals
+                </button>
+            </form>
+        </section>
+        {% endif %}
+    </main>
+
+    <script>
+        const selectAll = document.querySelector(
+            "#select-all-approvals"
+        );
+
+        const approvalCheckboxes = [
+            ...document.querySelectorAll(
+                ".approval-checkbox"
+            ),
+        ];
+
+        selectAll?.addEventListener(
+            "change",
+            () => {
+                approvalCheckboxes.forEach(
+                    (checkbox) => {
+                        checkbox.checked =
+                            selectAll.checked;
+                    }
+                );
+            }
+        );
+    </script>
+</body>
+</html>

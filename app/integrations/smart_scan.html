@@ -1,0 +1,1377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BrooksHouse Smart Scan</title>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            background: #f3f4f6;
+            color: #111827;
+        }
+
+        .header {
+            background: #111827;
+            color: white;
+            padding: 18px 24px;
+        }
+
+        .header h1 {
+            margin: 0;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 24px auto;
+            padding: 0 16px;
+        }
+
+        .scan-panel {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 8px rgba(0,0,0,.08);
+        }
+
+        .scan-row {
+            display: flex;
+            gap: 10px;
+        }
+
+        #barcode {
+            flex: 1;
+            font-size: 22px;
+            padding: 14px;
+            border: 2px solid #d1d5db;
+            border-radius: 8px;
+        }
+
+        button {
+            padding: 12px 18px;
+            font-size: 16px;
+            border: 0;
+            border-radius: 8px;
+            cursor: pointer;
+        }
+
+        .lookup-btn {
+            background: #111827;
+            color: white;
+        }
+
+        .status {
+            margin-top: 12px;
+            font-weight: bold;
+        }
+
+        .product-image {
+            text-align: center;
+            margin: 20px 0;
+        }
+
+        .product-image img {
+            max-width: 260px;
+            max-height: 260px;
+            object-fit: contain;
+            background: white;
+            border-radius: 12px;
+            padding: 10px;
+        }
+
+        .comparison {
+            display: grid;
+            grid-template-columns:
+                repeat(auto-fit, minmax(260px, 1fr));
+            gap: 18px;
+        }
+
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 2px 8px rgba(0,0,0,.08);
+        }
+
+        .card h2 {
+            margin-top: 0;
+        }
+
+        .internet {
+            border-top: 5px solid #2563eb;
+        }
+
+        .local {
+            border-top: 5px solid #dc2626;
+        }
+
+        .catalog {
+            border-top: 5px solid #7c3aed;
+        }
+
+        .field {
+            margin-bottom: 14px;
+        }
+
+        .label {
+            font-size: 12px;
+            color: #6b7280;
+            text-transform: uppercase;
+            font-weight: bold;
+        }
+
+        .value {
+            font-size: 17px;
+            margin-top: 3px;
+            word-break: break-word;
+        }
+
+        .different {
+            background: #fef3c7;
+            padding: 7px;
+            border-radius: 6px;
+        }
+
+        .missing {
+            color: #9ca3af;
+            font-style: italic;
+        }
+
+        .actions {
+            margin-top: 20px;
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .internet-btn {
+            background: #2563eb;
+            color: white;
+        }
+
+        .mine-btn {
+            background: #dc2626;
+            color: white;
+        }
+
+        .approve-btn {
+            background: #16a34a;
+            color: white;
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        @media (max-width: 750px) {
+            .comparison {
+                grid-template-columns: 1fr;
+            }
+
+            .scan-row {
+                flex-direction: column;
+            }
+        }
+    
+        .image-comparison {
+            display: grid;
+            grid-template-columns:
+                repeat(auto-fit, minmax(220px, 1fr));
+            gap: 16px;
+            margin: 20px 0;
+        }
+
+        .image-card {
+            padding: 12px;
+            text-align: center;
+            background: white;
+            border: 2px solid #dddddd;
+            border-radius: 12px;
+        }
+
+        .image-label {
+            margin-bottom: 10px;
+            font-weight: bold;
+            color: #222222;
+        }
+
+        .image-card img {
+            width: 100%;
+            max-width: 260px;
+            height: 240px;
+            object-fit: contain;
+            background: white;
+            border-radius: 8px;
+        }
+
+    </style>
+</head>
+
+<body>
+
+<div class="header">
+    <h1>BrooksHouse Smart Scan</h1>
+</div>
+
+<div class="container">
+
+    <div class="scan-panel">
+        <div class="scan-row">
+            <input
+                id="barcode"
+                type="text"
+                placeholder="Scan or enter UPC"
+                autocomplete="off"
+                inputmode="none"
+                autofocus
+            >
+
+            <button class="lookup-btn" onclick="lookupBarcode()">
+                Lookup
+            </button>
+        </div>
+<div id="newProductPanel" class="card hidden" style="margin-top:20px;">
+
+    <h2>Create BrooksHouse Product</h2>
+
+    <div class="field">
+        <div class="label">Product Name</div>
+        <input id="newProductName" type="text">
+    </div>
+
+    <div class="field">
+        <div class="label">Brand</div>
+        <input id="newBrand" type="text">
+    </div>
+
+    <div class="field">
+        <div class="label">Category</div>
+        <input id="newCategory" type="text">
+    </div>
+
+    <div class="field">
+        <div class="label">Your Average Cost</div>
+        <input id="newAverageCost" type="number" step="0.01">
+    </div>
+
+    <div class="field">
+        <div class="label">BrooksHouse Store Price</div>
+        <input id="newStorePrice" type="number" step="0.01">
+    </div>
+
+    <div class="field">
+        <div class="label">Suggested Retail Price</div>
+        <input id="newRetailPrice" type="number" step="0.01">
+    </div>
+
+    <div class="field">
+        <div class="label">Pack Quantity</div>
+        <input id="newPackQuantity" type="number" value="1" min="1">
+    </div>
+
+    <div class="field">
+        <div class="label">Size</div>
+
+        <input
+            id="newSizeValue"
+            type="number"
+            step="0.01"
+            placeholder="16"
+        >
+
+        <input
+            id="newSizeUnit"
+            type="text"
+            placeholder="oz"
+        >
+    </div>
+
+    <div class="field">
+        <label>
+            <input id="newTaxable" type="checkbox" checked>
+            Taxable
+        </label>
+    </div>
+
+    <button class="approve-btn" onclick="createNewProduct()">
+        Create BrooksHouse Product
+    </button>
+
+</div>
+
+
+        <div id="status" class="status">
+            Ready to scan.
+        </div>
+    </div>
+
+    <div id="results" class="hidden">
+
+        <div class="image-comparison">
+        <div
+            id="savedImageCard"
+            class="image-card hidden"
+        >
+            <div class="image-label">
+                BrooksHouse Image
+            </div>
+
+            <img
+                id="savedProductImage"
+                alt="Saved BrooksHouse product"
+            >
+        </div>
+
+        <div
+            id="internetImageCard"
+            class="image-card hidden"
+        >
+            <div class="image-label">
+                Internet Image
+            </div>
+
+            <img
+                id="internetProductImage"
+                alt="Internet product match"
+            >
+        </div>
+    </div>
+
+        <div class="comparison">
+
+            <div class="card internet">
+                <h2> Internet Match</h2>
+
+                <div class="field">
+                    <div class="label">Source</div>
+                    <div id="internetSource" class="value"></div>
+                </div>
+
+                <div class="field">
+                    <div class="label">Title</div>
+                    <div id="internetTitle" class="value"></div>
+                </div>
+
+                <div class="field">
+                    <div class="label">Brand</div>
+                    <div id="internetBrand" class="value"></div>
+                </div>
+
+                <div class="field">
+                    <div class="label">Description</div>
+                    <div id="internetDescription" class="value"></div>
+                </div>
+
+                <div class="field">
+                    <div class="label">Category</div>
+                    <div id="internetCategory" class="value"></div>
+                </div>
+
+                <div class="field">
+                    <div class="label">Weight</div>
+                    <div id="internetWeight" class="value"></div>
+                </div>
+
+                <div class="field">
+                    <div class="label">Model</div>
+                    <div id="internetModel" class="value"></div>
+                </div>
+
+                <div class="field">
+                    <div class="label">Online Price Range</div>
+                    <div id="internetPrice" class="value"></div>
+                </div>
+            </div>
+
+
+            <div class="card local">
+                <h2> BrooksHouse Product</h2>
+
+                <div class="field">
+                    <div class="label">Barcode</div>
+                    <div id="localBarcode" class="value"></div>
+                </div>
+
+                <div class="field">
+                    <div class="label">Description / Title</div>
+                    <div id="localTitle" class="value"></div>
+                </div>
+
+                <div class="field">
+                    <div class="label">Brand</div>
+                    <div id="localBrand" class="value"></div>
+                </div>
+
+                <div class="field">
+                    <div class="label">Category</div>
+                    <div id="localCategory" class="value"></div>
+                </div>
+
+                <div class="field">
+                    <div class="label">Weight</div>
+                    <div id="localWeight" class="value"></div>
+                </div>
+
+                <div class="field">
+                    <div class="label">Cost</div>
+                    <div id="localCost" class="value"></div>
+                </div>
+
+                <div class="field">
+                    <div class="label">Store Price</div>
+                    <div id="localPrice" class="value"></div>
+                </div>
+
+                <div class="field">
+                    <div class="label">Product Status</div>
+                    <div id="localStatus" class="value"></div>
+                </div>
+            </div>
+
+            <div class="card catalog">
+                <h2> Master Catalog</h2>
+
+                <div class="field">
+                    <div class="label">Barcode</div>
+                    <div id="catalogBarcode" class="value"></div>
+                </div>
+
+                <div class="field">
+                    <div class="label">Description / Title</div>
+                    <div id="catalogTitle" class="value"></div>
+                </div>
+
+                <div class="field">
+                    <div class="label">Unit Cost</div>
+                    <div id="catalogCost" class="value"></div>
+                </div>
+
+                <div class="field">
+                    <div class="label">Case Quantity</div>
+                    <div id="catalogCaseQuantity" class="value"></div>
+                </div>
+
+                <div class="field">
+                    <div class="label">Unit Weight</div>
+                    <div id="catalogWeight" class="value"></div>
+                </div>
+
+                <div class="field">
+                    <div class="label">Catalog Status</div>
+                    <div id="catalogStatus" class="value"></div>
+                </div>
+            </div>
+
+        </div>
+
+       <div class="card" style="margin-top:20px;">
+    <h2>Choose Approved Fields</h2>
+
+    <div class="field">
+        <div class="label">Description / Title</div>
+        <select id="titleChoice">
+            <option value="internet">Use Internet</option>
+            <option value="store">Keep BrooksHouse</option>
+            <option value="catalog">Use Master Catalog</option>
+        </select>
+    </div>
+
+    <div class="field">
+        <div class="label">Brand</div>
+        <select id="brandChoice">
+            <option value="internet">Use Internet</option>
+            <option value="store">Keep BrooksHouse</option>
+            <option value="catalog">Use Master Catalog</option>
+        </select>
+    </div>
+
+    <div class="field">
+        <div class="label">Category</div>
+        <select id="categoryChoice">
+            <option value="internet">Use Internet</option>
+            <option value="store">Keep BrooksHouse</option>
+            <option value="catalog">Use Master Catalog</option>
+        </select>
+    </div>
+
+    <div class="field">
+        <div class="label">Weight</div>
+        <select id="weightChoice">
+            <option value="internet">Use Internet</option>
+            <option value="store">Keep BrooksHouse</option>
+            <option value="catalog">Use Master Catalog</option>
+        </select>
+    </div>
+
+    <div class="field">
+        <div class="label">Model</div>
+        <select id="modelChoice">
+            <option value="internet">Use Internet</option>
+            <option value="store">Keep BrooksHouse</option>
+            <option value="catalog">Use Master Catalog</option>
+        </select>
+    </div>
+
+    <div class="field">
+        <div class="label">Product Image</div>
+        <select id="imageChoice">
+            <option value="internet">Use Internet</option>
+            <option value="store">Keep BrooksHouse Image</option>
+            <option value="none">Do Not Save</option>
+        </select>
+    </div>
+
+    <div class="actions">
+        <button class="approve-btn" onclick="approveProduct()">
+            Approve Selected Fields & Save
+        </button>
+    </div>
+<div id="newProductPanel" class="card hidden" style="margin-top:20px;">
+
+    <h2>Create BrooksHouse Product</h2>
+
+    <div class="field">
+        <div class="label">Product Name</div>
+        <input id="newProductName" type="text">
+    </div>
+
+    <div class="field">
+        <div class="label">Brand</div>
+        <input id="newBrand" type="text">
+    </div>
+
+    <div class="field">
+        <div class="label">Category</div>
+        <input id="newCategory" type="text">
+    </div>
+
+    <div class="field">
+        <div class="label">Your Average Cost</div>
+        <input id="newAverageCost" type="number" step="0.01">
+    </div>
+
+    <div class="field">
+        <div class="label">BrooksHouse Store Price</div>
+        <input id="newStorePrice" type="number" step="0.01">
+    </div>
+
+    <div class="field">
+        <div class="label">Suggested Retail Price</div>
+        <input id="newRetailPrice" type="number" step="0.01">
+    </div>
+
+    <div class="field">
+        <div class="label">Pack Quantity</div>
+        <input id="newPackQuantity" type="number" value="1" min="1">
+    </div>
+
+    <div class="field">
+        <div class="label">Size</div>
+
+        <input
+            id="newSizeValue"
+            type="number"
+            step="0.01"
+            placeholder="16"
+        >
+
+        <input
+            id="newSizeUnit"
+            type="text"
+            placeholder="oz"
+        >
+    </div>
+
+    <div class="field">
+        <label>
+            <input id="newTaxable" type="checkbox" checked>
+            Taxable
+        </label>
+    </div>
+
+    <div class="actions">
+        <button class="approve-btn" onclick="createNewProduct()">
+            Create BrooksHouse Product
+        </button>
+    </div>
+
+</div>
+
+</div>
+    </div>
+
+</div>
+
+
+<script>
+
+let currentData = null;
+let selectedSource = "internet";
+
+
+function display(value) {
+    if (
+        value === null ||
+        value === undefined ||
+        value === ""
+    ) {
+        return '<span class="missing">Not available</span>';
+    }
+
+    return value;
+}
+
+
+function findLocalValue(data, possibleNames) {
+
+    if (!data) {
+        return null;
+    }
+
+    for (const name of possibleNames) {
+        if (data[name] !== undefined && data[name] !== null) {
+            return data[name];
+        }
+    }
+
+    return null;
+}
+
+
+async function lookupBarcode() {
+
+    const barcodeInput = document.getElementById("barcode");
+    const barcode = barcodeInput.value.trim();
+
+    const status = document.getElementById("status");
+    const results = document.getElementById("results");
+
+    if (!barcode) {
+        status.textContent = "Scan or enter a barcode.";
+        return;
+    }
+
+    status.textContent = " Searching internet and BrooksHouse database...";
+    results.classList.add("hidden");
+
+    try {
+
+        const response = await fetch(
+            `/api/smart-scan/${encodeURIComponent(barcode)}`
+        );
+
+        if (!response.ok) {
+            throw new Error(`Server returned ${response.status}`);
+        }
+
+        const data = await response.json();
+
+        currentData = data;
+
+        renderResults(data);
+
+        results.classList.remove("hidden");
+
+        status.textContent = " Lookup complete";
+
+    } catch (error) {
+
+        status.textContent = "Lookup failed: " + error.message;
+
+    }
+}
+
+
+function renderResults(data) {
+    const online = data.online || {};
+    const storeResult =
+        data.store_product ||
+        data.local?.store_product ||
+        {};
+    const catalogResult =
+        data.master_catalog ||
+        data.local?.master_catalog ||
+        {};
+    const store = storeResult.data || {};
+    const catalog = catalogResult.data || {};
+
+    const storeTitle = findLocalValue(store, [
+        "product_name", "description", "title", "name"
+    ]);
+    const catalogTitle = findLocalValue(catalog, [
+        "description", "item_description", "title", "name"
+    ]);
+
+    const newProductPanel =
+        document.getElementById("newProductPanel");
+
+    if (!storeResult.found) {
+        newProductPanel.classList.remove("hidden");
+        document.getElementById("newProductName").value =
+            online.title || online.description || catalogTitle || "";
+        document.getElementById("newBrand").value =
+            online.brand || "";
+        document.getElementById("newCategory").value =
+            online.category || "";
+        document.getElementById("newAverageCost").value =
+            catalog.unit_cost ?? "";
+        document.getElementById("newRetailPrice").value =
+            online.price_low ?? "";
+        document.getElementById("newPackQuantity").value =
+            catalog.master_case_quantity ?? 1;
+    } else {
+        newProductPanel.classList.add("hidden");
+    }
+
+    document.getElementById("internetSource").innerHTML =
+        display(online.source);
+    document.getElementById("internetTitle").innerHTML =
+        display(online.title);
+    document.getElementById("internetBrand").innerHTML =
+        display(online.brand);
+    document.getElementById("internetDescription").innerHTML =
+        display(online.description);
+    document.getElementById("internetCategory").innerHTML =
+        display(online.category);
+    document.getElementById("internetWeight").innerHTML =
+        display(online.weight);
+    document.getElementById("internetModel").innerHTML =
+        display(online.model);
+
+    let priceText = null;
+    if (online.price_low !== null && online.price_low !== undefined) {
+        priceText = "$" + Number(online.price_low).toFixed(2);
+        if (
+            online.price_high !== null &&
+            online.price_high !== undefined &&
+            online.price_high !== online.price_low
+        ) {
+            priceText += " - $" + Number(online.price_high).toFixed(2);
+        }
+    }
+    document.getElementById("internetPrice").innerHTML =
+        display(priceText);
+
+    const savedImage =
+        store.saved_image || store.image_url || store.image_path || null;
+    const internetImage =
+        online.images && online.images.length > 0
+            ? online.images[0]
+            : null;
+    setImageCard(
+        "savedImageCard",
+        "savedProductImage",
+        savedImage
+    );
+    setImageCard(
+        "internetImageCard",
+        "internetProductImage",
+        internetImage
+    );
+
+    document.getElementById("localBarcode").innerHTML =
+        display(store.matched_barcode || data.barcode);
+    document.getElementById("localTitle").innerHTML =
+        display(storeTitle);
+    document.getElementById("localBrand").innerHTML =
+        display(findLocalValue(store, ["brand", "manufacturer"]));
+    document.getElementById("localCategory").innerHTML =
+        display(findLocalValue(store, ["category", "department"]));
+    document.getElementById("localWeight").innerHTML =
+        display(findLocalValue(store, ["unit_weight", "weight"]));
+
+    const storeCost = findLocalValue(store, [
+        "average_cost", "unit_cost", "cost", "case_cost"
+    ]);
+    document.getElementById("localCost").innerHTML =
+        storeCost !== null
+            ? "$" + Number(storeCost).toFixed(2)
+            : display(null);
+
+    const storePrice = findLocalValue(store, ["store_price", "price"]);
+    document.getElementById("localPrice").innerHTML =
+        storePrice !== null
+            ? "$" + Number(storePrice).toFixed(2)
+            : display(null);
+    document.getElementById("localStatus").innerHTML =
+        storeResult.found
+            ? "Existing BrooksHouse product (" +
+                (storeResult.match_type || "matched") + ")"
+            : "Not yet a BrooksHouse product";
+
+    document.getElementById("catalogBarcode").innerHTML =
+        display(
+            catalog.barcode_exact ||
+            catalog.barcode_raw ||
+            catalog.barcode_lookup
+        );
+    document.getElementById("catalogTitle").innerHTML =
+        display(catalogTitle);
+    document.getElementById("catalogCost").innerHTML =
+        catalog.unit_cost !== null && catalog.unit_cost !== undefined
+            ? "$" + Number(catalog.unit_cost).toFixed(2)
+            : display(null);
+    document.getElementById("catalogCaseQuantity").innerHTML =
+        display(catalog.master_case_quantity);
+    document.getElementById("catalogWeight").innerHTML =
+        display(catalog.unit_weight);
+    document.getElementById("catalogStatus").innerHTML =
+        catalogResult.found
+            ? "81,000-row catalog match (" +
+                (catalogResult.match_type || "matched") + ")"
+            : "Not found in Master Catalog";
+
+    const defaultChoice = storeResult.found ? "store" : (
+        catalogResult.found ? "catalog" : "internet"
+    );
+    [
+        "titleChoice", "brandChoice", "categoryChoice",
+        "weightChoice", "modelChoice"
+    ].forEach(function(id) {
+        document.getElementById(id).value = defaultChoice;
+    });
+    document.getElementById("imageChoice").value =
+        savedImage ? "store" : (internetImage ? "internet" : "none");
+
+    highlightDifferences(
+        online.title,
+        storeTitle,
+        "internetTitle",
+        "localTitle"
+    );
+    highlightDifferences(
+        online.brand,
+        findLocalValue(store, ["brand", "manufacturer"]),
+        "internetBrand",
+        "localBrand"
+    );
+
+}
+
+
+function setImageCard(cardId, imageId, source) {
+    const card = document.getElementById(cardId);
+    const image = document.getElementById(imageId);
+
+    if (source) {
+        image.src = source;
+        card.classList.remove("hidden");
+    } else {
+        image.removeAttribute("src");
+        card.classList.add("hidden");
+    }
+}
+
+
+function highlightDifferences(a, b, internetId, localId) {
+
+    const internetElement = document.getElementById(internetId);
+    const localElement = document.getElementById(localId);
+
+    internetElement.classList.remove("different");
+    localElement.classList.remove("different");
+
+    if (
+        a &&
+        b &&
+        String(a).trim().toLowerCase() !==
+        String(b).trim().toLowerCase()
+    ) {
+
+        internetElement.classList.add("different");
+        localElement.classList.add("different");
+
+    }
+}
+
+
+function useInternet() {
+
+    selectedSource = "internet";
+
+    document.getElementById("status").textContent =
+        "Internet information selected.";
+
+}
+
+
+function keepMine() {
+
+    selectedSource = "local";
+
+    document.getElementById("status").textContent =
+        "BrooksHouse information selected.";
+
+}
+async function approveProduct() {
+
+    if (!currentData) {
+        return;
+    }
+
+    const online = currentData.online || {};
+    const storeResult =
+        currentData.store_product ||
+        currentData.local?.store_product ||
+        {};
+    const catalogResult =
+        currentData.master_catalog ||
+        currentData.local?.master_catalog ||
+        {};
+    const store = storeResult.data || {};
+    const catalog = catalogResult.data || {};
+
+    const titleChoice =
+        document.getElementById("titleChoice").value;
+
+    const brandChoice =
+        document.getElementById("brandChoice").value;
+
+    const categoryChoice =
+        document.getElementById("categoryChoice").value;
+
+    const weightChoice =
+        document.getElementById("weightChoice").value;
+
+    const modelChoice =
+        document.getElementById("modelChoice").value;
+
+    const imageChoice =
+        document.getElementById("imageChoice").value;
+
+
+    const storeDescription = findLocalValue(store, [
+        "description",
+        "product_name",
+        "title",
+        "name"
+    ]);
+
+    const storeBrand = findLocalValue(store, [
+        "brand",
+        "manufacturer"
+    ]);
+
+    const storeCategory = findLocalValue(store, [
+        "category",
+        "department"
+    ]);
+
+    const storeWeight = findLocalValue(store, [
+        "unit_weight",
+        "weight",
+        "item_weight"
+    ]);
+
+    const storeModel = findLocalValue(store, [
+        "model",
+        "model_number"
+    ]);
+
+    const catalogDescription = findLocalValue(catalog, [
+        "description", "item_description", "title", "name"
+    ]);
+    const catalogBrand = findLocalValue(catalog, [
+        "brand", "manufacturer"
+    ]);
+    const catalogCategory = findLocalValue(catalog, [
+        "category", "department"
+    ]);
+    const catalogWeight = findLocalValue(catalog, [
+        "unit_weight", "weight", "item_weight"
+    ]);
+    const catalogModel = findLocalValue(catalog, [
+        "model", "model_number"
+    ]);
+
+    const description = chooseApprovedValue(
+        titleChoice,
+        online.title || online.description || null,
+        storeDescription,
+        catalogDescription
+    );
+    const brand = chooseApprovedValue(
+        brandChoice,
+        online.brand || null,
+        storeBrand,
+        catalogBrand
+    );
+    const category = chooseApprovedValue(
+        categoryChoice,
+        online.category || null,
+        storeCategory,
+        catalogCategory
+    );
+    const weight = chooseApprovedValue(
+        weightChoice,
+        online.weight || null,
+        storeWeight,
+        catalogWeight
+    );
+    const model = chooseApprovedValue(
+        modelChoice,
+        online.model || null,
+        storeModel,
+        catalogModel
+    );
+
+    const imageUrl = imageChoice === "internet"
+        ? (
+            online.images && online.images.length > 0
+                ? online.images[0]
+                : null
+        )
+        : (
+            imageChoice === "store"
+                ? (
+                    store.saved_image ||
+                    store.image_url ||
+                    store.image_path ||
+                    null
+                )
+                : null
+        );
+
+
+    const status =
+        document.getElementById("status");
+
+    status.textContent =
+        "Saving approved fields...";
+
+
+    try {
+
+        const response = await fetch(
+            "/api/smart-scan/approve",
+            {
+                method: "POST",
+
+                headers: {
+                    "Content-Type": "application/json"
+                },
+
+                body: JSON.stringify({
+                    barcode: currentData.barcode,
+                    description: description,
+                    unit_weight: weight,
+                    source: [
+                        titleChoice,
+                        brandChoice,
+                        categoryChoice,
+                        weightChoice,
+                        modelChoice,
+                        imageChoice
+                    ].join(","),
+                    brand: brand,
+                    category: category,
+                    model: model,
+                    image_url: imageUrl,
+                    internet_price_low:
+                        online.price_low ?? null,
+                    internet_price_high:
+                        online.price_high ?? null
+                })
+            }
+        );
+
+
+        const result =
+            await response.json();
+
+
+        if (!response.ok) {
+
+            throw new Error(
+                result.detail ||
+                "Save failed"
+            );
+        }
+
+
+        if (result.success) {
+
+            status.textContent =
+                "Product fields approved and saved.";
+
+            await lookupBarcode();
+
+        } else {
+
+            status.textContent =
+                result.message ||
+                "Product was not saved.";
+        }
+
+
+    } catch (error) {
+
+        status.textContent =
+            "Save failed: " +
+            error.message;
+    }
+}
+
+
+function chooseApprovedValue(
+    choice,
+    internetValue,
+    storeValue,
+    catalogValue
+) {
+    if (choice === "internet") {
+        return internetValue;
+    }
+
+    if (choice === "catalog") {
+        return catalogValue;
+    }
+
+    return storeValue;
+}
+
+
+async function createNewProduct() {
+
+    if (!currentData) {
+        return;
+    }
+
+    const status =
+        document.getElementById("status");
+
+
+    const payload = {
+
+        barcode: currentData.barcode,
+
+        product_name:
+            document
+                .getElementById("newProductName")
+                .value
+                .trim(),
+
+        brand:
+            document
+                .getElementById("newBrand")
+                .value
+                .trim() || null,
+
+        description:
+            currentData.online?.description || null,
+
+        category:
+            document
+                .getElementById("newCategory")
+                .value
+                .trim() || null,
+
+        size_value:
+            document.getElementById("newSizeValue").value
+                ? Number(
+                    document.getElementById("newSizeValue").value
+                )
+                : null,
+
+        size_unit:
+            document
+                .getElementById("newSizeUnit")
+                .value
+                .trim() || null,
+
+        pack_quantity:
+            Number(
+                document.getElementById("newPackQuantity").value || 1
+            ),
+
+        suggested_retail_price:
+            document.getElementById("newRetailPrice").value
+                ? Number(
+                    document.getElementById("newRetailPrice").value
+                )
+                : null,
+
+        store_price:
+            document.getElementById("newStorePrice").value
+                ? Number(
+                    document.getElementById("newStorePrice").value
+                )
+                : null,
+
+        average_cost:
+            document.getElementById("newAverageCost").value
+                ? Number(
+                    document.getElementById("newAverageCost").value
+                )
+                : null,
+
+        taxable:
+            document.getElementById("newTaxable").checked
+    };
+
+
+    if (!payload.product_name) {
+
+        status.textContent =
+            "Product name is required.";
+
+        return;
+    }
+
+
+    status.textContent =
+        "Creating BrooksHouse product...";
+
+
+    try {
+
+        const response = await fetch(
+            "/api/smart-scan/create-product",
+            {
+                method: "POST",
+
+                headers: {
+                    "Content-Type": "application/json"
+                },
+
+                body: JSON.stringify(payload)
+            }
+        );
+
+
+        const result =
+            await response.json();
+
+
+        if (!response.ok) {
+
+            throw new Error(
+                result.detail ||
+                result.message ||
+                "Create product failed"
+            );
+        }
+
+
+        if (result.success) {
+
+            status.textContent =
+                "BrooksHouse product created. Product ID: " +
+                result.product_id;
+
+            // BrooksHouse auto-reset
+            setTimeout(function() {
+                resetSmartScan();
+                status.textContent = "Ready for next scan.";
+            }, 700);
+
+        } else {
+
+            status.textContent =
+                result.message ||
+                "Product was not created.";
+        }
+
+
+    } catch (error) {
+
+        status.textContent =
+            "Create failed: " +
+            error.message;
+    }
+}
+
+
+function resetSmartScan() {
+    currentData = null;
+
+    const barcodeInput = document.getElementById("barcode");
+    const results = document.getElementById("results");
+    const newProductPanel = document.getElementById("newProductPanel");
+
+    barcodeInput.value = "";
+
+    if (results) {
+        results.classList.add("hidden");
+    }
+
+    if (newProductPanel) {
+        newProductPanel.classList.add("hidden");
+    }
+
+    const fieldsToClear = [
+        "newProductName",
+        "newBrand",
+        "newCategory",
+        "newAverageCost",
+        "newStorePrice",
+        "newRetailPrice",
+        "newSizeValue",
+        "newSizeUnit"
+    ];
+
+    fieldsToClear.forEach(function(id) {
+        const field = document.getElementById(id);
+        if (field) {
+            field.value = "";
+        }
+    });
+
+    const packQuantity = document.getElementById("newPackQuantity");
+    if (packQuantity) {
+        packQuantity.value = "1";
+    }
+
+    const taxable = document.getElementById("newTaxable");
+    if (taxable) {
+        taxable.checked = true;
+    }
+
+    barcodeInput.focus();
+    barcodeInput.select();
+}
+let smartScanTimer = null;
+const smartScanInput = document.getElementById("barcode");
+
+function runAutomaticLookup() {
+    clearTimeout(smartScanTimer);
+
+    const barcodeValue = smartScanInput.value.trim();
+
+    if (barcodeValue.length >= 8) {
+        lookupBarcode();
+    }
+}
+
+smartScanInput.addEventListener("input", function() {
+    clearTimeout(smartScanTimer);
+
+    const barcodeValue = smartScanInput.value.trim();
+
+    if (barcodeValue.length >= 8) {
+        smartScanTimer = setTimeout(runAutomaticLookup, 500);
+    }
+});
+
+smartScanInput.addEventListener("keydown", function(event) {
+    if (event.key === "Enter" || event.key === "Tab") {
+        event.preventDefault();
+        clearTimeout(smartScanTimer);
+
+        const barcodeValue = smartScanInput.value.trim();
+
+        if (barcodeValue) {
+            lookupBarcode();
+        }
+    }
+});
+
+ 
+
+</script>
+
+</body>
+</html>

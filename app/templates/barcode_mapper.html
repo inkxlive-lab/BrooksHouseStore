@@ -1,0 +1,635 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>
+        Packaging Barcode Mapper | BrooksHouse Store
+    </title>
+
+    <link
+        rel="stylesheet"
+        href="/static/store.css"
+    >
+
+    <style>
+        .mapper-grid {
+            display: grid;
+            grid-template-columns:
+                repeat(
+                    auto-fit,
+                    minmax(280px, 1fr)
+                );
+            gap: 1rem;
+        }
+
+        .mapper-card {
+            border: 1px solid #dddddd;
+            border-radius: 14px;
+            padding: 1rem;
+            background: #ffffff;
+        }
+
+        .mapper-flow {
+            display: grid;
+            gap: 0.75rem;
+            margin: 1rem 0;
+        }
+
+        .mapper-step {
+            border: 1px solid #dddddd;
+            border-radius: 12px;
+            padding: 0.85rem;
+        }
+
+        .hierarchy-list {
+            display: grid;
+            gap: 0.65rem;
+            margin-top: 1rem;
+        }
+
+        .hierarchy-level {
+            border: 1px solid #dddddd;
+            border-radius: 12px;
+            padding: 0.85rem;
+            background: #ffffff;
+        }
+
+        .hierarchy-level strong {
+            display: block;
+            font-size: 1.05rem;
+        }
+
+        .barcode-code {
+            font-family: monospace;
+            font-weight: 700;
+            word-break: break-all;
+        }
+
+        .hierarchy-arrow {
+            text-align: center;
+            font-size: 1.25rem;
+            font-weight: 700;
+        }
+
+        .mapper-help {
+            opacity: 0.78;
+        }
+
+        .calculation-box {
+            margin-top: 0.75rem;
+            padding: 0.85rem;
+            border: 1px solid #dddddd;
+            border-radius: 12px;
+        }
+
+        .mapping-mode {
+            display: grid;
+            gap: 0.75rem;
+        }
+
+        .hidden-field {
+            display: none;
+        }
+    </style>
+</head>
+
+<body>
+    <header class="store-header">
+        <div>
+            <p class="eyebrow">
+                The BrooksHouse Store
+            </p>
+
+            <h1>
+                Packaging Barcode Mapper
+            </h1>
+
+            <p class="subtitle">
+                Unit → Inner Pack → Master Case → Pallet
+            </p>
+        </div>
+
+        <nav>
+            <a href="/smart-scan">
+                Smart Scan
+            </a>
+
+            <a href="/storage-gallery">
+                Storage Gallery
+            </a>
+
+            <a href="/inventory/receive">
+                Receive Inventory
+            </a>
+
+            <a href="/inventory/adjust">
+                Adjust Inventory
+            </a>
+
+            <a href="/products">
+                Products
+            </a>
+        </nav>
+    </header>
+
+    <main class="page-container">
+
+        {% if message %}
+        <section class="alert success">
+            <strong>
+                {{ message }}
+            </strong>
+        </section>
+        {% endif %}
+
+        {% if error %}
+        <section class="alert error">
+            <strong>
+                {{ error }}
+            </strong>
+        </section>
+        {% endif %}
+
+        <section class="dashboard-panel">
+            <div class="dashboard-panel-heading">
+                <div>
+                    <p class="eyebrow">
+                        Packaging hierarchy
+                    </p>
+
+                    <h2>
+                        Map each packaging level once
+                    </h2>
+
+                    <p>
+                        Always map the smaller package before the
+                        larger package when possible.
+                    </p>
+                </div>
+            </div>
+
+            <div class="mapper-flow">
+                <div class="mapper-step">
+                    <strong>1.</strong>
+                    Retail unit barcode = 1 unit.
+                </div>
+
+                <div class="mapper-step">
+                    <strong>2.</strong>
+                    Map the Inner Pack to its retail-unit quantity.
+                </div>
+
+                <div class="mapper-step">
+                    <strong>3.</strong>
+                    Map the Master Case using the Inner Pack barcode.
+                </div>
+
+                <div class="mapper-step">
+                    <strong>4.</strong>
+                    BrooksHouse calculates the total retail units.
+                </div>
+            </div>
+        </section>
+
+        <section class="mapper-grid">
+
+            <article class="mapper-card">
+                <h2>
+                    Find Retail Unit Product
+                </h2>
+
+                <form
+                    action="/barcode-mapper"
+                    method="get"
+                    class="product-form"
+                >
+                    <label class="field">
+                        <span>
+                            Outside Packaging Barcode
+                        </span>
+
+                        <input
+                            type="text"
+                            name="outer_barcode"
+                            value="{{ outer_barcode or '' }}"
+                            inputmode="numeric"
+                            autocomplete="off"
+                            placeholder="Scan case / pack barcode"
+                        >
+                    </label>
+
+                    <label class="field">
+                        <span>
+                            Retail Unit Barcode
+                        </span>
+
+                        <input
+                            type="text"
+                            name="unit_barcode"
+                            value="{{ unit_barcode or '' }}"
+                            inputmode="numeric"
+                            autocomplete="off"
+                            placeholder="Scan individual item barcode"
+                            required
+                            autofocus
+                        >
+                    </label>
+
+                    <div class="form-actions">
+                        <button
+                            type="submit"
+                            class="primary-button"
+                        >
+                            Find Product
+                        </button>
+                    </div>
+                </form>
+            </article>
+
+            {% if product %}
+            <article class="mapper-card">
+                <p class="eyebrow">
+                    Retail product found
+                </p>
+
+                <h2>
+                    {{ product.product_name }}
+                </h2>
+
+                {% if product.brand %}
+                <p>
+                    {{ product.brand }}
+                </p>
+                {% endif %}
+
+                <p>
+                    <strong>Retail unit:</strong>
+                    {{ unit_barcode }}
+                </p>
+
+                <a
+                    class="secondary-button link-button"
+                    href="/products/{{ product.product_id }}"
+                >
+                    View Product
+                </a>
+            </article>
+            {% endif %}
+
+        </section>
+
+        {% if product %}
+        <section class="dashboard-panel">
+            <div class="dashboard-panel-heading">
+                <div>
+                    <p class="eyebrow">
+                        Add packaging level
+                    </p>
+
+                    <h2>
+                        Save Packaging Barcode
+                    </h2>
+                </div>
+            </div>
+
+            <form
+                action="/barcode-mapper/map"
+                method="post"
+                class="product-form"
+            >
+                <div class="form-grid">
+
+                    <label class="field">
+                        <span>
+                            New Packaging Barcode *
+                        </span>
+
+                        <input
+                            type="text"
+                            name="outer_barcode"
+                            value="{{ outer_barcode or '' }}"
+                            inputmode="numeric"
+                            autocomplete="off"
+                            placeholder="Scan inner pack or master case"
+                            required
+                        >
+                    </label>
+
+                    <label class="field">
+                        <span>
+                            Retail Unit Barcode *
+                        </span>
+
+                        <input
+                            type="text"
+                            name="unit_barcode"
+                            value="{{ unit_barcode or '' }}"
+                            inputmode="numeric"
+                            autocomplete="off"
+                            required
+                        >
+                    </label>
+
+                    <label class="field">
+                        <span>
+                            Packaging Level *
+                        </span>
+
+                        <select
+                            name="package_level"
+                            id="packageLevel"
+                            required
+                        >
+                            <option value="INNER_PACK">
+                                Inner Pack
+                            </option>
+
+                            <option value="MASTER_CASE">
+                                Master Case
+                            </option>
+
+                            <option value="DISPLAY_CASE">
+                                Display / Case Pack
+                            </option>
+
+                            <option value="PALLET">
+                                Pallet
+                            </option>
+                        </select>
+                    </label>
+
+                    <label class="field">
+                        <span>
+                            Mapping Method
+                        </span>
+
+                        <select
+                            id="mappingMethod"
+                        >
+                            <option value="direct">
+                                Enter Retail Units Directly
+                            </option>
+
+                            <option value="contained">
+                                Contains Another Package
+                            </option>
+                        </select>
+                    </label>
+
+                </div>
+
+                <div
+                    id="directFields"
+                    class="mapping-mode"
+                >
+                    <label class="field">
+                        <span>
+                            Retail Units Per Scan
+                        </span>
+
+                        <input
+                            type="number"
+                            name="quantity_per_scan"
+                            id="quantityPerScan"
+                            min="2"
+                            value="{% if existing_outer_record %}{{ existing_outer_record.quantity_per_scan }}{% else %}2{% endif %}"
+                        >
+                    </label>
+
+                    <p class="mapper-help">
+                        Example: Inner Pack contains 6 retail units.
+                    </p>
+                </div>
+
+                <div
+                    id="containedFields"
+                    class="mapping-mode hidden-field"
+                >
+                    <label class="field">
+                        <span>
+                            Contained Package Barcode
+                        </span>
+
+                        <input
+                            type="text"
+                            name="contained_barcode"
+                            id="containedBarcode"
+                            inputmode="numeric"
+                            autocomplete="off"
+                            placeholder="Scan mapped Inner Pack barcode"
+                        >
+                    </label>
+
+                    <label class="field">
+                        <span>
+                            Number of Contained Packages
+                        </span>
+
+                        <input
+                            type="number"
+                            name="contained_quantity"
+                            id="containedQuantity"
+                            min="1"
+                            value="1"
+                        >
+                    </label>
+
+                    <div
+                        class="calculation-box"
+                        id="hierarchyHelp"
+                    >
+                        Example:
+                        Master Case contains 4 Inner Packs.
+                        If each Inner Pack = 6 retail units,
+                        BrooksHouse saves the Master Case as 24 units.
+                    </div>
+                </div>
+
+                <div class="form-actions">
+                    <button
+                        type="submit"
+                        class="primary-button"
+                    >
+                        Save Packaging Barcode
+                    </button>
+                </div>
+            </form>
+        </section>
+
+        <section class="dashboard-panel">
+            <div class="dashboard-panel-heading">
+                <div>
+                    <p class="eyebrow">
+                        Packaging hierarchy
+                    </p>
+
+                    <h2>
+                        {{ product.product_name }}
+                    </h2>
+
+                    <p>
+                        Largest packaging level is shown first.
+                    </p>
+                </div>
+            </div>
+
+            <div class="hierarchy-list">
+
+                {% set sorted_barcodes =
+                    product.barcodes
+                    | sort(
+                        attribute="quantity_per_scan",
+                        reverse=true
+                    )
+                %}
+
+                {% for barcode_record in sorted_barcodes %}
+                <div class="hierarchy-level">
+
+                    {% if barcode_record.quantity_per_scan > 1 %}
+                    <strong>
+                        📦
+                        {{ barcode_record.barcode_type.replace("_", " ").title() }}
+                    </strong>
+                    {% else %}
+                    <strong>
+                        🏷️ Retail Unit
+                    </strong>
+                    {% endif %}
+
+                    <div class="barcode-code">
+                        {{ barcode_record.barcode }}
+                    </div>
+
+                    <div>
+                        1 scan =
+                        <strong style="display:inline;">
+                            {{ barcode_record.quantity_per_scan }}
+                            retail unit{% if barcode_record.quantity_per_scan != 1 %}s{% endif %}
+                        </strong>
+                    </div>
+
+                    {% if barcode_record.is_primary %}
+                    <small>
+                        Primary product barcode
+                    </small>
+                    {% endif %}
+                </div>
+
+                {% if not loop.last %}
+                <div class="hierarchy-arrow">
+                    ↓
+                </div>
+                {% endif %}
+
+                {% endfor %}
+            </div>
+        </section>
+        {% endif %}
+
+        {% if existing_outer_record %}
+        <section class="alert">
+            <strong>
+                Packaging barcode already mapped:
+            </strong>
+
+            {{ existing_outer_record.barcode }}
+            →
+            {{ existing_outer_record.product.product_name }}
+            (
+            {{ existing_outer_record.quantity_per_scan }}
+            retail units / scan
+            )
+        </section>
+        {% endif %}
+
+    </main>
+
+    <script>
+        const mappingMethod = document.getElementById(
+            "mappingMethod"
+        );
+
+        const directFields = document.getElementById(
+            "directFields"
+        );
+
+        const containedFields = document.getElementById(
+            "containedFields"
+        );
+
+        const quantityPerScan = document.getElementById(
+            "quantityPerScan"
+        );
+
+        const containedBarcode = document.getElementById(
+            "containedBarcode"
+        );
+
+        const containedQuantity = document.getElementById(
+            "containedQuantity"
+        );
+
+        function updateMappingMode() {
+            if (!mappingMethod) {
+                return;
+            }
+
+            const containedMode = (
+                mappingMethod.value === "contained"
+            );
+
+            directFields?.classList.toggle(
+                "hidden-field",
+                containedMode
+            );
+
+            containedFields?.classList.toggle(
+                "hidden-field",
+                !containedMode
+            );
+
+            if (containedMode) {
+                if (containedBarcode) {
+                    containedBarcode.required = true;
+                }
+
+                if (containedQuantity) {
+                    containedQuantity.required = true;
+                }
+
+                if (quantityPerScan) {
+                    quantityPerScan.required = false;
+                }
+
+            } else {
+                if (containedBarcode) {
+                    containedBarcode.required = false;
+                    containedBarcode.value = "";
+                }
+
+                if (containedQuantity) {
+                    containedQuantity.required = false;
+                }
+
+                if (quantityPerScan) {
+                    quantityPerScan.required = true;
+                }
+            }
+        }
+
+        mappingMethod?.addEventListener(
+            "change",
+            updateMappingMode
+        );
+
+        updateMappingMode();
+    </script>
+</body>
+</html>

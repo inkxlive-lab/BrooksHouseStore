@@ -1,0 +1,129 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>BrooksHouse Notifications</title>
+    <style>
+        :root { --blue:#0c4f85; --green:#16804b; --cream:#f6f0e8; --ink:#24211f; --line:#ddd1c5; }
+        * { box-sizing:border-box; }
+        body { margin:0; background:var(--cream); color:var(--ink); font-family:Arial,sans-serif; }
+        main { max-width:980px; margin:auto; padding:24px 16px 48px; }
+        .top { display:flex; justify-content:space-between; gap:16px; align-items:center; flex-wrap:wrap; }
+        .top a { color:var(--blue); font-weight:700; }
+        .hero,.card { background:white; border:1px solid var(--line); border-radius:18px; padding:22px; box-shadow:0 8px 22px rgba(40,30,20,.06); }
+        .hero { margin:18px 0; }
+        .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(270px,1fr)); gap:16px; }
+        h1,h2 { margin-top:0; }
+        .status { margin:14px 0; padding:12px; border-radius:10px; background:#eef4f8; }
+        button { border:0; border-radius:10px; padding:12px 16px; font-weight:800; cursor:pointer; }
+        .primary { background:var(--green); color:white; }
+        .secondary { background:var(--blue); color:white; }
+        .danger { background:#8b2d2d; color:white; }
+        label { display:block; font-weight:700; margin:10px 0 6px; }
+        input[type="text"],input[type="time"] { width:100%; padding:11px; border:1px solid var(--line); border-radius:9px; }
+        .checkline { display:flex; align-items:center; gap:8px; font-weight:700; margin:9px 0; }
+        .checkline input { width:18px; height:18px; }
+        .device { border-top:1px solid var(--line); padding:14px 0; }
+        table { width:100%; border-collapse:collapse; font-size:.9rem; }
+        th,td { padding:10px 8px; text-align:left; border-bottom:1px solid var(--line); vertical-align:top; }
+        .muted { color:#70665e; }
+        .ok { color:var(--green); font-weight:800; }
+        .warn { color:#9a5700; font-weight:800; }
+        @media(max-width:620px){ table { display:block; overflow-x:auto; } }
+    </style>
+    <!-- BROOKSHOUSE PWA -->
+    <meta name="theme-color" content="#8f1f24">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="BrooksHouse">
+    <link rel="manifest" href="/static/manifest.webmanifest">
+    <link rel="apple-touch-icon" href="/static/pwa/apple-touch-icon.png">
+</head>
+<body>
+<main>
+    <div class="top">
+        <div><strong>The BrooksHouse Store</strong><br><span class="muted">Web Push Center</span></div>
+        <div><a href="/dashboard">Dashboard</a> Â· <a href="/channels/orders">Orders</a></div>
+    </div>
+
+    <section class="hero">
+        <h1>ðŸ”” Phone & Browser Notifications</h1>
+        <p>Connect this device to receive BrooksHouse order alerts even when the order page is closed.</p>
+        <div id="pushStatus" class="status">Checking this browserâ€¦</div>
+        <label for="deviceName">Device name</label>
+        <input id="deviceName" placeholder="Example: Martel's phone or Zebra scanner">
+        <p>
+            <button id="enablePush" class="primary">Enable notifications on this device</button>
+            <button id="disablePush" class="danger">Disable this device</button>
+        </p>
+        <p class="muted">Phone setup requires an HTTPS BrooksHouse address. Desktop localhost can be used for the first test.</p>
+    </section>
+
+    <div class="grid">
+        <section class="card">
+            <h2>Send a test</h2>
+            <p>Use this after enabling the current device.</p>
+            <form method="post" action="/tools/notifications/test">
+                <button class="secondary" type="submit">Send BrooksHouse test alert</button>
+            </form>
+            {% if message %}<p class="ok">{{ message }}</p>{% endif %}
+            {% if error %}<p class="warn">{{ error }}</p>{% endif %}
+        </section>
+        <section class="card">
+            <h2>Daily recap schedule</h2>
+            <p class="muted">Times use Central Time.</p>
+            <form method="post" action="/tools/notifications/settings">
+                <label class="checkline">
+                    <input type="checkbox" name="morning_enabled" {% if summary.settings.morning_enabled %}checked{% endif %}>
+                    Morning brief
+                </label>
+                <input type="time" name="morning_time" value="{{ summary.settings.morning_time }}" required>
+                <label class="checkline">
+                    <input type="checkbox" name="evening_enabled" {% if summary.settings.evening_enabled %}checked{% endif %}>
+                    Closing recap
+                </label>
+                <input type="time" name="evening_time" value="{{ summary.settings.evening_time }}" required>
+                <p><button class="primary" type="submit">Save recap schedule</button></p>
+            </form>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+                <form method="post" action="/tools/notifications/recap/morning"><button class="secondary" type="submit">Send morning brief now</button></form>
+                <form method="post" action="/tools/notifications/recap/evening"><button class="secondary" type="submit">Send closing recap now</button></form>
+            </div>
+        </section>
+    </div>
+
+    <section class="card" style="margin-top:16px">
+        <h2>Connected devices</h2>
+        <p><strong>{{ summary.active_count }}</strong> active device(s). Choose what each device receives.</p>
+        {% if summary.devices %}
+            {% for device in summary.devices %}
+            <form class="device" method="post" action="/tools/notifications/devices/{{ device.subscription_id }}">
+                <strong>{{ device.device_name or "Unnamed browser" }}</strong>
+                <span class="muted"> â€” {{ "Active" if device.active else "Disabled" }}</span>
+                <label class="checkline"><input type="checkbox" name="notify_new_orders" {% if device.notify_new_orders %}checked{% endif %}> New marketplace orders</label>
+                <label class="checkline"><input type="checkbox" name="notify_morning" {% if device.notify_morning %}checked{% endif %}> Morning brief</label>
+                <label class="checkline"><input type="checkbox" name="notify_evening" {% if device.notify_evening %}checked{% endif %}> Closing recap</label>
+                <button class="secondary" type="submit">Save device choices</button>
+                <div class="muted" style="margin-top:8px">Last successful alert: {{ device.last_success_at or "Not tested" }}</div>
+            </form>
+            {% endfor %}
+        {% else %}<p class="muted">No devices connected yet.</p>{% endif %}
+    </section>
+
+    <section class="card" style="margin-top:16px">
+        <h2>Recent notification activity</h2>
+        {% if summary.events %}
+        <table><thead><tr><th>Time</th><th>Alert</th><th>Delivered</th><th>Failed</th></tr></thead><tbody>
+        {% for event in summary.events %}
+        <tr><td>{{ event.created_at }}</td><td><strong>{{ event.title }}</strong><br>{{ event.body }}</td><td>{{ event.delivered_count }}</td><td>{{ event.failed_count }}</td></tr>
+        {% endfor %}
+        </tbody></table>
+        {% else %}<p class="muted">No alerts have been sent yet.</p>{% endif %}
+    </section>
+</main>
+<script src="/static/web-push-notifications.js"></script>
+    <script src="/static/pwa.js"></script>
+</body>
+</html>
+

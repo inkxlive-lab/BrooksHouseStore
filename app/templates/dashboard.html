@@ -1,0 +1,534 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard | BrooksHouse Store</title>
+    <link rel="stylesheet" href="/static/store.css">
+    <meta name="theme-color" content="#8f1f24">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="BrooksHouse">
+    <link rel="manifest" href="/static/manifest.webmanifest">
+    <link rel="apple-touch-icon" href="/static/pwa/apple-touch-icon.png">
+
+    <style>
+        :root {
+            --bh-red: #8f1f24;
+            --bh-red-dark: #641419;
+            --bh-ink: #201a18;
+            --bh-muted: #6f6662;
+            --bh-cream: #f7f2ea;
+            --bh-card: #ffffff;
+            --bh-line: #e8ddd3;
+            --bh-green: #26734d;
+            --bh-amber: #a76100;
+            --bh-shadow: 0 8px 24px rgba(55, 37, 28, 0.08);
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            color: var(--bh-ink);
+            background: var(--bh-cream);
+        }
+
+        .clean-header {
+            position: sticky;
+            top: 0;
+            z-index: 30;
+            color: #fff;
+            background: linear-gradient(135deg, var(--bh-red-dark), var(--bh-red));
+            box-shadow: 0 4px 18px rgba(50, 10, 12, 0.24);
+        }
+
+        .clean-header-inner {
+            max-width: 1440px;
+            margin: 0 auto;
+            padding: 14px 22px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 18px;
+        }
+
+        .brand-kicker {
+            margin: 0 0 2px;
+            font-size: .72rem;
+            font-weight: 900;
+            letter-spacing: .13em;
+            text-transform: uppercase;
+            opacity: .82;
+        }
+
+        .clean-header h1 { margin: 0; font-size: clamp(1.3rem, 2.8vw, 2rem); }
+
+        .clean-nav { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+
+        .clean-nav > a,
+        .more-menu summary {
+            min-height: 42px;
+            display: inline-flex;
+            align-items: center;
+            padding: 9px 12px;
+            border-radius: 10px;
+            color: #fff;
+            text-decoration: none;
+            font-weight: 800;
+            cursor: pointer;
+        }
+
+        .clean-nav > a:hover,
+        .more-menu summary:hover { background: rgba(255,255,255,.14); }
+
+        .clean-nav .scan-nav { color: var(--bh-red-dark); background: #fff; }
+
+        .more-menu { position: relative; }
+        .more-menu summary { list-style: none; }
+        .more-menu summary::-webkit-details-marker { display: none; }
+
+        .more-menu-content {
+            position: absolute;
+            right: 0;
+            top: calc(100% + 8px);
+            width: min(330px, 88vw);
+            padding: 10px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 6px;
+            border: 1px solid var(--bh-line);
+            border-radius: 14px;
+            background: #fff;
+            box-shadow: var(--bh-shadow);
+        }
+
+        .more-menu-content a {
+            padding: 10px;
+            border-radius: 8px;
+            color: var(--bh-ink);
+            text-decoration: none;
+            font-weight: 700;
+        }
+
+        .more-menu-content a:hover { background: var(--bh-cream); }
+
+        .dashboard-shell { max-width: 1440px; margin: 0 auto; padding: 24px 22px 48px; }
+
+        .welcome-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: end;
+            gap: 18px;
+            margin-bottom: 20px;
+        }
+
+        .eyebrow-clean {
+            margin: 0 0 5px;
+            color: var(--bh-red);
+            font-size: .74rem;
+            font-weight: 900;
+            letter-spacing: .12em;
+            text-transform: uppercase;
+        }
+
+        .welcome-row h2 { margin: 0; font-size: clamp(1.55rem, 3vw, 2.25rem); }
+        .welcome-row p:last-child { margin: 7px 0 0; color: var(--bh-muted); }
+
+        .quick-actions {
+            display: grid;
+            grid-template-columns: repeat(5, minmax(0, 1fr));
+            gap: 12px;
+            margin-bottom: 22px;
+        }
+
+        .quick-action {
+            min-height: 92px;
+            padding: 15px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            gap: 5px;
+            border: 1px solid var(--bh-line);
+            border-radius: 15px;
+            color: var(--bh-ink);
+            background: var(--bh-card);
+            box-shadow: var(--bh-shadow);
+            text-decoration: none;
+        }
+
+        .quick-action:hover { transform: translateY(-2px); border-color: #cfaaa1; }
+        .quick-action.primary { color: #fff; border-color: var(--bh-red); background: var(--bh-red); }
+        .quick-action .icon { font-size: 1.35rem; }
+        .quick-action strong { font-size: 1rem; }
+        .quick-action small { color: var(--bh-muted); }
+        .quick-action.primary small { color: rgba(255,255,255,.82); }
+
+        .metric-grid {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 12px;
+            margin-bottom: 22px;
+        }
+
+        .metric-card {
+            position: relative;
+            padding: 18px;
+            border: 1px solid var(--bh-line);
+            border-radius: 15px;
+            background: var(--bh-card);
+            box-shadow: var(--bh-shadow);
+        }
+
+        .metric-emoji {
+            position: absolute;
+            top: 14px;
+            right: 15px;
+            font-size: 1.45rem;
+            line-height: 1;
+        }
+
+        .section-emoji { margin-right: 7px; }
+
+        .metric-card span { display: block; color: var(--bh-muted); font-size: .79rem; font-weight: 850; text-transform: uppercase; }
+        .metric-card strong { display: block; margin: 6px 0 3px; font-size: clamp(1.65rem, 3vw, 2.35rem); }
+        .metric-card small { color: var(--bh-muted); }
+
+        .work-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(320px, .75fr); gap: 18px; }
+
+        .clean-panel {
+            margin-bottom: 18px;
+            padding: 20px;
+            border: 1px solid var(--bh-line);
+            border-radius: 16px;
+            background: var(--bh-card);
+            box-shadow: var(--bh-shadow);
+        }
+
+        .panel-heading { display: flex; align-items: start; justify-content: space-between; gap: 14px; margin-bottom: 15px; }
+        .panel-heading h3 { margin: 0; font-size: 1.25rem; }
+        .panel-heading p { margin: 5px 0 0; color: var(--bh-muted); }
+
+        .count-badge { min-width: 38px; padding: 7px 10px; border-radius: 999px; text-align: center; color: #fff; background: var(--bh-red); font-weight: 900; }
+
+        .attention-list { display: grid; gap: 8px; max-height: 440px; overflow: auto; }
+        .attention-row { padding: 12px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-radius: 11px; color: var(--bh-ink); background: #fff8e9; text-decoration: none; }
+        .attention-row strong, .attention-row span { display: block; }
+        .attention-row span { margin-top: 3px; color: var(--bh-muted); font-size: .84rem; }
+        .qty-pill { white-space: nowrap; padding: 6px 9px; border-radius: 999px; color: #744400; background: #ffe1a6; font-weight: 850; }
+
+        .channel-stack { display: grid; gap: 9px; }
+        .channel-row { padding: 12px; display: grid; grid-template-columns: 90px 1fr auto; align-items: center; gap: 10px; border: 1px solid var(--bh-line); border-radius: 12px; }
+        .channel-row > strong { font-size: 1rem; }
+        .status-ok { color: var(--bh-green); font-size: .82rem; font-weight: 850; }
+        .row-links { display: flex; flex-wrap: wrap; gap: 6px; justify-content: end; }
+        .row-links a, .text-link { padding: 7px 9px; border-radius: 8px; color: var(--bh-red); background: #f8e9e7; text-decoration: none; font-size: .84rem; font-weight: 850; }
+
+        .detail-panel { margin-bottom: 18px; border: 1px solid var(--bh-line); border-radius: 16px; background: var(--bh-card); box-shadow: var(--bh-shadow); overflow: hidden; }
+        .detail-panel > summary { padding: 18px 20px; display: flex; justify-content: space-between; align-items: center; gap: 15px; cursor: pointer; font-weight: 900; }
+        .detail-panel > summary::after { content: "Open"; color: var(--bh-red); font-size: .82rem; }
+        .detail-panel[open] > summary::after { content: "Close"; }
+        .detail-content { padding: 0 20px 20px; }
+
+        .table-wrap { overflow-x: auto; }
+        .clean-table { width: 100%; border-collapse: collapse; }
+        .clean-table th, .clean-table td { padding: 11px 10px; border-bottom: 1px solid var(--bh-line); text-align: left; vertical-align: top; }
+        .clean-table th { color: var(--bh-muted); font-size: .76rem; text-transform: uppercase; }
+        .clean-table a { color: var(--bh-red); font-weight: 800; }
+        .positive-change { color: var(--bh-green); }
+        .negative-change { color: #b3242a; }
+
+        .financial-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 18px; }
+        .financial-card-clean { padding: 14px; border-radius: 12px; background: #f8f4ee; }
+        .financial-card-clean span, .financial-card-clean small { display: block; color: var(--bh-muted); }
+        .financial-card-clean strong { display: block; margin: 5px 0; font-size: 1.35rem; }
+        .alert.error { margin-bottom: 12px; padding: 10px; border-radius: 8px; color: #8c161b; background: #fde9e9; }
+
+        @media (max-width: 1020px) {
+            .clean-header-inner { align-items: flex-start; }
+            .clean-nav > a:not(.scan-nav), .clean-nav > a:nth-child(3) { display: none; }
+            .quick-actions { grid-template-columns: repeat(3, 1fr); }
+            .metric-grid { grid-template-columns: repeat(2, 1fr); }
+            .work-grid { grid-template-columns: 1fr; }
+            .financial-grid { grid-template-columns: repeat(2, 1fr); }
+        }
+
+        @media (max-width: 620px) {
+            .clean-header-inner { padding: 11px 13px; }
+            .dashboard-shell { padding: 17px 12px 38px; }
+            .clean-nav > a { display: none !important; }
+            .more-menu-content { position: fixed; top: 68px; right: 10px; }
+            .welcome-row { align-items: start; }
+            .quick-actions { grid-template-columns: repeat(2, 1fr); gap: 9px; }
+            .quick-action { min-height: 94px; padding: 13px; }
+            .metric-grid { grid-template-columns: repeat(2, 1fr); gap: 9px; }
+            .metric-card { padding: 13px; }
+            .metric-card strong { font-size: 1.55rem; }
+            .clean-panel { padding: 15px; }
+            .channel-row { grid-template-columns: 1fr; }
+            .row-links { justify-content: start; }
+            .financial-grid { grid-template-columns: 1fr 1fr; }
+        }
+    </style>
+</head>
+
+<body>
+    <header class="clean-header">
+        <div class="clean-header-inner">
+            <div>
+                <p class="brand-kicker">The BrooksHouse Store</p>
+                <h1>Dashboard</h1>
+            </div>
+
+            <nav class="clean-nav" aria-label="Main navigation">
+    {% set access_role = request.state.auth_user.role if request.state.auth_user else 'owner_admin' %}
+    <a href="/dashboard">&#127968; Dashboard</a>
+    {% if access_role in ['owner_admin', 'manager'] %}
+    <a class="scan-nav" href="/smart-scan">&#128247; Smart Scan</a>
+    <a href="/inventory/search">&#128269; Inventory Search</a>
+    <a href="/inventory/activity">&#128221; Inventory Activity</a>
+    <a href="/offline">&#128268; Offline Center</a>
+    <a href="/channels/orders/pull-list">&#128722; Pull List</a>
+    <details class="more-menu"><summary>&#10024; More &#9660;</summary><div class="more-menu-content">
+        <a href="/products">&#128230; Products</a><a href="/inventory/replenishment">&#128260; Replenishment</a>
+        <a href="/inventory/receive">&#128229; Receive</a><a href="/inventory/transfer">&#128666; Transfer</a>
+        <a href="/inventory/adjust">&#128295; Adjust</a><a href="/inventory/tote-audit">&#9989; Tote Audit</a>
+        <a href="/inventory/tote-manager">&#129523; Tote Manager</a><a href="/inventory/tote-repair">&#129520; Tote Repair</a><a href="/store-map">&#128506; Store Map</a><a href="/storage-gallery">&#128444; Storage Gallery</a>
+        <a href="/product-labels">&#127991; Product Labels</a><a href="/pallet-labels">&#128205; Pallet &amp; Location Labels</a><a href="/admin/location-master">&#128205; Location Master</a>
+        <a href="/kids">&#127918; Kids Work &amp; Rewards</a><a href="/operations/work-queue">&#127919; Work Queue</a>
+        <a href="/channels/orders">&#128722; Marketplace Orders</a>
+        <a href="/sales">&#128176; Sales Dashboard</a><a href="/channels/stats">&#128202; Marketplace Stats</a>
+        <a href="/reports/channel-performance">Channel Performance</a><a href="/reports/product-matching">Product Matching</a>
+        {% if access_role == 'owner_admin' %}
+        <a href="/channels/shopify/reconcile">Shopify Compare</a><a href="/channels/shopify/approve">Approval Queue</a>
+        <a href="/channels/shopify/sales">Shopify Sales History</a>
+        <a href="/channels/amazon/mapping">Amazon Mapping</a><a href="/tools/notifications">&#128276; Notifications</a>
+        <a href="/admin/system-check">&#128737; System Check</a><a href="/tools/sql">SQL Console</a><a href="/tools/python">Python Lab</a><a href="/access">&#128101; Team Access</a>
+        {% endif %}
+    </div></details>
+    {% elif access_role == 'view_only' %}
+    <a href="/inventory/search">Inventory Search</a><a href="/products">Products</a><a href="/channels/stats">Reports</a><a href="/store-map">Store Map</a><a href="/storage-gallery">Storage Gallery</a>
+    {% endif %}
+        <!-- BROOKSHOUSE TEAM PROFILE PICTURE -->
+    <a href="/profile" title="My profile" style="gap:7px">
+        {% if request.state.auth_user.profile_image_name %}<img src="/profile-photo/{{ request.state.auth_user.user_id }}?v={{ request.state.auth_user.profile_image_name }}" alt="" style="width:30px;height:30px;border-radius:50%;object-fit:cover;border:2px solid #fff">{% else %}<span style="width:30px;height:30px;display:grid;place-items:center;border-radius:50%;background:#fff;color:#8f1f24;font-weight:900">{{ request.state.auth_user.display_name[:1]|upper }}</span>{% endif %}
+        <span>{{ request.state.auth_user.display_name }}</span>
+    </a>
+
+<form method="post" action="/logout" style="margin:0"><button style="min-height:42px;padding:9px 12px;border:1px solid #ffffff66;border-radius:10px;color:#fff;background:transparent;font-weight:800;cursor:pointer">Sign Out</button></form>
+</nav>
+
+        </div>
+    </header>
+
+    <main class="dashboard-shell">
+        <section class="welcome-row">
+            <div>
+                <p class="eyebrow-clean">&#127978; Store operations</p>
+                <h2>&#128075; What needs attention today?</h2>
+                <p>Scan, move inventory, fulfill orders, and check the store at a glance.</p>
+            </div>
+        </section>
+
+        <section class="quick-actions" aria-label="Quick actions">
+            <a class="quick-action primary" href="/smart-scan"><span class="icon">&#128247;</span><strong>Smart Scan</strong><small>Identify or add a product</small></a>
+            <a class="quick-action" href="/inventory/search"><span class="icon">&#128269;</span><strong>Find Inventory</strong><small>Product, tote, or trailer</small></a>
+            <a class="quick-action" href="/inventory/receive"><span class="icon">&#128229;</span><strong>Receive</strong><small>Add new inventory</small></a>
+            <a class="quick-action" href="/inventory/transfer"><span class="icon">&#128260;</span><strong>Transfer</strong><small>Move between locations</small></a>
+            <a class="quick-action" href="/channels/orders/pull-list"><span class="icon">&#128722;</span><strong>Master Pull List</strong><small>Pick marketplace orders</small></a>
+            {% if access_role == 'owner_admin' %}<a class="quick-action" href="/admin/system-check"><span class="icon">&#128737;</span><strong>System Check</strong><small>Health and exceptions</small></a>{% endif %}
+        </section>
+
+        <section class="metric-grid" aria-label="Inventory overview">
+            <article class="metric-card"><span class="metric-emoji">&#128230;</span><span>Active products</span><strong>{{ "{:,}".format(total_products) }}</strong><small>Products tracked</small></article>
+            <article class="metric-card"><span class="metric-emoji">&#128202;</span><span>Total units</span><strong>{{ "{:,}".format(total_units) }}</strong><small>Across all locations</small></article>
+            <article class="metric-card"><span class="metric-emoji">&#128176;</span><span>Storefront retail</span><strong id="top-storefront-retail-value">$0.00</strong><small>Current selling value</small></article>
+            <article class="metric-card"><span class="metric-emoji">&#128680;</span><span>Needs attention</span><strong>{{ (low_stock_products | length) + (out_of_stock_products | length) }}</strong><small>{{ low_stock_products | length }} low &middot; {{ out_of_stock_products | length }} out</small></article>
+        </section>
+
+        <section class="work-grid">
+            <div>
+                <article class="clean-panel">
+                    <div class="panel-heading">
+                        <div><p class="eyebrow-clean">&#128680; Storefront attention</p><h3>Stock alerts</h3><p>Only active products assigned to the BrooksHouse Storefront are shown.</p></div>
+                        <span class="count-badge">{{ (low_stock_products | length) + (out_of_stock_products | length) }}</span>
+                    </div>
+
+                    <h4 style="margin:0 0 10px">Low stock: 1&ndash;{{ low_stock_limit }} units ({{ low_stock_products | length }})</h4>
+                    {% if low_stock_products %}
+                    <div class="attention-list">
+                        {% for product in low_stock_products[:15] %}
+                        <a class="attention-row" href="/products/{{ product.product_id }}">
+                            <div><strong>{{ product.product_name }}</strong><span>{{ product.barcode or "No barcode" }}</span></div>
+                            <span class="qty-pill">{{ product.total_quantity }} units</span>
+                        </a>
+                        {% endfor %}
+                    </div>
+                    {% else %}
+                    <p>&#127881; Looking good! No assigned storefront products are currently low on stock.</p>
+                    {% endif %}
+
+                    <details style="margin-top:18px">
+                        <summary style="cursor:pointer; font-weight:850">Out of stock ({{ out_of_stock_products | length }})</summary>
+                        {% if out_of_stock_products %}
+                        <div class="attention-list" style="max-height:260px; margin-top:10px">
+                            {% for product in out_of_stock_products[:10] %}
+                            <a class="attention-row" href="/products/{{ product.product_id }}">
+                                <div><strong>{{ product.product_name }}</strong><span>{{ product.barcode or "No barcode" }}</span></div>
+                                <span class="qty-pill">0 units</span>
+                            </a>
+                            {% endfor %}
+                        </div>
+                        {% else %}
+                        <p>&#9989; Nice! No assigned storefront products are out of stock.</p>
+                        {% endif %}
+                    </details>
+
+                    <p style="margin:14px 0 0"><a class="text-link" href="/inventory/replenishment">Open Replenishment</a></p>
+                </article>
+            </div>
+
+            <aside>
+                <article class="clean-panel">
+                    <div class="panel-heading"><div><p class="eyebrow-clean">&#128722; Sales channels</p><h3>Marketplace tools</h3></div></div>
+                    <div class="channel-stack">
+                        <div class="channel-row"><strong>Walmart</strong><span class="status-ok">Ã¢â€”Â Connected</span><div class="row-links"><a href="/channels/walmart/orders">Orders</a><a href="/channels/walmart/orders/pull-list">Pull</a></div></div>
+                        <div class="channel-row"><strong>Amazon</strong><span class="status-ok">Ã¢â€”Â Connected</span><div class="row-links"><a href="/channels/amazon/orders">Orders</a><a href="/channels/amazon/mapping">Mapping</a></div></div>
+                        <div class="channel-row"><strong>Shopify</strong><span class="status-ok">Ã¢â€”Â Tools ready</span><div class="row-links"><a href="/channels/shopify/sales">Sales</a><a href="/channels/shopify/reconcile">Compare</a><a href="/channels/shopify/approve">Approvals</a></div></div>
+                    </div>
+                    <p style="margin:14px 0 0"><a class="text-link" href="/channels/orders">All Marketplace Orders</a> <a class="text-link" href="/channels/stats">Stats</a> <a class="text-link" href="/reports/channel-performance">Performance</a> <a class="text-link" href="/reports/product-matching">Product Matching</a></p>
+                </article>
+
+                <article class="clean-panel">
+                    <div class="panel-heading"><div><p class="eyebrow-clean">&#129520; More workspaces</p><h3>Inventory tools</h3></div></div>
+                    <div class="row-links" style="justify-content:start">
+                        <a href="/inventory/adjust">Adjust</a><a href="/inventory/tote-audit">Tote Audit</a><a href="/store-map">Store Map</a><a href="/storage-gallery">Storage Gallery</a><a href="/barcode-mapper">Packaging Mapper</a><a href="/product-labels">Product Labels</a><a href="/pallet-labels">Location Labels</a><a href="/operations/work-queue">Work Queue</a><a href="/kids">Kids Work &amp; Rewards</a><a href="/tools/notifications">Notifications</a>
+                    </div>
+                </article>
+            </aside>
+        </section>
+
+        <details class="detail-panel" open>
+            <summary><span><span class="section-emoji">&#128205;</span>Inventory by location</span> <span>{{ active_location_count }} active locations</span></summary>
+            <div class="detail-content">
+                {% if location_totals %}
+                <div class="table-wrap"><table class="clean-table" id="location-value-table">
+                    <thead><tr><th>Location</th><th>Type</th><th>Products</th><th>Units</th><th>Retail value</th><th>Cost value</th></tr></thead>
+                    <tbody>
+                        {% for row in location_totals %}
+                        <tr data-location-name="{{ row.location_name }}">
+                            <td><strong>{{ row.location_name }}</strong></td><td>{{ row.location_type }}</td><td>{{ row.product_count }}</td><td>{{ row.total_units }}</td><td class="location-retail-value">LoadingÃ¢â‚¬Â¦</td><td class="location-cost-value">${{ "%.2f" | format(row.total_value) }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table></div>
+                {% else %}<p>No inventory has been entered yet.</p>{% endif %}
+            </div>
+        </details>
+
+        <details class="detail-panel">
+            <summary><span><span class="section-emoji">&#128221;</span>Recent inventory activity</span> <span>Last 25 changes</span></summary>
+            <div class="detail-content">
+                {% if recent_transactions %}
+                <div class="table-wrap"><table class="clean-table">
+                    <thead><tr><th>Type</th><th>Product</th><th>Location</th><th>Change</th><th>Performed By</th><th>Reference</th><th>Notes</th></tr></thead>
+                    <tbody>
+                    {% for transaction in recent_transactions %}
+                        <tr>
+                            <td>{{ transaction.transaction_type | replace("_", " ") | title }}</td>
+                            <td><a href="/products/{{ transaction.product.product_id }}">{{ transaction.product.product_name }}</a></td>
+                            <td>{{ transaction.location.location_name }}</td>
+                            <td><strong class="{% if transaction.quantity_change > 0 %}positive-change{% elif transaction.quantity_change < 0 %}negative-change{% endif %}">{% if transaction.quantity_change > 0 %}+{% endif %}{{ transaction.quantity_change }}</strong></td>
+                            <td>{{ transaction.performed_by_name or "Unknown / Legacy" }}{% if transaction.performed_by_user_id %}<br><small>User ID {{ transaction.performed_by_user_id }}{% if transaction.performed_by_role %} Ã‚Â· {{ transaction.performed_by_role | replace("_", " ") | title }}{% endif %}</small>{% endif %}</td>
+                            <td>{{ transaction.reference_number or "Ã¢â‚¬â€" }}</td><td>{{ transaction.notes or "Ã¢â‚¬â€" }}</td>
+                        </tr>
+                    {% endfor %}
+                    </tbody>
+                </table></div>
+                {% else %}<p>No inventory transactions have been recorded yet.</p>{% endif %}
+            </div>
+        </details>
+
+        <details class="detail-panel" id="financial-dashboard">
+            <summary><span><span class="section-emoji">&#128200;</span>Storefront financial summary</span> <span>Values, margin, and missing data</span></summary>
+            <div class="detail-content">
+                <div id="financial-dashboard-error" class="alert error" hidden></div>
+                <div class="financial-grid">
+                    <article class="financial-card-clean"><span>Retail value</span><strong id="financial-retail-value">$0.00</strong><small>Quantity Ãƒâ€” selling price</small></article>
+                    <article class="financial-card-clean"><span>Cost value</span><strong id="financial-cost-value">$0.00</strong><small>Quantity Ãƒâ€” average cost</small></article>
+                    <article class="financial-card-clean"><span>Estimated profit</span><strong id="financial-profit-value">$0.00</strong><small id="financial-margin-value">0% estimated margin</small></article>
+                    <article class="financial-card-clean"><span>Average price</span><strong id="financial-average-price">$0.00</strong><small>Priced storefront products</small></article>
+                    <article class="financial-card-clean"><span>Missing prices</span><strong id="financial-missing-prices">0</strong><small>Not included in retail value</small></article>
+                    <article class="financial-card-clean"><span>Missing costs</span><strong id="financial-missing-costs">0</strong><small>Profit may be overstated</small></article>
+                    <article class="financial-card-clean"><span>Amazon value</span><strong id="financial-amazon-value">$0.00</strong><small id="financial-amazon-status">0 listings in stock</small></article>
+                    <article class="financial-card-clean"><span>Storefront units</span><strong id="financial-unit-count">0</strong><small id="financial-product-count">0 products</small></article>
+                </div>
+                <div class="table-wrap"><table class="clean-table">
+                    <thead><tr><th>Top product</th><th>Qty</th><th>Sell price</th><th>Cost</th><th>Retail value</th><th>Est. profit</th></tr></thead>
+                    <tbody id="financial-top-products"><tr><td colspan="6">Loading financial informationÃ¢â‚¬Â¦</td></tr></tbody>
+                </table></div>
+            </div>
+        </details>
+    </main>
+
+    <script>
+        (() => {
+            const money = value => new Intl.NumberFormat("en-US", {style: "currency", currency: "USD"}).format(Number(value || 0));
+            const number = value => new Intl.NumberFormat("en-US").format(Number(value || 0));
+            const escapeHtml = value => { const element = document.createElement("div"); element.textContent = String(value ?? ""); return element.innerHTML; };
+
+            fetch("/api/dashboard/financial-summary")
+                .then(response => { if (!response.ok) throw new Error(`HTTP ${response.status}`); return response.json(); })
+                .then(data => {
+                    if (data.error) throw new Error(data.error);
+                    document.getElementById("top-storefront-retail-value").textContent = money(data.retail_value);
+                    document.getElementById("financial-retail-value").textContent = money(data.retail_value);
+                    document.getElementById("financial-cost-value").textContent = money(data.cost_value);
+                    document.getElementById("financial-profit-value").textContent = money(data.estimated_profit);
+                    document.getElementById("financial-margin-value").textContent = `${Number(data.estimated_margin || 0).toFixed(1)}% estimated margin`;
+                    document.getElementById("financial-average-price").textContent = money(data.average_selling_price);
+                    document.getElementById("financial-missing-prices").textContent = number(data.missing_price_count);
+                    document.getElementById("financial-missing-costs").textContent = number(data.missing_cost_count);
+                    document.getElementById("financial-amazon-value").textContent = money(data.amazon_inventory_value);
+                    document.getElementById("financial-amazon-status").textContent = `${number(data.amazon_in_stock_count)} in-stock Amazon listings`;
+                    document.getElementById("financial-unit-count").textContent = number(data.unit_count);
+                    document.getElementById("financial-product-count").textContent = `${number(data.product_count)} storefront products`;
+
+                    const tableBody = document.getElementById("financial-top-products");
+                    if (!data.top_products || data.top_products.length === 0) {
+                        tableBody.innerHTML = '<tr><td colspan="6">No priced storefront inventory was found.</td></tr>';
+                        return;
+                    }
+                    tableBody.innerHTML = data.top_products.map(product => `
+                        <tr><td><a href="/products/${product.product_id}">${escapeHtml(product.product_name)}</a></td><td>${number(product.quantity)}</td><td>${money(product.selling_price)}</td><td>${money(product.average_cost)}</td><td><strong>${money(product.retail_value)}</strong></td><td>${money(product.estimated_profit)}</td></tr>
+                    `).join("");
+                })
+                .catch(error => {
+                    const errorBox = document.getElementById("financial-dashboard-error");
+                    errorBox.hidden = false;
+                    errorBox.textContent = "Could not load financial information: " + error.message;
+                });
+
+            fetch("/api/dashboard/location-values")
+                .then(response => { if (!response.ok) throw new Error(`HTTP ${response.status}`); return response.json(); })
+                .then(data => {
+                    if (data.error) throw new Error(data.error);
+                    const normalize = value => String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
+                    const values = new Map((data.locations || []).map(location => [normalize(location.location_name), location]));
+                    document.querySelectorAll("#location-value-table tbody tr").forEach(row => {
+                        const location = values.get(normalize(row.dataset.locationName));
+                        if (!location) return;
+                        row.querySelector(".location-retail-value").textContent = money(location.retail_value);
+                        row.querySelector(".location-cost-value").textContent = money(location.cost_value);
+                    });
+                })
+                .catch(error => console.error("Could not load location values:", error));
+        })();
+    </script>
+    <script src="/static/pwa.js"></script>
+</body>
+</html>
+
+
+
+

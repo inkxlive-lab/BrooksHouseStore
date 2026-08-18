@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>Add Product | BrooksHouse Store</title>
+
+    <link
+        rel="stylesheet"
+        href="/static/store.css"
+    >
+</head>
+
+<body>
+    <header class="store-header">
+        <div>
+            <p class="eyebrow">The BrooksHouse Store</p>
+            <h1>Add a Product</h1>
+            <p class="subtitle">
+                Big Deals. Good Vibes. Every Day.
+            </p>
+        </div>
+
+        <nav>
+            <a href="/storage-gallery">Storage Gallery</a>
+
+            <a href="/smart-scan">Smart Scan</a>
+
+            <a href="/channels/amazon/mapping">Amazon Mapping</a>
+            <a href="/dashboard">Dashboard</a>
+            <a href="/channels/shopify/reconcile">Shopify Compare</a>
+            <a href="/channels/shopify/storefront-import">Storefront Import</a>
+            <a href="/channels/shopify/settings">Shopify Settings</a>
+            <a href="/channels/shopify/approve">Approval Queue</a>
+            <a href="/inventory/search">Inventory Search</a>
+            <a href="/inventory/replenishment">
+                Replenishment
+            </a>
+            <a href="/scan">Scan Item</a>
+            <a href="/inventory/receive">Receive Inventory</a>
+            <a href="/inventory/transfer">Transfer Inventory</a>
+            <a href="/inventory/adjust">Adjust Inventory</a>
+            <a href="/products">View Products</a>
+            <a href="/docs">API Docs</a>
+        </nav>
+    </header>
+
+    <main class="page-container">
+        {% if message %}
+        <section class="alert success">
+            <strong>{{ message }}</strong>
+
+            {% if product_id %}
+            <div class="alert-actions">
+                <a href="/products/{{ product_id }}">
+                    View Product
+                </a>
+
+                <a href="/products/add">
+                    Add Another Product
+                </a>
+            </div>
+            {% endif %}
+        </section>
+        {% endif %}
+
+        {% if error %}
+        <section class="alert error">
+            <strong>{{ error }}</strong>
+        </section>
+        {% endif %}
+
+        <form
+            class="product-form"
+            action="/products/add"
+            method="post"
+            enctype="multipart/form-data"
+        >
+            <section class="form-card">
+                <div class="section-heading">
+                    <span>1</span>
+                    <div>
+                        <h2>Barcode and identity</h2>
+                        <p>
+                            Scan or type the barcode and basic product details.
+                        </p>
+                    </div>
+                </div>
+
+                <div class="form-grid">
+                    <label class="field full-width">
+                        <span>Barcode *</span>
+
+                        <input
+                            type="text"
+                            name="barcode"
+                            inputmode="numeric"
+                            autocomplete="off"
+                            required
+                            autofocus
+                            placeholder="Scan or enter UPC"
+                            value="{{ form.barcode if form else '' }}"
+                        >
+                    </label>
+
+                    <label class="field">
+                        <span>Barcode type</span>
+
+                        <select name="barcode_type">
+                            <option value="UPC-A">UPC-A</option>
+                            <option value="UPC-E">UPC-E</option>
+                            <option value="EAN-13">EAN-13</option>
+                            <option value="EAN-8">EAN-8</option>
+                            <option value="CODE-128">CODE-128</option>
+                            <option value="OTHER">Other</option>
+                        </select>
+                    </label>
+
+                    <label class="field">
+                        <span>Quantity per scan</span>
+
+                        <input
+                            type="number"
+                            name="quantity_per_scan"
+                            min="1"
+                            value="1"
+                            required
+                        >
+                    </label>
+
+                    <label class="field full-width">
+                        <span>Product name *</span>
+
+                        <input
+                            type="text"
+                            name="product_name"
+                            required
+                            placeholder="Example: Tide Original Laundry Detergent"
+                            value="{{ form.product_name if form else '' }}"
+                        >
+                    </label>
+
+                    <label class="field">
+                        <span>Brand</span>
+
+                        <input
+                            type="text"
+                            name="brand"
+                            placeholder="Example: Tide"
+                            value="{{ form.brand if form else '' }}"
+                        >
+                    </label>
+
+                    <label class="field">
+                        <span>Category</span>
+
+                        <select name="category">
+                            <option value="">Select category</option>
+                            <option value="Household">Household</option>
+                            <option value="Cleaning Supplies">
+                                Cleaning Supplies
+                            </option>
+                            <option value="Food and Drinks">
+                                Food and Drinks
+                            </option>
+                            <option value="Health and Beauty">
+                                Health and Beauty
+                            </option>
+                            <option value="Baby">Baby</option>
+                            <option value="Toys">Toys</option>
+                            <option value="School Supplies">
+                                School Supplies
+                            </option>
+                            <option value="Kitchen">Kitchen</option>
+                            <option value="Automotive">Automotive</option>
+                            <option value="Clothing">Clothing</option>
+                            <option value="Seasonal">Seasonal</option>
+                            <option value="Furniture">Furniture</option>
+                            <option value="Other">Other</option>
+                        </select>
+                    </label>
+
+                    <label class="field full-width">
+                        <span>Description</span>
+
+                        <textarea
+                            name="description"
+                            rows="4"
+                            placeholder="Product description, color, model, scent, flavor, or other details"
+                        >{{ form.description if form else '' }}</textarea>
+                    </label>
+                </div>
+            </section>
+
+            <section class="form-card">
+                <div class="section-heading">
+                    <span>2</span>
+                    <div>
+                        <h2>Size and packaging</h2>
+                        <p>
+                            Describe the amount contained in one sellable item.
+                        </p>
+                    </div>
+                </div>
+
+                <div class="form-grid three-column">
+                    <label class="field">
+                        <span>Size</span>
+
+                        <input
+                            type="number"
+                            name="size_value"
+                            min="0"
+                            step="0.01"
+                            placeholder="16"
+                        >
+                    </label>
+
+                    <label class="field">
+                        <span>Size unit</span>
+
+                        <select name="size_unit">
+                            <option value="">Select unit</option>
+                            <option value="oz">oz</option>
+                            <option value="fl oz">fl oz</option>
+                            <option value="lb">lb</option>
+                            <option value="g">grams</option>
+                            <option value="kg">kilograms</option>
+                            <option value="ml">milliliters</option>
+                            <option value="L">liters</option>
+                            <option value="count">count</option>
+                            <option value="pack">pack</option>
+                            <option value="piece">piece</option>
+                            <option value="roll">roll</option>
+                            <option value="sheet">sheet</option>
+                            <option value="other">other</option>
+                        </select>
+                    </label>
+
+                    <label class="field">
+                        <span>Pack quantity</span>
+
+                        <input
+                            type="number"
+                            name="pack_quantity"
+                            min="1"
+                            value="1"
+                            required
+                        >
+                    </label>
+                </div>
+            </section>
+
+            <section class="form-card">
+                <div class="section-heading">
+                    <span>3</span>
+                    <div>
+                        <h2>Cost and pricing</h2>
+                        <p>
+                            Store money values as plain numbers without a dollar sign.
+                        </p>
+                    </div>
+                </div>
+
+                <div class="form-grid three-column">
+                    <label class="field">
+                        <span>Average cost</span>
+
+                        <div class="money-input">
+                            <span>$</span>
+
+                            <input
+                                type="number"
+                                name="average_cost"
+                                min="0"
+                                step="0.01"
+                                placeholder="2.50"
+                                value="{{ form.average_cost if form else '' }}"
+                            >
+                        </div>
+                    </label>
+
+                    <label class="field">
+                        <span>Store price</span>
+
+                        <div class="money-input">
+                            <span>$</span>
+
+                            <input
+                                type="number"
+                                name="store_price"
+                                min="0"
+                                step="0.01"
+                                placeholder="5.99"
+                            >
+                        </div>
+                    </label>
+
+                    <label class="field">
+                        <span>Suggested retail</span>
+
+                        <div class="money-input">
+                            <span>$</span>
+
+                            <input
+                                type="number"
+                                name="suggested_retail_price"
+                                min="0"
+                                step="0.01"
+                                placeholder="9.99"
+                            >
+                        </div>
+                    </label>
+
+                    <label class="check-field full-width">
+                        <input
+                            type="checkbox"
+                            name="taxable"
+                            checked
+                        >
+
+                        <span>This product is taxable</span>
+                    </label>
+                </div>
+            </section>
+
+            <section class="form-card">
+                <div class="section-heading">
+                    <span>4</span>
+                    <div>
+                        <h2>Inventory and photo</h2>
+                        <p>
+                            Record the starting quantity and an optional product image.
+                        </p>
+                    </div>
+                </div>
+
+                <div class="form-grid">
+                    <label class="field">
+                        <span>Starting quantity</span>
+
+                        <input
+                            type="number"
+                            name="starting_quantity"
+                            min="0"
+                            value="0"
+                            required
+                        >
+                    </label>
+
+                    <label class="field">
+                        <span>Inventory location</span>
+
+                        <select name="location_id" required>
+                            {% for location in locations %}
+                            <option value="{{ location.location_id }}">
+                                {{ location.location_name }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </label>
+
+                    <label class="field full-width">
+                        <span>Product picture</span>
+
+                        <input
+                            type="file"
+                            name="product_image"
+                            accept="image/*"
+			    capture="environment"
+                        >
+
+                        <small>
+                            JPG, PNG, or WEBP. The picture is optional.
+                        </small>
+                    </label>
+
+                    <label class="field full-width">
+                        <span>Receiving notes</span>
+
+                        <textarea
+                            name="notes"
+                            rows="3"
+                            placeholder="Pallet number, supplier, condition, or other notes"
+                        ></textarea>
+                    </label>
+                </div>
+            </section>
+
+            <div class="form-actions">
+                <button type="reset" class="secondary-button">
+                    Clear Form
+                </button>
+
+                <button type="submit" class="primary-button">
+                    Save Product
+                </button>
+            </div>
+        </form>
+    </main>
+</body>
+</html>
+

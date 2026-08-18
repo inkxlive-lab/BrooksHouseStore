@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>Shopify Storefront Import | BrooksHouse Store</title>
+
+    <link
+        rel="stylesheet"
+        href="/static/store.css"
+    >
+</head>
+
+<body>
+    <header class="store-header">
+        <div>
+            <p class="eyebrow">The BrooksHouse Store</p>
+
+            <h1>Shopify Storefront Import Preview</h1>
+
+            <p class="subtitle">
+                Review active Shopify listings before creating
+                BrooksHouse Storefront products and inventory.
+            </p>
+        </div>
+
+        <nav>
+            <a href="/storage-gallery">Storage Gallery</a>
+
+            <a href="/smart-scan">Smart Scan</a>
+
+            <a href="/channels/amazon/mapping">Amazon Mapping</a>
+            <a href="/dashboard">Dashboard</a>
+            <a href="/inventory/replenishment">
+                Replenishment
+            </a>
+
+            <a href="/channels/shopify/storefront-import">
+                Storefront Import
+            </a>
+
+            <a href="/channels/shopify/reconcile">
+                Shopify Compare
+            </a>
+
+            <a href="/scan">Scan</a>
+
+            <a href="/products">Products</a>
+        </nav>
+    </header>
+
+    <main class="page-container">
+        {% if error %}
+        <section class="alert error">
+            <strong>{{ error }}</strong>
+        </section>
+        {% endif %}
+
+        <section class="storefront-import-summary">
+            <article class="dashboard-card">
+                <span>Known Shopify listings</span>
+
+                <strong>
+                    {{ summary.total_listings }}
+                </strong>
+
+                <p>
+                    All products previously scanned, bagged, or tagged.
+                </p>
+            </article>
+
+            <article class="dashboard-card">
+                <span>Active storefront listings</span>
+
+                <strong>
+                    {{ summary.active_listings }}
+                </strong>
+
+                <p>
+                    Shopify records currently marked ACTIVE.
+                </p>
+            </article>
+
+            <article class="dashboard-card">
+                <span>Safe to import</span>
+
+                <strong>
+                    {{ summary.safe_to_import }}
+                </strong>
+
+                <p>
+                    Active listings with a unique barcode.
+                </p>
+            </article>
+
+            <article class="dashboard-card">
+                <span>Needs review</span>
+
+                <strong>
+                    {{ summary.needs_review }}
+                </strong>
+
+                <p>
+                    Missing or duplicate active barcodes.
+                </p>
+            </article>
+
+            <article class="dashboard-card">
+                <span>Active units</span>
+
+                <strong>
+                    {{ summary.safe_units }}
+                </strong>
+
+                <p>
+                    Total units on safe active listings.
+                </p>
+            </article>
+
+            <article class="dashboard-card">
+                <span>Active with images</span>
+
+                <strong>
+                    {{
+                        safe_rows
+                        | selectattr("has_image")
+                        | list
+                        | length
+                    }}
+                </strong>
+
+                <p>
+                    Safe records with a Shopify image detected.
+                </p>
+            </article>
+        </section>
+
+        <section class="dashboard-panel">
+            <div class="dashboard-panel-heading">
+                <div>
+                    <p class="eyebrow">Import rules</p>
+
+                    <h2>What will happen later</h2>
+                </div>
+            </div>
+
+            <div class="storefront-import-rules">
+                <div>
+                    <strong>ACTIVE + unique barcode</strong>
+
+                    <span>
+                        Safe to create or update a BrooksHouse product.
+                    </span>
+                </div>
+
+                <div>
+                    <strong>ACTIVE + missing barcode</strong>
+
+                    <span>
+                        Held for review and not automatically imported.
+                    </span>
+                </div>
+
+                <div>
+                    <strong>ACTIVE + duplicate barcode</strong>
+
+                    <span>
+                        Held for review to prevent products from being
+                        connected incorrectly.
+                    </span>
+                </div>
+
+                <div>
+                    <strong>Draft or archived</strong>
+
+                    <span>
+                        Remains in the known Shopify catalog only.
+                    </span>
+                </div>
+            </div>
+        </section>
+
+        <section class="dashboard-panel">
+            <div class="dashboard-panel-heading">
+                <div>
+                    <p class="eyebrow">Ready records</p>
+
+                    <h2>Safe Active Shopify Listings</h2>
+
+                    <p>
+                        These records have an ACTIVE status and a unique
+                        usable barcode.
+                    </p>
+                </div>
+
+                <span class="dashboard-badge">
+                    {{ safe_rows | length }}
+                </span>
+            </div>
+
+            {% if safe_rows %}
+            <div class="dashboard-table-wrap">
+                <table class="dashboard-table storefront-import-table">
+                    <thead>
+                        <tr>
+                            <th>Image</th>
+                            <th>Product</th>
+                            <th>Barcode</th>
+                            <th>Quantity</th>
+                            <th>Price</th>
+                            <th>SKU</th>
+                            <th>Image Status</th>
+                        </tr>
+                    </thead>
+
+                    <tbody>
+                        {% for row in safe_rows %}
+                        <tr>
+                            <td>
+                                {% if row.image_url %}
+                                <img
+                                    class="storefront-preview-image"
+                                    src="{{ row.image_url }}"
+                                    alt="{{ row.title }}"
+                                    loading="lazy"
+                                >
+                                {% else %}
+                                <div class="storefront-no-image">
+                                    No image
+                                </div>
+                                {% endif %}
+                            </td>
+
+                            <td>
+                                <strong>{{ row.title }}</strong>
+
+                                {% if (
+                                    row.variant_title
+                                    and row.variant_title | lower
+                                    != "default title"
+                                ) %}
+                                <div class="preview-details">
+                                    {{ row.variant_title }}
+                                </div>
+                                {% endif %}
+                            </td>
+
+                            <td>
+                                {{ row.barcode }}
+                            </td>
+
+                            <td>
+                                <strong>
+                                    {{ row.quantity }}
+                                </strong>
+                            </td>
+
+                            <td>
+                                {% if row.price is not none %}
+                                    ${{ "%.2f" | format(row.price) }}
+                                {% else %}
+                                    —
+                                {% endif %}
+                            </td>
+
+                            <td>
+                                {{ row.sku or "No SKU" }}
+                            </td>
+
+                            <td>
+                                {% if row.has_image %}
+                                <span class="import-ready-status">
+                                    Image found
+                                </span>
+                                {% else %}
+                                <span class="import-review-status">
+                                    No image found
+                                </span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <p>
+                No active Shopify listings are currently safe to import.
+            </p>
+            {% endif %}
+        </section>
+
+        <section class="dashboard-panel">
+            <div class="dashboard-panel-heading">
+                <div>
+                    <p class="eyebrow">Review required</p>
+
+                    <h2>Active Listings Held Back</h2>
+                </div>
+
+                <span class="dashboard-badge">
+                    {{ review_rows | length }}
+                </span>
+            </div>
+
+            {% if review_rows %}
+            <div class="dashboard-table-wrap">
+                <table class="dashboard-table storefront-review-table">
+                    <thead>
+                        <tr>
+                            <th>Product</th>
+                            <th>Barcode</th>
+                            <th>Quantity</th>
+                            <th>Price</th>
+                            <th>Reason</th>
+                        </tr>
+                    </thead>
+
+                    <tbody>
+                        {% for row in review_rows %}
+                        <tr>
+                            <td>
+                                <strong>
+                                    {{ row.title }}
+                                </strong>
+                            </td>
+
+                            <td>
+                                {{ row.barcode or "Missing" }}
+                            </td>
+
+                            <td>
+                                {{ row.quantity }}
+                            </td>
+
+                            <td>
+                                {% if row.price is not none %}
+                                    ${{ "%.2f" | format(row.price) }}
+                                {% else %}
+                                    —
+                                {% endif %}
+                            </td>
+
+                            <td>
+                                <span class="import-review-status">
+                                    {{ row.reason }}
+                                </span>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <p>
+                No active Shopify listings require barcode review.
+            </p>
+            {% endif %}
+        </section>
+
+        {% if safe_rows %}
+        <section class="final-confirmation-placeholder">
+            <strong>
+                {{ safe_rows | length }} active listing(s) are safe
+                for the storefront import.
+            </strong>
+
+            <p>
+                This preview has not created products, changed inventory,
+                or downloaded images.
+            </p>
+        </section>
+        {% endif %}
+    </main>
+</body>
+</html>

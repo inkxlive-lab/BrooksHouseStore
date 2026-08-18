@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>Scan Item | BrooksHouse Store</title>
+
+    <link
+        rel="stylesheet"
+        href="/static/store.css"
+    >
+</head>
+
+<body>
+    <header class="store-header">
+        <div>
+            <p class="eyebrow">The BrooksHouse Store</p>
+            <h1>Scan / Check Item</h1>
+
+            <p class="subtitle">
+                Check the store and master catalog before adding a product.
+            </p>
+        </div>
+
+        <nav>
+            <a href="/storage-gallery">Storage Gallery</a>
+
+            <a href="/smart-scan">Smart Scan</a>
+
+            <a href="/channels/amazon/mapping">Amazon Mapping</a>
+            <a href="/dashboard">Dashboard</a>
+            <a href="/channels/shopify/reconcile">Shopify Compare</a>
+            <a href="/channels/shopify/storefront-import">Storefront Import</a>
+            <a href="/channels/shopify/settings">Shopify Settings</a>
+            <a href="/channels/shopify/approve">Approval Queue</a>
+            <a href="/inventory/search">Inventory Search</a>
+            <a href="/inventory/replenishment">
+                Replenishment
+            </a>
+            <a href="/inventory/receive">Receive Inventory</a>
+            <a href="/inventory/transfer">Transfer Inventory</a>
+            <a href="/inventory/adjust">Adjust Inventory</a>
+            <a href="/products">Products</a>
+            <a href="/products/add">Add Product</a>
+        </nav>
+    </header>
+
+    <main class="page-container">
+        <section class="scan-card">
+            <form
+                action="/scan"
+                method="post"
+                class="scan-form"
+            >
+                <label class="field">
+                    <span>Scan or enter barcode</span>
+
+                    <input
+                        type="text"
+                        name="barcode"
+                        inputmode="numeric"
+                        autocomplete="off"
+                        placeholder="Scan barcode here"
+                        value="{{ scanned_barcode or '' }}"
+                        autofocus
+                        required
+                    >
+                </label>
+
+                <button
+                    type="submit"
+                    class="primary-button"
+                >
+                    Check Item
+                </button>
+            </form>
+
+            <p class="scan-help">
+                A handheld scanner usually types the barcode and presses
+                Enter automatically.
+            </p>
+        </section>
+
+        {% if searched %}
+        <section class="scan-results">
+            <div class="scan-summary">
+                <span>Scanned barcode</span>
+                <strong>{{ scanned_barcode }}</strong>
+
+                {% if lookup_barcode != scanned_barcode %}
+                <small>
+                    Leading-zero lookup value: {{ lookup_barcode }}
+                </small>
+                {% endif %}
+            </div>
+
+            {% if store_product %}
+            <article class="result-card store-match">
+                <div class="result-label">
+                    Already in BrooksHouse Store
+                </div>
+
+                <h2>{{ store_product.product_name }}</h2>
+
+                {% if store_product.brand %}
+                <p>{{ store_product.brand }}</p>
+                {% endif %}
+
+                <div class="result-grid">
+                    <div>
+                        <span>Store price</span>
+
+                        <strong>
+                            {% if store_product.store_price is not none %}
+                                ${{ "%.2f" | format(store_product.store_price) }}
+                            {% else %}
+                                Not priced
+                            {% endif %}
+                        </strong>
+                    </div>
+
+                    <div>
+                        <span>Quantity on hand</span>
+
+                        <strong>
+                            {{
+                                store_product.inventory_records
+                                | sum(attribute="quantity_on_hand")
+                            }}
+                        </strong>
+                    </div>
+                </div>
+
+                <section class="location-quantity-list">
+                    <h3>Inventory by location</h3>
+
+                    {% if store_product.inventory_records %}
+                        {% for record in store_product.inventory_records %}
+                        <div class="location-quantity-row">
+                            <div>
+                                <span>
+                                    {{ record.location.location_name }}
+                                </span>
+
+                                <strong>
+                                    {{ record.quantity_on_hand }}
+                                    unit{% if record.quantity_on_hand != 1 %}s{% endif %}
+                                </strong>
+                            </div>
+
+                            <a
+                                class="secondary-button link-button"
+                                href="/inventory/adjust?barcode={{ scanned_barcode }}&location_id={{ record.location_id }}"
+                            >
+                                Adjust This Location
+                            </a>
+                        </div>
+                        {% endfor %}
+                    {% else %}
+                        <p>
+                            This product does not have inventory assigned
+                            to a location yet.
+                        </p>
+                    {% endif %}
+                </section>
+
+                <div class="form-actions">
+                    <a
+                        class="primary-button link-button"
+                        href="/products/{{ store_product.product_id }}"
+                    >
+                        View Existing Product
+                    </a>
+
+                    <a
+                        class="secondary-button link-button"
+                        href="/inventory/adjust?barcode={{ scanned_barcode }}"
+                    >
+                        Adjust Another Location
+                    </a>
+                </div>
+            </article>
+            {% endif %}
+
+
+
+            {%
+                set scanned_store_product =
+                    product
+                    if product is defined and product
+                    else store_product
+                    if store_product is defined and store_product
+                    else existing_product
+                    if existing_product is defined and existing_product
+                    else matched_product
+                    if matched_product is defined and matched_product
+                    else none
+            %}
+
+            {% if scanned_store_product %}
+            <section class="scan-product-image-section">
+                {% if scanned_store_product.images %}
+                    {% set image = scanned_store_product.images[0] %}
+
+                    {% set image_source =
+                        image.image_url
+                        or image.url
+                        or image.source_url
+                        or image.external_url
+                    %}
+
+                    {% if image_source %}
+                    <a
+                        class="scan-product-image-link"
+                        href="/products/{{ scanned_store_product.product_id }}"
+                    >
+                        <img
+                            class="scan-product-image"
+                            src="{{ image_source }}"
+                            alt="{{
+                                image.alt_text
+                                or scanned_store_product.product_name
+                            }}"
+                        >
+                    </a>
+                    {% else %}
+                    <div class="scan-product-image-placeholder">
+                        No product image available
+                    </div>
+                    {% endif %}
+                {% else %}
+                <div class="scan-product-image-placeholder">
+                    No product image available
+                </div>
+                {% endif %}
+            </section>
+            {% endif %}
+
+            {% if shopify_matches %}
+            <section class="shopify-results">
+                <div class="catalog-heading">
+                    <h2>Shopify listing</h2>
+
+                    <p>
+                        This barcode is already present in Shopify.
+                    </p>
+                </div>
+
+                {% for listing in shopify_matches %}
+                <article class="result-card shopify-match">
+                    <div class="result-label shopify-label">
+                        Shopify {{ listing.listing_status or "Unknown" }}
+                    </div>
+
+                    <h3>{{ listing.listing_title }}</h3>
+
+                    {% if (
+                        listing.variant_title
+                        and listing.variant_title | lower
+                        != "default title"
+                    ) %}
+                    <p>
+                        Variant: {{ listing.variant_title }}
+                    </p>
+                    {% endif %}
+
+                    <div class="result-grid">
+                        <div>
+                            <span>Shopify status</span>
+
+                            <strong>
+                                {{ listing.listing_status or "Unknown" }}
+                            </strong>
+                        </div>
+
+                        <div>
+                            <span>Shopify price</span>
+
+                            <strong>
+                                {% if listing.listed_price is not none %}
+                                    ${{ "%.2f" | format(listing.listed_price) }}
+                                {% else %}
+                                    No price
+                                {% endif %}
+                            </strong>
+                        </div>
+
+                        <div>
+                            <span>Shopify inventory</span>
+
+                            <strong>
+                                {% if listing.quantity_available is not none %}
+                                    {{ listing.quantity_available }}
+                                {% else %}
+                                    Unknown
+                                {% endif %}
+                            </strong>
+                        </div>
+
+                        <div>
+                            <span>Shopify SKU</span>
+
+                            <strong>
+                                {{ listing.sku or "No SKU" }}
+                            </strong>
+                        </div>
+
+                        <div>
+                            <span>Shopify barcode</span>
+
+                            <strong>
+                                {{ listing.barcode_raw or "No barcode" }}
+                            </strong>
+                        </div>
+
+                        <div>
+                            <span>Match method</span>
+
+                            <strong>
+                                {% if shopify_match_type == "exact" %}
+                                    Exact barcode
+                                {% elif shopify_match_type == "leading_zero" %}
+                                    Leading-zero match
+                                {% elif shopify_match_type == "check_digit_removed" %}
+                                    Check digit removed
+                                {% elif shopify_match_type == "check_digit_and_leading_zero" %}
+                                    Check digit and leading zeros removed
+                                {% else %}
+                                    Barcode match
+                                {% endif %}
+                            </strong>
+                        </div>
+                    </div>
+                </article>
+                {% endfor %}
+            </section>
+            {% endif %}
+
+            {% if catalog_matches %}
+            <div class="catalog-heading">
+                <h2>
+                    Master catalog match{% if catalog_matches | length != 1 %}es{% endif %}
+                </h2>
+
+                <p>
+                    {{ catalog_matches | length }}
+                    possible catalog record{% if catalog_matches | length != 1 %}s{% endif %}
+                    found.
+                </p>
+            </div>
+
+            <div class="catalog-results">
+                {% for item in catalog_matches %}
+                <article class="result-card catalog-match">
+                    <div class="result-label">
+                        {% if match_type == "exact" %}
+                            Exact barcode match
+                        {% elif match_type == "leading_zero" %}
+                            Leading-zero barcode match
+                        {% elif match_type == "check_digit_removed" %}
+                            Match found after removing check digit
+                        {% elif match_type == "check_digit_and_leading_zero" %}
+                            Match found after removing check digit and leading zeros
+                        {% else %}
+                            Catalog match
+                        {% endif %}
+                    </div>
+
+                    <h3>{{ item.description }}</h3>
+
+                    <div class="result-grid">
+                        <div>
+                            <span>Catalog barcode</span>
+                            <strong>{{ item.barcode_raw }}</strong>
+                        </div>
+
+                        <div>
+                            <span>Reference cost</span>
+
+                            <strong>
+                                {% if item.unit_cost is not none %}
+                                    ${{ "%.2f" | format(item.unit_cost) }}
+                                {% else %}
+                                    Not available
+                                {% endif %}
+                            </strong>
+                        </div>
+
+                        <div>
+                            <span>Master-case quantity</span>
+
+                            <strong>
+                                {{ item.master_case_quantity or "Not available" }}
+                            </strong>
+                        </div>
+
+                        <div>
+                            <span>Weight</span>
+
+                            <strong>
+                                {% if item.unit_weight is not none %}
+                                    {{ item.unit_weight }}
+                                {% else %}
+                                    Not available
+                                {% endif %}
+                            </strong>
+                        </div>
+                    </div>
+
+                    {% if item.review_notes %}
+                    <p class="review-note">
+                        Data note: {{ item.review_notes }}
+                    </p>
+                    {% endif %}
+
+                    {% if not store_product %}
+                    <a
+                        class="primary-button link-button"
+                        href="/products/add?catalog_id={{ item.catalog_id }}&barcode={{ scanned_barcode }}"
+                    >
+                        Use This Item
+                    </a>
+                    {% endif %}
+                </article>
+                {% endfor %}
+            </div>
+            {% endif %}
+
+            {% if not store_product and not catalog_matches %}
+            <article class="result-card no-match">
+                <div class="result-label">
+                    New item
+                </div>
+
+                <h2>Barcode not found</h2>
+
+                <p>
+                    This barcode is not currently in your store products
+                    or master catalog.
+                </p>
+
+                <a
+                    class="primary-button link-button"
+                    href="/products/add?barcode={{ scanned_barcode }}"
+                >
+                    Add New Product
+                </a>
+            </article>
+            {% endif %}
+        </section>
+        {% endif %}
+    </main>
+
+    <script
+        src="/static/product-channel-badges.js"
+        defer
+    ></script>
+	    <script>
+        const scanForm = document.querySelector(".scan-form");
+        const barcodeInput = scanForm.querySelector('input[name="barcode"]');
+
+        let scanTimer;
+
+        barcodeInput.addEventListener("input", function () {
+            clearTimeout(scanTimer);
+
+            scanTimer = setTimeout(function () {
+                const barcode = barcodeInput.value.trim();
+
+                if (barcode.length >= 8) {
+                    scanForm.requestSubmit();
+                }
+            }, 250);
+        });
+    </script>
+
+</body>
+</html>
+

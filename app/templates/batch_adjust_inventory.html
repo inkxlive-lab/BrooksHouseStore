@@ -1,0 +1,1144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>Batch Inventory Adjustment | BrooksHouse Store</title>
+
+    <link
+        rel="stylesheet"
+        href="/static/store.css"
+    >
+
+    <style>
+        .batch-header-grid,
+        .batch-scan-grid {
+            display: grid;
+            grid-template-columns: repeat(
+                auto-fit,
+                minmax(220px, 1fr)
+            );
+            gap: 1rem;
+        }
+
+        .batch-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .batch-table th,
+        .batch-table td {
+            padding: 0.75rem;
+            border-bottom: 1px solid #d6d6d6;
+            text-align: left;
+            vertical-align: middle;
+        }
+
+        .batch-table input[type="number"] {
+            width: 85px;
+        }
+
+        .batch-summary {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 1rem;
+            justify-content: flex-end;
+            margin-top: 1rem;
+            font-weight: 700;
+        }
+
+        .batch-empty {
+            padding: 2rem;
+            text-align: center;
+        }
+
+        .smart-lookup-note {
+            display: block;
+            width: 100%;
+            margin-top: 12px;
+            padding: 12px 14px;
+            border: 2px dashed #7f1d1d;
+            border-radius: 10px;
+            background: #fff7ed;
+            color: #7f1d1d;
+            font: inherit;
+            font-weight: 800;
+            text-align: left;
+            cursor: pointer;
+            touch-action: manipulation;
+            -webkit-user-select: none;
+            user-select: none;
+        }
+
+        .smart-lookup-note:active,
+        .smart-lookup-note:focus-visible {
+            background: #ffedd5;
+            border-style: solid;
+            outline: 3px solid rgba(127, 29, 29, 0.22);
+        }
+
+        .remove-line {
+            border: 0;
+            background: transparent;
+            cursor: pointer;
+            text-decoration: underline;
+        }
+
+        .scan-status {
+            min-height: 1.5rem;
+            margin-top: 0.75rem;
+            font-weight: 700;
+        }
+
+        .scan-status.error-text {
+            color: #a00000;
+        }
+
+        @media (max-width: 700px) {
+            .batch-table thead {
+                display: none;
+            }
+
+            .batch-table,
+            .batch-table tbody,
+            .batch-table tr,
+            .batch-table td {
+                display: block;
+                width: 100%;
+            }
+
+            .batch-table tr {
+                border: 1px solid #d6d6d6;
+                border-radius: 8px;
+                margin-bottom: 1rem;
+                padding: 0.5rem;
+            }
+
+            .batch-table td {
+                border: 0;
+                padding: 0.35rem;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <header class="store-header">
+        <div>
+            <p class="eyebrow">The BrooksHouse Store</p>
+
+            <h1>📦 Batch Inventory Adjustment</h1>
+
+            <p class="subtitle">
+                Scan a tote or group of products, review the list,
+                and save everything together.
+            </p>
+        </div>
+
+        <nav>
+            <a href="/storage-gallery">Storage Gallery</a>
+
+            <a href="/smart-scan">✨ Smart Scan</a>
+
+            <a href="/dashboard">Dashboard</a>
+            <a href="/inventory/search">Inventory Search</a>
+            <a href="/inventory/replenishment">
+                Replenishment
+            </a>
+            <a href="/inventory/adjust">Single Adjustment</a>
+            <a href="/scan">Scan Item</a>
+            <a href="/inventory/receive">Receive Inventory</a>
+            <a href="/inventory/transfer">Transfer Inventory</a>
+            <a href="/products">Products</a>
+        </nav>
+    </header>
+
+    <main class="page-container">
+        {% if message %}
+        <section class="alert success">
+            <strong>{{ message }}</strong>
+        </section>
+        {% endif %}
+
+        {% if error %}
+        <section class="alert error">
+            <strong>{{ error }}</strong>
+        </section>
+        {% endif %}
+
+        {% if saved_lines %}
+        <section class="dashboard-panel">
+            <div class="dashboard-panel-heading">
+                <div>
+                    <p class="eyebrow">Saved batch</p>
+                    <h2>Updated inventory</h2>
+                </div>
+            </div>
+
+            <div class="dashboard-table-wrap">
+                <table class="dashboard-table">
+                    <thead>
+                        <tr>
+                            <th>Product</th>
+                            <th>Barcode</th>
+                            <th>Added</th>
+                            <th>Previous</th>
+                            <th>New quantity</th>
+                        </tr>
+                    </thead>
+
+                    <tbody>
+                        {% for line in saved_lines %}
+                        <tr>
+                            <td>{{ line.product_name }}</td>
+                            <td>{{ line.barcode or "—" }}</td>
+                            <td>+{{ line.quantity_added }}</td>
+                            <td>{{ line.previous_quantity }}</td>
+                            <td>{{ line.new_quantity }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </section>
+        {% endif %}
+
+        <form
+            id="batch-form"
+            action="/inventory/adjust/batch"
+            method="post"
+        >
+            <section class="form-card">
+                <div class="section-heading">
+                    <span>1</span>
+
+                    <div>
+                        <h2>🗂️ Batch information</h2>
+
+                        <p>
+                            These settings apply to every scanned item.
+                        </p>
+                    </div>
+                </div>
+
+                <div class="batch-header-grid">
+                    <label class="field">
+                        <span>Inventory location *</span>
+
+                        <select
+                            name="location_id"
+                            required
+                        >
+                            <option value="">
+                                Select location
+                            </option>
+
+                            {% for location in locations %}
+                            <option value="{{ location.location_id }}">
+                                {{ location.location_name }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </label>
+
+                    <label class="field">
+                        <span>Container ID</span>
+
+                      <input
+    			type="text"
+  			  name="container_id"
+ 			   id="container-id"
+ 			   autocomplete="off"
+ 			   placeholder="Scan tote label — Example: BR-TOTE-017"
+			>
+                    </label>
+		<div
+ 		   id="tote-lock-status"
+  		  style="
+  		      margin-top: 6px;
+   		     font-weight: 700;
+   		     display: none;
+   			 "
+			>
+   		 🔒 TOTE LOCKED
+		</div>
+
+                    <label class="field">
+                        <span>Reason code *</span>
+
+                        <select
+                            name="reason"
+                            required
+                        >
+                            <option value="">
+                                Select reason
+                            </option>
+
+                            <option value="new_inventory" selected>
+                                New inventory
+                            </option>
+
+                            <option value="found_inventory">
+                                Found inventory
+                            </option>
+
+                            <option value="return">
+                                Customer return
+                            </option>
+
+                            <option value="transfer_correction">
+                                Transfer correction
+                            </option>
+
+                            <option value="data_entry_error">
+                                Previous data-entry error
+                            </option>
+
+                            <option value="other">
+                                Other
+                            </option>
+                        </select>
+                    </label>
+
+                    <label class="field">
+                        <span>Reference number</span>
+
+                        <input
+                            type="text"
+                            name="reference_number"
+                            placeholder="TRAILER-2-TOTE-14"
+                        >
+                    </label>
+
+                    <label class="field full-width">
+                        <span>Batch notes</span>
+
+                        <textarea
+                            name="notes"
+                            rows="3"
+                            placeholder="Optional notes for the whole tote or load"
+                        ></textarea>
+                    </label>
+                </div>
+            </section>
+
+            <section class="form-card">
+                <div class="section-heading">
+                    <span>2</span>
+
+                    <div>
+                        <h2>🔎 Scan items</h2>
+
+                        <p>
+                            Scan a barcode, enter the amount found,
+                            and add it to the list.
+                        </p>
+                    </div>
+                </div>
+
+                <div class="batch-scan-grid">
+                    <label class="field">
+                        <span>Barcode</span>
+
+                        <input
+                            type="text"
+                            id="batch-barcode"
+                            inputmode="none"
+                            autocomplete="off"
+                            placeholder="Scan barcode"
+                            autofocus
+                        >
+                    </label>
+
+                    <label class="field">
+                        <span>Quantity to add</span>
+
+                        <input
+                            type="number"
+                            id="batch-quantity"
+                            min="1"
+                            value="1"
+                        >
+                    </label>
+                </div>
+
+                <div class="form-actions">
+                    <button
+                        type="button"
+                        id="add-batch-line"
+                        class="primary-button"
+                    >
+                        Add to Batch
+                    </button>
+                </div>
+
+                <div
+                    id="scan-status"
+                    class="scan-status"
+                ></div>
+
+                <button
+                    type="button"
+                    id="open-smart-lookup"
+                    class="smart-lookup-note"
+                >
+                    ✨ <strong>Unknown barcode?</strong><br>
+                    Tap here to open Smart Lookup, create the product,
+                    and return to this saved batch.
+                </button>
+            </section>
+
+            <section class="dashboard-panel">
+                <div class="dashboard-panel-heading">
+                    <div>
+                        <p class="eyebrow">Batch review</p>
+                        <h2>✅ Scanned products</h2>
+                    </div>
+
+                    <span
+                        id="batch-line-count"
+                        class="dashboard-badge"
+                    >
+                        0
+                    </span>
+                </div>
+
+                <div class="dashboard-table-wrap">
+                    <table class="batch-table">
+                        <thead>
+                            <tr>
+                                <th>Product</th>
+                                <th>Barcode</th>
+                                <th>Quantity</th>
+                                <th>Remove</th>
+                            </tr>
+                        </thead>
+
+                        <tbody id="batch-lines">
+                            <tr id="empty-batch-row">
+                                <td
+                                    colspan="4"
+                                    class="batch-empty"
+                                >
+                                    📭 No items scanned yet.
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="batch-summary">
+                    <span>
+                        Products:
+                        <strong id="batch-products-total">0</strong>
+                    </span>
+
+                    <span>
+                        Units:
+                        <strong id="batch-units-total">0</strong>
+                    </span>
+                </div>
+            </section>
+
+            <input
+                type="hidden"
+                name="items_json"
+                id="items-json"
+                value="[]"
+            >
+
+            <input
+                type="hidden"
+                name="scan_events_json"
+                id="scan-events-json"
+                value="[]"
+            >
+
+            <div class="form-actions">
+                <button
+                    type="button"
+                    id="clear-batch"
+                    class="secondary-button"
+                >
+                    Clear Batch
+                </button>
+
+                <button
+                    type="submit"
+                    id="save-batch"
+                    class="primary-button"
+                    disabled
+                >
+                    💾 Save Batch
+                </button>
+            </div>
+        </form>
+    </main>
+
+    <script src="/static/offline-mode.js"></script>
+    <script>
+        const barcodeInput = document.querySelector(
+            "#batch-barcode"
+        );
+
+        const quantityInput = document.querySelector(
+            "#batch-quantity"
+        );
+	const toteLockStatus = document.querySelector(
+  	  "#tote-lock-status"
+	);
+        const addButton = document.querySelector(
+            "#add-batch-line"
+        );
+
+        const batchBody = document.querySelector(
+            "#batch-lines"
+        );
+
+        const statusBox = document.querySelector(
+            "#scan-status"
+        );
+
+        const smartLookupButton = document.querySelector(
+            "#open-smart-lookup"
+        );
+
+        const itemsJsonInput = document.querySelector(
+            "#items-json"
+        );
+
+        const saveButton = document.querySelector(
+            "#save-batch"
+        );
+
+        const clearButton = document.querySelector(
+            "#clear-batch"
+        );
+
+        const productTotal = document.querySelector(
+            "#batch-products-total"
+        );
+
+        const unitTotal = document.querySelector(
+            "#batch-units-total"
+        );
+
+        const lineCount = document.querySelector(
+            "#batch-line-count"
+        );
+
+        const containerInput = document.querySelector(
+        "#container-id"
+    );
+
+    const locationSelect = document.querySelector(
+        'select[name="location_id"]'
+    );
+
+    let batchItems = [];
+    let scanEvents = [];
+    let scanInProgress = false;
+    let rapidScanEnabled = true;
+    const batchResumeKey = "brookshouse.batchScanResume.v1";
+
+    function captureBatchState(pendingBarcode = "", pendingQuantity = 1) {
+        const form = document.querySelector("#batch-form");
+        return {
+            items: batchItems,
+            scan_events: scanEvents,
+            location_id: locationSelect?.value || "",
+            container_id: containerInput?.value || "",
+            reason: form?.querySelector('[name="reason"]')?.value || "",
+            reference_number: form?.querySelector('[name="reference_number"]')?.value || "",
+            notes: form?.querySelector('[name="notes"]')?.value || "",
+            pending_barcode: pendingBarcode,
+            pending_quantity: pendingQuantity,
+            saved_at: Date.now()
+        };
+    }
+
+    function saveBatchForSmartLookup(barcode, quantity) {
+        sessionStorage.setItem(
+            batchResumeKey,
+            JSON.stringify(captureBatchState(barcode, quantity))
+        );
+    }
+
+    function openSmartLookup() {
+        const barcode = cleanBarcode(barcodeInput.value);
+        const quantity = Math.max(1, Number(quantityInput.value || 1));
+
+        if (!barcode) {
+            setStatus("Scan or enter the unknown barcode first.", true);
+            barcodeInput.focus();
+            return;
+        }
+
+        saveBatchForSmartLookup(barcode, quantity);
+
+        const smartUrl = new URL("/smart-scan", window.location.origin);
+        smartUrl.searchParams.set("barcode", barcode);
+        smartUrl.searchParams.set("return_to_batch", "1");
+        window.location.assign(smartUrl.toString());
+    }
+
+    function restoreBatchState() {
+        const raw = sessionStorage.getItem(batchResumeKey);
+        if (!raw) return null;
+        try {
+            const state = JSON.parse(raw);
+            const form = document.querySelector("#batch-form");
+            batchItems = Array.isArray(state.items) ? state.items : [];
+            scanEvents = Array.isArray(state.scan_events) ? state.scan_events : [];
+            if (locationSelect) locationSelect.value = state.location_id || "";
+            if (containerInput) containerInput.value = state.container_id || "";
+            const reason = form?.querySelector('[name="reason"]');
+            const reference = form?.querySelector('[name="reference_number"]');
+            const notes = form?.querySelector('[name="notes"]');
+            if (reason && state.reason) reason.value = state.reason;
+            if (reference) reference.value = state.reference_number || "";
+            if (notes) notes.value = state.notes || "";
+            if (quantityInput) quantityInput.value = String(state.pending_quantity || 1);
+            renderBatch();
+            if (state.container_id) lockBatchContainer();
+            return state;
+        } catch (error) {
+            sessionStorage.removeItem(batchResumeKey);
+            return null;
+        }
+    }
+
+        function cleanBarcode(value) {
+            return String(value || "")
+                .replace(/\D/g, "");
+        }
+
+        function setStatus(message, isError = false) {
+            statusBox.textContent = message;
+            statusBox.classList.toggle(
+                "error-text",
+                isError
+            );
+        }
+function updateHiddenValue() {
+    itemsJsonInput.value = JSON.stringify(
+        batchItems.map((item) => ({
+            product_id: item.product_id,
+            product_name: item.product_name,
+            barcode: item.barcode,
+            quantity: item.quantity,
+        }))
+    );
+    const scanEventsInput = document.querySelector("#scan-events-json");
+    if (scanEventsInput) {
+        scanEventsInput.value = JSON.stringify(scanEvents);
+    }
+}
+
+
+        function renderBatch() {
+            batchBody.innerHTML = "";
+
+            if (!batchItems.length) {
+                const row = document.createElement("tr");
+
+                row.innerHTML = `
+                    <td colspan="4" class="batch-empty">
+                        📭 No items scanned yet.
+                    </td>
+                `;
+
+                batchBody.appendChild(row);
+            } else {
+                batchItems.forEach((item, index) => {
+                    const row = document.createElement("tr");
+
+                    row.innerHTML = `
+                        <td>${item.product_name}</td>
+                        <td>${item.barcode}</td>
+                        <td>
+                            <input
+                                type="number"
+                                min="1"
+                                value="${item.quantity}"
+                                data-index="${index}"
+                                class="line-quantity"
+                            >
+                        </td>
+                        <td>
+                            <button
+                                type="button"
+                                class="remove-line"
+                                data-index="${index}"
+                            >
+                                Remove
+                            </button>
+                        </td>
+                    `;
+
+                    batchBody.appendChild(row);
+                });
+            }
+
+            const units = batchItems.reduce(
+                (total, item) => (
+                    total + Number(item.quantity || 0)
+                ),
+                0
+            );
+
+            productTotal.textContent = batchItems.length;
+            unitTotal.textContent = units;
+            lineCount.textContent = batchItems.length;
+            saveButton.disabled = batchItems.length === 0;
+
+            updateHiddenValue();
+        }
+
+    function lockBatchContainer() {
+    if (
+        locationSelect.value !== "2"
+        || !containerInput
+        || !containerInput.value.trim()
+    ) {
+        return;
+    }
+
+    containerInput.readOnly = true;
+
+    // Make the actual tote box visibly locked.
+    containerInput.style.fontWeight = "700";
+    containerInput.style.border = "3px solid #198754";
+    containerInput.style.background = "#e8f5e9";
+
+    // Change the field label.
+    const containerLabel = containerInput
+        .closest(".field")
+        ?.querySelector("span");
+
+    if (containerLabel) {
+        containerLabel.textContent =
+            "🔒 TOTE LOCKED — "
+            + containerInput.value.trim();
+    }
+
+    // Keep the separate status too, if available.
+    const lockStatus = document.querySelector(
+        "#tote-lock-status"
+    );
+
+    if (lockStatus) {
+        lockStatus.textContent =
+            "🔒 TOTE LOCKED: "
+            + containerInput.value.trim();
+
+        lockStatus.style.setProperty(
+            "display",
+            "block",
+            "important"
+        );
+    }
+}
+
+    async function addScannedItem() {
+        if (scanInProgress) {
+            return;
+        }
+
+        if (
+            locationSelect.value === "2"
+            && (
+                !containerInput
+                || !containerInput.value.trim()
+            )
+        ) {
+            setStatus(
+                "Scan the Tote / Container ID before scanning merchandise.",
+                true
+            );
+
+            if (containerInput) {
+                containerInput.focus();
+            }
+
+            return;
+        }
+
+        const barcode = cleanBarcode(
+            barcodeInput.value
+        );
+
+        const quantity = Number(
+            quantityInput.value || 0
+        );
+
+        if (!barcode) {
+            setStatus(
+                "Scan or enter a barcode first.",
+                true
+            );
+
+            barcodeInput.focus();
+            return;
+        }
+
+        if (
+            !Number.isInteger(quantity)
+            || quantity < 1
+        ) {
+            setStatus(
+                "Quantity must be at least 1.",
+                true
+            );
+
+            quantityInput.focus();
+            return;
+        }
+
+        scanInProgress = true;
+        addButton.disabled = true;
+
+        setStatus("Looking up product...");
+
+        try {
+            const response = await fetch(
+                "/inventory/adjust/batch/lookup"
+                + "?barcode="
+                + encodeURIComponent(barcode)
+            );
+
+            const result = await response.json();
+
+            if (!result.found) {
+                const runSmartLookup = window.confirm(
+                    "🔍 Barcode " + barcode + " was not found.\n\n"
+                    + "Open Smart Lookup to create this product?"
+                );
+                if (runSmartLookup) {
+                    openSmartLookup();
+                    return;
+                }
+                setStatus(result.error || "❌ Product not found.", true);
+                barcodeInput.focus();
+                barcodeInput.select();
+                return;
+            }
+
+            const existingItem = batchItems.find(
+                (item) => (
+                    item.product_id
+                    === result.product_id
+                )
+            );
+
+            if (existingItem) {
+                existingItem.quantity += quantity;
+
+                setStatus(
+                    `${result.product_name} updated to `
+                    + `${existingItem.quantity} units.`
+                );
+            } else {
+                batchItems.push({
+                    product_id: result.product_id,
+                    product_name: result.product_name,
+                    barcode: result.barcode || barcode,
+                    quantity: quantity,
+                });
+
+                setStatus(
+                    `✅ ${result.product_name} added to batch.`
+                );
+            }
+
+            scanEvents.push({
+                event_key: (crypto.randomUUID
+                    ? crypto.randomUUID()
+                    : `${Date.now()}-${Math.random().toString(36).slice(2)}`),
+                barcode: result.barcode || barcode,
+                product_id: result.product_id
+            });
+            renderBatch();
+
+		barcodeInput.value = "";
+		quantityInput.value = "1";
+
+		lockBatchContainer();
+
+		barcodeInput.focus();
+        } catch (error) {
+            const result = await BrooksHouseOffline.lookupBarcode(barcode);
+            if (result.found) {
+                const existingItem = batchItems.find(item => item.product_id === result.product_id);
+                if (existingItem) existingItem.quantity += quantity;
+                else batchItems.push({product_id:result.product_id,product_name:result.product_name,barcode:result.barcode||barcode,quantity});
+                renderBatch(); barcodeInput.value=""; quantityInput.value="1"; lockBatchContainer();
+                setStatus(result.product_name + " added from offline inventory.");
+            } else {
+                setStatus(
+                    (result.error || "Product is not in the saved offline snapshot.")
+                    + " Tap Unknown barcode below to create it.",
+                    true
+                );
+            }
+
+        } finally {
+            scanInProgress = false;
+            addButton.disabled = false;
+        }
+    }
+
+    addButton.addEventListener(
+        "click",
+        addScannedItem
+    );
+
+    smartLookupButton.addEventListener(
+        "click",
+        openSmartLookup
+    );
+
+    let barcodeScanTimer;
+
+    barcodeInput.addEventListener(
+        "keydown",
+        function (event) {
+            if (event.key !== "Enter") {
+                return;
+            }
+
+            event.preventDefault();
+            clearTimeout(barcodeScanTimer);
+
+            const barcode = cleanBarcode(
+                barcodeInput.value
+            );
+
+            if (!barcode) {
+                barcodeInput.focus();
+                return;
+            }
+
+            if (rapidScanEnabled) {
+                addScannedItem();
+                return;
+            }
+
+            quantityInput.focus();
+            quantityInput.select();
+        }
+    );
+
+    barcodeInput.addEventListener(
+        "input",
+        function () {
+            clearTimeout(barcodeScanTimer);
+
+            barcodeScanTimer = setTimeout(
+                function () {
+                    const barcode = cleanBarcode(
+                        barcodeInput.value
+                    );
+
+                    if (
+                        rapidScanEnabled
+                        && barcode.length >= 8
+                        && !scanInProgress
+                    ) {
+                        addScannedItem();
+                    }
+                },
+                350
+            );
+        }
+    );
+
+    quantityInput.addEventListener(
+            "keydown",
+            (event) => {
+                if (event.key === "Enter") {
+                    event.preventDefault();
+                    addScannedItem();
+                }
+            }
+        );
+
+        batchBody.addEventListener(
+            "input",
+            (event) => {
+                if (
+                    !event.target.classList.contains(
+                        "line-quantity"
+                    )
+                ) {
+                    return;
+                }
+
+                const index = Number(
+                    event.target.dataset.index
+                );
+
+                const quantity = Math.max(
+                    1,
+                    Number(event.target.value || 1)
+                );
+
+                batchItems[index].quantity = quantity;
+                renderBatch();
+            }
+        );
+
+        batchBody.addEventListener(
+            "click",
+            (event) => {
+                if (
+                    !event.target.classList.contains(
+                        "remove-line"
+                    )
+                ) {
+                    return;
+                }
+
+                const index = Number(
+                    event.target.dataset.index
+                );
+
+                const removedProductId = batchItems[index]?.product_id;
+                batchItems.splice(index, 1);
+                scanEvents = scanEvents.filter(
+                    eventItem => eventItem.product_id !== removedProductId
+                );
+                renderBatch();
+                barcodeInput.focus();
+            }
+        );
+
+        clearButton.addEventListener(
+            "click",
+            () => {
+                if (
+                    batchItems.length
+                    && !window.confirm(
+                        "Clear every item from this batch?"
+                    )
+                ) {
+                    return;
+                }
+
+                batchItems = [];
+                scanEvents = [];
+                renderBatch();
+                setStatus("");
+                barcodeInput.focus();
+containerInput.readOnly = false;
+containerInput.style.fontWeight = "";
+containerInput.style.border = "";
+containerInput.style.background = "";
+
+const containerLabel = containerInput
+    .closest(".field")
+    ?.querySelector("span");
+
+if (containerLabel) {
+    containerLabel.textContent = "Container ID";
+}
+
+if (toteLockStatus) {
+    toteLockStatus.style.display = "none";
+    toteLockStatus.textContent = "";
+}
+
+containerInput.value = "";
+
+if (locationSelect.value === "2") {
+    containerInput.focus();
+} else {
+    barcodeInput.focus();
+}
+            }
+        );
+
+        document.querySelector(
+            "#batch-form"
+        ).addEventListener(
+            "submit",
+            async (event) => {
+const locationSelect = document.querySelector(
+    'select[name="location_id"]'
+);
+
+const containerInput = document.querySelector(
+    "#container-id"
+);
+
+const selectedLocationText = (
+    locationSelect?.options[
+        locationSelect.selectedIndex
+    ]?.text || ""
+).trim().toLowerCase();
+
+if (
+    locationSelect.value === "2"
+    && !containerInput.value.trim()
+) {
+    event.preventDefault();
+
+    setStatus(
+        "Scan or enter a Tote / Container ID before saving Back Stock inventory.",
+        true
+    );
+
+    containerInput.focus();
+    return;
+}
+                if (!batchItems.length) {
+                    event.preventDefault();
+
+                    setStatus(
+                        "Add at least one item first.",
+                        true
+                    );
+
+                    return;
+                }
+
+                updateHiddenValue();
+                if (!navigator.onLine) {
+                    event.preventDefault();
+                    const form = event.currentTarget;
+                    await BrooksHouseOffline.queue("batch_adjustment", {
+                        location_id:Number(locationSelect.value), container_id:containerInput.value.trim(),
+                        reason:form.querySelector('[name="reason"]').value,
+                        reference_number:form.querySelector('[name="reference_number"]')?.value||"",
+                        notes:form.querySelector('[name="notes"]')?.value||"", items:batchItems
+                    });
+                    setStatus("Batch saved offline. It will sync automatically after reconnecting.");
+                    batchItems=[]; renderBatch(); return;
+                }
+                saveButton.disabled = true;
+                saveButton.textContent = "Saving Batch...";
+            }
+        );
+
+        const returnParams = new URLSearchParams(window.location.search);
+        const resumedState = restoreBatchState();
+        if (resumedState) sessionStorage.removeItem(batchResumeKey);
+        const createdBarcode = returnParams.get("created_barcode");
+        if (returnParams.get("batch_resume") === "1" && createdBarcode) {
+            barcodeInput.value = createdBarcode;
+            quantityInput.value = String(resumedState?.pending_quantity || 1);
+            window.history.replaceState({}, "", "/inventory/adjust/batch");
+            setStatus("🎉 Product saved! Adding it back to this batch...");
+            setTimeout(addScannedItem, 150);
+        } else {
+            renderBatch();
+        }
+    </script>
+</body>
+</html>
+

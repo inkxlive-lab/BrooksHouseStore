@@ -1,0 +1,788 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>Inventory Search | BrooksHouse Store</title>
+
+    <link
+        rel="stylesheet"
+        href="/static/store.css"
+    >
+
+    <style>
+        .walmart-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            margin-top: 7px;
+            padding: 5px 9px;
+            border: 1px solid transparent;
+            border-radius: 999px;
+            font-size: 0.78rem;
+            font-weight: 800;
+            line-height: 1.2;
+            white-space: nowrap;
+        }
+
+        .walmart-status::before {
+            content: "";
+            width: 8px;
+            height: 8px;
+            flex: 0 0 8px;
+            border-radius: 50%;
+            background: currentColor;
+        }
+
+        .walmart-status--seller_published {
+            color: #126b36;
+            background: #e7f7ed;
+            border-color: #9bd4ae;
+        }
+
+        .walmart-status--seller_unpublished {
+            color: #8a5500;
+            background: #fff4d6;
+            border-color: #e4bd61;
+        }
+
+        .walmart-status--catalog_match {
+            color: #075ea8;
+            background: #e7f3ff;
+            border-color: #8fc2ec;
+        }
+
+        .walmart-status--not_found,
+        .walmart-status--invalid {
+            color: #5e6065;
+            background: #f0f1f3;
+            border-color: #c8cbd1;
+        }
+
+        .walmart-status--pending {
+            color: #865a00;
+            background: #fff7dc;
+            border-color: #dec272;
+        }
+
+        .walmart-detail {
+            max-width: 260px;
+            margin-top: 5px;
+            color: #555b65;
+            font-size: 0.76rem;
+            line-height: 1.35;
+        }
+
+        .walmart-detail span {
+            display: block;
+        }
+
+        .amazon-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            margin-top: 7px;
+            padding: 5px 9px;
+            border: 1px solid transparent;
+            border-radius: 999px;
+            font-size: 0.78rem;
+            font-weight: 800;
+            line-height: 1.2;
+            white-space: nowrap;
+        }
+
+        .amazon-status::before {
+            content: "";
+            width: 8px;
+            height: 8px;
+            flex: 0 0 8px;
+            border-radius: 50%;
+            background: currentColor;
+        }
+
+        .amazon-status--linked {
+            color: #126b36;
+            background: #e7f7ed;
+            border-color: #9bd4ae;
+        }
+
+        .amazon-status--not-linked {
+            color: #5e6065;
+            background: #f0f1f3;
+            border-color: #c8cbd1;
+        }
+
+        .amazon-detail {
+            max-width: 260px;
+            margin-top: 5px;
+            color: #555b65;
+            font-size: 0.76rem;
+            line-height: 1.35;
+        }
+
+        .amazon-detail span {
+            display: block;
+        }
+
+        .inventory-pagination {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-top: 18px;
+            padding: 14px 0 4px;
+        }
+
+        .inventory-pagination-info {
+            color: #555b65;
+            font-size: 0.9rem;
+            font-weight: 700;
+        }
+
+        .inventory-pagination-actions {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .inventory-pagination button {
+            min-width: 92px;
+        }
+
+        .inventory-pagination button:disabled {
+            opacity: 0.45;
+            cursor: not-allowed;
+        }
+
+        .inventory-page-number {
+            padding: 0 6px;
+            font-weight: 800;
+            white-space: nowrap;
+        }
+
+        .price-review-badge {
+            display: inline-block;
+            margin-top: 6px;
+            padding: 5px 9px;
+            border: 1px solid #e47c10;
+            border-radius: 999px;
+            color: #8a3f00;
+            background: #fff0dc;
+            font-size: 0.72rem;
+            font-weight: 900;
+            line-height: 1.2;
+            white-space: nowrap;
+        }
+
+        .price-review-button {
+            border-color: #e47c10;
+            color: #8a3f00;
+            background: #fff0dc;
+            font-weight: 900;
+        }
+    </style>
+</head>
+
+<body>
+    <header class="store-header">
+        <div>
+            <p class="eyebrow">The BrooksHouse Store</p>
+
+            <h1>Inventory Search & Reports</h1>
+
+            <p class="subtitle">
+                Search products and review inventory across every location.
+            </p>
+        </div>
+
+        <nav>
+            <a href="/storage-gallery">Storage Gallery</a>
+
+            <a href="/smart-scan">Smart Scan</a>
+
+            <a href="/channels/amazon/mapping">Amazon Mapping</a>
+            <a href="/dashboard">Dashboard</a>
+            <a href="/channels/shopify/reconcile">Shopify Compare</a>
+            <a href="/channels/shopify/storefront-import">Storefront Import</a>
+            <a href="/channels/shopify/settings">Shopify Settings</a>
+            <a href="/channels/shopify/approve">Approval Queue</a>
+            <a href="/inventory/search">Inventory Search</a>
+            <a href="/inventory/replenishment">
+                Replenishment
+            </a>
+            <a href="/scan">Scan</a>
+            <a href="/inventory/receive">Receive</a>
+            <a href="/inventory/transfer">Transfer</a>
+            <a href="/inventory/adjust">Adjust</a>
+            <a href="/products">Products</a>
+        </nav>
+    </header>
+
+    <main class="page-container">
+        <section class="report-filter-panel">
+            <form
+                id="inventory-search-form"
+                action="/inventory/search"
+                method="get"
+                class="report-filter-form"
+            >
+                <input type="hidden" name="run_report" value="1">
+                <div class="form-grid">
+                    <label class="field">
+                        <span>Product name</span>
+
+                        <input
+                            type="text"
+                            name="search"
+                            value="{{ filters.search }}"
+                            placeholder="Try plane, %plane%, or plane*"
+                            title="Wildcards: % or * = any text; _ or ? = one character"
+                        >
+                    </label>
+
+                    <label class="field">
+                        <span>Barcode</span>
+
+                        <input
+                            type="text"
+                            name="barcode"
+                            value="{{ filters.barcode }}"
+                            placeholder="Enter or scan barcode"
+                        >
+                    </label>
+
+                    <label class="field">
+                        <span>Location</span>
+
+                        <select name="location_id">
+                            <option value="">All locations</option>
+
+                            {% for location in locations %}
+                            <option
+                                value="{{ location.location_id }}"
+                                {% if filters.location_id == location.location_id %}
+                                    selected
+                                {% endif %}
+                            >
+                                {{ location.location_name }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </label>
+
+                    <label class="field">
+                        <span>Pallet / Container ID</span>
+
+                        <input
+                            type="text"
+                            name="container_id"
+                            value="{{ filters.container_id or '' }}"
+                            placeholder="Scan ID, enter T1-P01, or use T1-P%"
+                            title="Exact pallet/container ID or wildcard: % and * = any text"
+                        >
+                    </label>
+
+                    <label class="field">
+                        <span>Stock status</span>
+
+                        <select name="stock_status">
+                            <option
+                                value="all"
+                                {% if filters.stock_status == "all" %}
+                                    selected
+                                {% endif %}
+                            >
+                                All products
+                            </option>
+
+                            <option
+                                value="in_stock"
+                                {% if filters.stock_status == "in_stock" %}
+                                    selected
+                                {% endif %}
+                            >
+                                In stock
+                            </option>
+
+                            <option
+                                value="out_of_stock"
+                                {% if filters.stock_status == "out_of_stock" %}
+                                    selected
+                                {% endif %}
+                            >
+                                Out of stock
+                            </option>
+
+                            <option
+                                value="low_stock"
+                                {% if filters.stock_status == "low_stock" %}
+                                    selected
+                                {% endif %}
+                            >
+                                Low stock: 1–10
+                            </option>
+
+                            <option
+                                value="over_10"
+                                {% if filters.stock_status == "over_10" %}
+                                    selected
+                                {% endif %}
+                            >
+                                Inventory over 10
+                            </option>
+                        </select>
+                    </label>
+
+                    <label class="field">
+                        <span>Marketplace status</span>
+
+                        <select name="marketplace_status">
+                            <option value="all"
+                                {% if filters.marketplace_status == "all" %}selected{% endif %}>
+                                All marketplace statuses
+                            </option>
+                            <option value="walmart"
+                                {% if filters.marketplace_status == "walmart" %}selected{% endif %}>
+                                Walmart related
+                            </option>
+                            <option value="amazon"
+                                {% if filters.marketplace_status == "amazon" %}selected{% endif %}>
+                                Amazon related
+                            </option>
+                            <option value="either"
+                                {% if filters.marketplace_status == "either" %}selected{% endif %}>
+                                Walmart or Amazon
+                            </option>
+                            <option value="both"
+                                {% if filters.marketplace_status == "both" %}selected{% endif %}>
+                                Walmart + Amazon
+                            </option>
+                            <option value="neither"
+                                {% if filters.marketplace_status == "neither" %}selected{% endif %}>
+                                Neither marketplace
+                            </option>
+                        </select>
+                    </label>
+
+                    <label class="field">
+                        <span>Results per page</span>
+
+                        <select name="page_size">
+                            <option value="25"
+                                {% if filters.page_size | default(25) | int == 25 %}selected{% endif %}>
+                                25 results
+                            </option>
+                            <option value="50"
+                                {% if filters.page_size | default(25) | int == 50 %}selected{% endif %}>
+                                50 results
+                            </option>
+                            <option value="100"
+                                {% if filters.page_size | default(25) | int == 100 %}selected{% endif %}>
+                                100 results
+                            </option>
+                            <option value="250"
+                                {% if filters.page_size | default(25) | int == 250 %}selected{% endif %}>
+                                250 results
+                            </option>
+                        </select>
+                    </label>
+
+                    <label class="field">
+                        <span>Minimum quantity</span>
+
+                        <input
+                            type="number"
+                            name="minimum_quantity"
+                            min="0"
+                            value="{{ filters.minimum_quantity }}"
+                            placeholder="0"
+                        >
+                    </label>
+
+                    <label class="field">
+                        <span>Sort results</span>
+
+                        <select name="sort_by">
+                            <option value="product_asc" {% if filters.sort_by | default("product_asc") == "product_asc" %}selected{% endif %}>Product name: A–Z</option>
+                            <option value="product_desc" {% if filters.sort_by == "product_desc" %}selected{% endif %}>Product name: Z–A</option>
+                            <option value="quantity_desc" {% if filters.sort_by == "quantity_desc" %}selected{% endif %}>Quantity: highest first</option>
+                            <option value="quantity_asc" {% if filters.sort_by == "quantity_asc" %}selected{% endif %}>Quantity: lowest first</option>
+                            <option value="value_desc" {% if filters.sort_by == "value_desc" %}selected{% endif %}>Sales value: highest first</option>
+                            <option value="value_asc" {% if filters.sort_by == "value_asc" %}selected{% endif %}>Sales value: lowest first</option>
+                            <option value="location_asc" {% if filters.sort_by == "location_asc" %}selected{% endif %}>Location: A–Z</option>
+                            <option value="container_asc" {% if filters.sort_by == "container_asc" %}selected{% endif %}>Pallet / Container ID: A–Z</option>
+                        </select>
+                    </label>
+
+                    <label class="field">
+                        <span>Maximum quantity</span>
+
+                        <input
+                            type="number"
+                            name="maximum_quantity"
+                            min="0"
+                            value="{{ filters.maximum_quantity }}"
+                            placeholder="No limit"
+                        >
+                    </label>
+
+                    <label class="field">
+                        <span>Minimum estimated sales value</span>
+
+                        <div class="money-input">
+                            <span>$</span>
+
+                            <input
+                                type="number"
+                                name="minimum_value"
+                                min="0"
+                                step="0.01"
+                                value="{{ filters.minimum_value }}"
+                                placeholder="0.00"
+                            >
+                        </div>
+                    </label>
+
+                    <label class="field">
+                        <span>Exact Store Price</span>
+
+                        <div class="money-input">
+                            <span>$</span>
+
+                            <input
+                                id="store-price-filter"
+                                type="number"
+                                name="store_price"
+                                min="0"
+                                step="0.01"
+                                value="{{ filters.store_price or '' }}"
+                                placeholder="Example: 0.99"
+                            >
+                        </div>
+                    </label>
+                </div>
+
+                <div class="form-actions">
+                    <a
+                        class="secondary-button link-button"
+                        href="/inventory/search"
+                    >
+                        Clear Filters
+                    </a>
+
+                    <button
+                        type="submit"
+                        class="primary-button"
+                    >
+                        Run Report
+                    </button>
+
+                    <button
+                        type="button"
+                        class="secondary-button price-review-button"
+                        onclick="runPriceReviewReport()"
+                    >
+                        Needs Price Review (.99)
+                    </button>
+
+                    <button
+                        type="submit"
+                        class="secondary-button export-button"
+                        formaction="/inventory/search/export"
+                        formmethod="get"
+                    >
+                        Export CSV
+                    </button>
+                </div>
+            </form>
+        </section>
+
+        {% if report_has_run %}
+        <section class="report-summary-cards">
+            <article class="dashboard-card">
+                <span>Matching products</span>
+                <strong>{{ summary.product_count }}</strong>
+            </article>
+
+            <article class="dashboard-card">
+                <span>Matching units</span>
+                <strong>{{ summary.total_units }}</strong>
+            </article>
+
+            <article class="dashboard-card">
+                <span>Estimated sales value</span>
+
+                <strong>
+                    ${{ "%.2f" | format(summary.total_value) }}
+                </strong>
+            </article>
+
+            <article class="dashboard-card">
+                <span>
+                    Estimated acquisition value
+                    ({{ summary.estimated_acquisition_percent }}%)
+                </span>
+
+                <strong>
+                    ${{ "%.2f" | format(
+                        summary.estimated_acquisition_value
+                    ) }}
+                </strong>
+            </article>
+
+            <article class="dashboard-card">
+                <span>Estimated gross spread</span>
+
+                <strong>
+                    ${{ "%.2f" | format(
+                        summary.estimated_gross_spread
+                    ) }}
+                </strong>
+            </article>
+        </section>
+
+        <section class="dashboard-panel">
+            <div class="dashboard-panel-heading">
+                <div>
+                    <p class="eyebrow">Report results</p>
+                    <h2>Inventory records</h2>
+                </div>
+
+                <span class="dashboard-badge">
+                    {{ rows | length }}
+                </span>
+            </div>
+
+            {% if rows %}
+            <div class="dashboard-table-wrap">
+                <table class="dashboard-table">
+                    <thead>
+                        <tr>
+                            <th>Image</th>
+                            <th>Product</th>
+                            <th>Walmart</th>
+                            <th>Amazon</th>
+                            <th>Barcode</th>
+                            <th>Location</th>
+                            <th>Pallet / Container ID</th>
+                            <th>Quantity</th>
+                            <th>Reserved</th>
+                            <th>Available</th>
+                            <th>Selling price</th>
+                            <th>Estimated value</th>
+                        </tr>
+                    </thead>
+
+                    <tbody>
+                        {% for row in rows %}
+                        <tr>
+                            <td>
+                                {% if row.image_url %}
+                                <a href="/products/{{ row.product_id }}">
+                                    <img
+                                        class="inventory-search-thumbnail"
+                                        src="{{ row.image_url }}"
+                                        alt="{{ row.product_name }}"
+                                        loading="lazy"
+                                    >
+                                </a>
+                                {% else %}
+                                <div class="inventory-search-placeholder">
+                                    No image
+                                </div>
+                                {% endif %}
+                            </td>
+
+                            <td>
+                                <a href="/products/{{ row.product_id }}">
+                                    <strong>{{ row.product_name }}</strong>
+                                </a>
+                            </td>
+
+                            <td>
+                                <span
+                                    class="walmart-status walmart-status--{{ row.walmart.state }}"
+                                    title="Matched barcode: {{ row.walmart.barcode or row.barcode or 'Pending' }}"
+                                >
+                                    {{ row.walmart.label }}
+                                </span>
+
+                                <div class="walmart-detail">
+                                    <span>{{ row.walmart.detail }}</span>
+
+                                    {% if row.walmart.sku %}
+                                    <span>SKU: {{ row.walmart.sku }}</span>
+                                    {% endif %}
+
+                                    {% if row.walmart.lifecycle_status %}
+                                    <span>
+                                        Lifecycle:
+                                        {{ row.walmart.lifecycle_status }}
+                                    </span>
+                                    {% endif %}
+
+                                    {% if row.walmart.price is not none %}
+                                    <span>
+                                        Walmart price:
+                                        ${{ "%.2f" | format(row.walmart.price | float) }}
+                                    </span>
+                                    {% endif %}
+                                </div>
+                            </td>
+
+                            <td>
+                                <span
+                                    class="amazon-status {% if row.amazon.linked %}amazon-status--linked{% else %}amazon-status--not-linked{% endif %}"
+                                >
+                                    {{ row.amazon.label }}
+                                </span>
+
+                                <div class="amazon-detail">
+                                    {% if row.amazon.asin %}
+                                    <span>ASIN: {{ row.amazon.asin }}</span>
+                                    {% endif %}
+
+                                    {% if row.amazon.seller_sku %}
+                                    <span>SKU: {{ row.amazon.seller_sku }}</span>
+                                    {% endif %}
+
+                                    {% if row.amazon.price is not none %}
+                                    <span>
+                                        Amazon price:
+                                        ${{ "%.2f" | format(row.amazon.price | float) }}
+                                    </span>
+                                    {% endif %}
+
+                                    {% if row.amazon.quantity is not none %}
+                                    <span>Amazon quantity: {{ row.amazon.quantity }}</span>
+                                    {% endif %}
+                                </div>
+                            </td>
+
+                            <td>
+                                {{ row.barcode or "No barcode" }}
+                            </td>
+
+                            <td>
+                                {{ row.location_name }}
+                            </td>
+
+                            <td>
+                                  {{ row.container_id or "—" }}
+                              </td>
+
+                            <td>
+                                {{ row.quantity_on_hand }}
+                            </td>
+
+                            <td>
+                                {{ row.quantity_reserved }}
+                            </td>
+
+                            <td>
+                                <strong>
+                                    {{ row.quantity_available }}
+                                </strong>
+                            </td>
+
+                            <td>
+                                ${{ "%.2f" | format(row.selling_price) }}
+
+                                {% if row.is_price_review %}
+                                <div class="price-review-badge">
+                                    PRICE REVIEW
+                                </div>
+                                {% endif %}
+                            </td>
+
+                            <td>
+                                ${{ "%.2f" | format(row.estimated_sales_value) }}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="inventory-pagination">
+                <div class="inventory-pagination-info">
+                    Showing
+                    {{ pagination.start_row }}
+                    -
+                    {{ pagination.end_row }}
+                    of
+                    {{ pagination.total_rows }}
+                    matching inventory records
+                </div>
+
+                <div class="inventory-pagination-actions">
+                    <button
+                        type="button"
+                        class="secondary-button"
+                        onclick="goToInventoryPage({{ pagination.previous_page }})"
+                        {% if not pagination.has_previous %}disabled{% endif %}
+                    >
+                        Previous
+                    </button>
+
+                    <span class="inventory-page-number">
+                        Page {{ pagination.page }}
+                        of {{ pagination.total_pages }}
+                    </span>
+
+                    <button
+                        type="button"
+                        class="secondary-button"
+                        onclick="goToInventoryPage({{ pagination.next_page }})"
+                        {% if not pagination.has_next %}disabled{% endif %}
+                    >
+                        Next
+                    </button>
+                </div>
+            </div>
+            {% else %}
+            <p>
+                No inventory records matched the selected filters.
+            </p>
+            {% endif %}
+        </section>
+    
+        {% endif %}
+</main>
+
+    <script
+        src="/static/product-channel-badges.js"
+        defer
+    ></script>
+    <script src="/static/offline-mode.js"></script>
+
+    <script>
+        function goToInventoryPage(pageNumber) {
+            const url = new URL(window.location.href);
+            url.searchParams.set("page", pageNumber);
+            url.searchParams.set("run_report", "1");
+            window.location.href = url.toString();
+        }
+        function runPriceReviewReport() {
+            const form = document.querySelector("#inventory-search-form");
+            const priceInput = document.querySelector("#store-price-filter");
+            priceInput.value = "0.99";
+            form.requestSubmit();
+        }
+        document.querySelector("#inventory-search-form").addEventListener("submit", function (event) {
+            if (navigator.onLine) return;
+            event.preventDefault();
+            const values = new URLSearchParams(new FormData(event.currentTarget));
+            window.location.href = "/offline/inventory-search?" + values.toString();
+        });
+    </script>
+
+</body>
+</html>
+

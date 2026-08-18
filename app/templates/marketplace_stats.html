@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Marketplace Stats | BrooksHouse Store</title>
+<link rel="stylesheet" href="/static/store.css">
+<style>
+.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px;margin-top:16px}
+.stats-card{border:1px solid rgba(30,50,70,.16);border-radius:14px;padding:16px;background:#fff}
+.stats-card span{display:block;opacity:.72;font-size:.8rem;font-weight:800;text-transform:uppercase}
+.stats-card strong{display:block;margin-top:6px;font-size:1.8rem}
+.stats-card small{display:block;margin-top:6px;opacity:.72}
+.channel-table{width:100%;border-collapse:collapse;margin-top:12px}
+.channel-table th,.channel-table td{padding:10px;border-bottom:1px solid #ddd;text-align:left;vertical-align:top}
+.quick-links{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.status-pill{display:inline-block;padding:4px 8px;border-radius:999px;background:#eef5fa;font-weight:800;font-size:.78rem}
+.money{white-space:nowrap}
+</style>
+</head>
+<body>
+<header class="store-header">
+<div>
+<p class="eyebrow">The BrooksHouse Store</p>
+<h1>Marketplace Stats</h1>
+<p class="subtitle">Amazon history, Walmart reserved-order sync, Shopify listings, and Online Orders / Reserved.</p>
+</div>
+<nav>
+<a href="/dashboard">Dashboard</a>
+<a href="/channels/orders">Marketplace Orders</a>
+<a href="/channels/orders/pull-list">Master Pull List</a>
+<a href="/tools/python">Python Lab</a>
+<a href="/tools/sql">SQL Console</a>
+</nav>
+</header>
+<main class="page-container">
+
+<section class="dashboard-panel">
+<div class="dashboard-panel-heading"><div><p class="eyebrow">Inventory overview</p><h2>BrooksHouse totals</h2></div></div>
+<div class="stats-grid">
+<article class="stats-card"><span>Active products</span><strong>{{ stats.active_products }}</strong></article>
+<article class="stats-card"><span>Total inventory units</span><strong>{{ stats.total_units }}</strong></article>
+<article class="stats-card"><span>Online Orders / Reserved</span><strong>{{ stats.reserved_units }}</strong><small>{{ stats.reserved_products }} product(s)</small></article>
+<article class="stats-card"><span>Marketplace linked products</span><strong>{{ stats.marketplace_linked_total }}</strong><small>Amazon + Walmart + Shopify</small></article>
+</div>
+</section>
+
+<section class="dashboard-panel">
+<div class="dashboard-panel-heading">
+<div>
+<p class="eyebrow">Amazon sales history</p>
+<h2>Amazon performance</h2>
+<p>Historical order stats come from the local Amazon SP-API history table.</p>
+</div>
+</div>
+<div class="stats-grid">
+<article class="stats-card"><span>Last 7 days</span><strong>{{ stats.amazon_7d_orders }} orders</strong><small>{{ stats.amazon_7d_units }} units • ${{ "%.2f"|format(stats.amazon_7d_sales) }}</small></article>
+<article class="stats-card"><span>Last 30 days</span><strong>{{ stats.amazon_30d_orders }} orders</strong><small>{{ stats.amazon_30d_units }} units • ${{ "%.2f"|format(stats.amazon_30d_sales) }}</small></article>
+<article class="stats-card"><span>Last 90 days</span><strong>{{ stats.amazon_90d_orders }} orders</strong><small>{{ stats.amazon_90d_units }} units • ${{ "%.2f"|format(stats.amazon_90d_sales) }}</small></article>
+<article class="stats-card"><span>Non-cancelled history</span><strong>{{ stats.amazon_history_orders }} orders</strong><small>{{ stats.amazon_history_units }} units • ${{ "%.2f"|format(stats.amazon_history_sales) }}</small></article>
+</div>
+</section>
+
+<section class="dashboard-panel">
+<div class="dashboard-panel-heading"><div><p class="eyebrow">Amazon order status</p><h2>History by fulfillment status</h2></div></div>
+<div class="dashboard-table-wrap">
+<table class="channel-table">
+<thead><tr><th>Status</th><th>Orders</th><th>Units</th><th>Sales</th></tr></thead>
+<tbody>
+{% if stats.amazon_status_rows %}
+{% for row in stats.amazon_status_rows %}
+<tr>
+<td><span class="status-pill">{{ row.status }}</span></td>
+<td>{{ row.orders }}</td>
+<td>{{ row.units }}</td>
+<td class="money">${{ "%.2f"|format(row.sales) }}</td>
+</tr>
+{% endfor %}
+{% else %}
+<tr><td colspan="4">No Amazon history has been synced yet. Run Sync Amazon Order History from Python Lab.</td></tr>
+{% endif %}
+</tbody>
+</table>
+</div>
+</section>
+
+<section class="dashboard-panel">
+<div class="dashboard-panel-heading"><div><p class="eyebrow">Sales channels</p><h2>Channel coverage</h2></div></div>
+<div class="dashboard-table-wrap">
+<table class="channel-table">
+<thead><tr><th>Channel</th><th>Listings</th><th>Linked products</th><th>Processed reserved lines</th><th>Units added to Reserved</th></tr></thead>
+<tbody>
+<tr><td>Amazon</td><td>{{ stats.amazon_listings }}</td><td>{{ stats.amazon_linked }}</td><td>{{ stats.amazon_processed_lines }}</td><td>{{ stats.amazon_reserved_units }}</td></tr>
+<tr><td>Walmart</td><td>{{ stats.walmart_listings }}</td><td>{{ stats.walmart_linked }}</td><td>{{ stats.walmart_processed_lines }}</td><td>{{ stats.walmart_reserved_units }}</td></tr>
+<tr><td>Shopify</td><td>{{ stats.shopify_listings }}</td><td>{{ stats.shopify_linked }}</td><td>—</td><td>—</td></tr>
+</tbody>
+</table>
+</div>
+<div class="quick-links">
+<a class="secondary-button link-button" href="/tools/python">🐍 Sync / Preview Orders</a>
+<a class="secondary-button link-button" href="/channels/amazon/orders">Amazon Orders</a>
+<a class="secondary-button link-button" href="/channels/walmart/orders">Walmart Orders</a>
+<a class="secondary-button link-button" href="/channels/amazon/mapping">Amazon Mapping</a>
+<a class="secondary-button link-button" href="/channels/shopify/reconcile">Shopify Compare</a>
+</div>
+</section>
+
+<section class="dashboard-panel">
+<div class="dashboard-panel-heading"><div><p class="eyebrow">Amazon products</p><h2>Top Amazon products in stored history</h2></div></div>
+<div class="dashboard-table-wrap">
+<table class="channel-table">
+<thead><tr><th>Product</th><th>SKU</th><th>Units</th><th>Order lines</th><th>Sales</th></tr></thead>
+<tbody>
+{% if stats.amazon_top_products %}
+{% for row in stats.amazon_top_products %}
+<tr>
+<td>{{ row.title or "Unknown product" }}</td>
+<td>{{ row.seller_sku or "—" }}</td>
+<td>{{ row.units }}</td>
+<td>{{ row.lines }}</td>
+<td class="money">${{ "%.2f"|format(row.sales) }}</td>
+</tr>
+{% endfor %}
+{% else %}
+<tr><td colspan="5">No Amazon product history available yet.</td></tr>
+{% endif %}
+</tbody>
+</table>
+</div>
+</section>
+
+</main>
+</body>
+</html>

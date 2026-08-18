@@ -1,0 +1,166 @@
+# Python virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.pytype/
+.hypothesis/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Build and package output
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Local environment and secrets
+.env
+.env-*
+.env.*
+!.env.example
+!.env.cloud.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+**/credentials*.json
+**/credential*.json
+**/secrets*.json
+**/secret*.json
+**/tokens*.json
+**/token*.json
+**/auth*.json
+
+# BrooksHouse private runtime configuration
+app/data/web_push_vapid.json
+app/data/web_push_private.pem
+cloud-backup/backup-config.json
+cloud-backup/python-path.txt
+
+# Databases and database sidecars
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite-journal
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+*.sqlite3-journal
+
+# Logs and process output
+logs/
+*.log
+*.log.*
+brookshouse-server-output.log
+brookshouse-server-error.log
+
+# Backups, operational imports, and generated exports
+backups/
+exports/
+imports/
+labels/
+
+# Runtime uploads and user-generated data
+app/data/kids-profile-photos/
+app/data/kids-task-proofs/
+app/data/team-profile-photos/
+
+# Downloaded, imported, and uploaded media
+app/static/product_images/
+app/static/product-images/
+app/static/storage_gallery/
+app/static/storage-photos/
+
+# Historical copies retained beside active application code
+app/main-before-*.py
+app/main-broken-*.py
+
+# Archives and installers
+*.zip
+*.7z
+*.rar
+*.tar
+*.tar.gz
+*.tgz
+*.msi
+
+# Root-level generated data artifacts
+/*.xlsx
+/*.xls
+/*.csv
+
+# Temporary and editor files
+*.tmp
+*.temp
+*.bak
+*.orig
+*.rej
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Operating-system metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Historical development-time mutation scripts
+app/patch_*.py
+app/fix_*.py
+/patch_*.py
+/fix_*.py
+/debug_*.py
+
+# Historical and backup script variants
+/*-before-*.py
+/*-backup.py
+
+# One-time template/application patchers
+/add_gallery_smartscan_nav.py
+/add_tote_audit_dashboard_link.py
+/collapse_no_reserve.py
+/apply-dashboard-stock-cleanup.ps1
+/add_zebra_autoscan_reset (1).ps1
+
+# Installed historical installers
+/install_storage_gallery.py
+/install_tote_audit.py
+/install_tote_repair.py
+/Install-BrooksHouse-OfflineMode.ps1
+
+# Experimental and duplicate artifacts
+/main-python-lab.py
+/BrooksHouse-dashboard-clean.html
+
+# One-time database diagnostics and repairs
+/export-channel-sales-schema.py
+/last_300_inventory.py
+/repair_scanned_tote_inventory.py
+/check_exact_tote_inventory.py
+/check_tote_001.py
+
+# Generated diagnostic output
+/channel-sales-schema.txt

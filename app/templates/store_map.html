@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Store Map | BrooksHouse</title>
+    <link rel="stylesheet" href="/static/store.css">
+    <style>
+        :root { --red:#8f1f24; --red-dark:#641419; --ink:#201a18; --muted:#6f6662; --cream:#f7f2ea; --card:#fff; --line:#ded2c8; --green:#26734d; --blue:#315d8a; }
+        * { box-sizing:border-box; }
+        body { margin:0; background:var(--cream); color:var(--ink); }
+        .map-header { color:#fff; background:linear-gradient(135deg,var(--red-dark),var(--red)); box-shadow:0 4px 18px rgba(50,10,12,.2); }
+        .map-header-inner { max-width:1500px; margin:auto; padding:14px 20px; display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap; }
+        .map-header h1 { margin:0; font-size:clamp(1.25rem,3vw,2rem); }
+        .map-header p { margin:3px 0 0; opacity:.82; font-size:.86rem; }
+        .header-actions { display:flex; gap:8px; flex-wrap:wrap; }
+        .header-actions a,.header-actions button { min-height:42px; padding:9px 13px; border:1px solid rgba(255,255,255,.35); border-radius:9px; color:#fff; background:transparent; text-decoration:none; font-weight:800; cursor:pointer; }
+        .header-actions .primary { color:var(--red-dark); background:#fff; }
+        .shell { max-width:1500px; margin:auto; padding:18px 18px 48px; }
+        .tabs { display:flex; gap:7px; flex-wrap:wrap; margin-bottom:15px; }
+        .tab { min-height:44px; padding:10px 15px; border:1px solid var(--line); border-radius:10px; color:var(--ink); background:#fff; font-weight:850; cursor:pointer; }
+        .tab.active { color:#fff; background:var(--red); border-color:var(--red); }
+        .panel[hidden] { display:none !important; }
+        .floor-layout { display:grid; grid-template-columns:minmax(0,1fr) 315px; gap:16px; align-items:start; }
+        .map-wrap { min-width:0; }
+        .map-toolbar { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; margin-bottom:9px; }
+        .map-toolbar p { margin:0; color:var(--muted); }
+        .map-canvas-shell { overflow:auto; padding:10px; border:1px solid var(--line); border-radius:14px; background:#fff; }
+        .map-canvas { position:relative; width:1000px; height:650px; border:4px solid #3f3a37; border-radius:4px; background-color:#faf8f4; background-image:linear-gradient(#ded6ce 1px,transparent 1px),linear-gradient(90deg,#ded6ce 1px,transparent 1px); background-size:25px 25px; transform-origin:top left; }
+        .map-object { position:absolute; display:flex; align-items:center; justify-content:center; padding:4px; border:2px solid rgba(35,25,20,.42); border-radius:7px; color:#fff; font-size:12px; font-weight:850; text-align:center; overflow:hidden; user-select:none; touch-action:none; cursor:pointer; box-shadow:0 2px 5px rgba(40,25,18,.12); }
+        .map-object.wall,.map-object.divider { border-radius:2px; padding:0; font-size:0; box-shadow:none; }
+        .map-object.door { border-style:dashed; box-shadow:none; }
+        .map-object.selected { outline:4px solid #f2ae2e; outline-offset:2px; z-index:10; }
+        .editing .map-object { cursor:move; }
+        .card { padding:15px; border:1px solid var(--line); border-radius:14px; background:#fff; box-shadow:0 7px 20px rgba(55,37,28,.06); }
+        .detail-card { position:sticky; top:12px; display:grid; gap:12px; }
+        .detail-card h2 { margin:0; font-size:1.25rem; }
+        .muted { color:var(--muted); }
+        .badge { display:inline-flex; width:max-content; padding:5px 8px; border-radius:999px; color:var(--red-dark); background:#f5dfe0; font-size:.76rem; font-weight:850; }
+        .stats { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+        .stat { padding:10px; border-radius:10px; background:#f8f3ed; }
+        .stat small { display:block; color:var(--muted); font-weight:700; }
+        .stat strong { display:block; margin-top:3px; font-size:1.08rem; }
+        .detail-actions { display:flex; gap:7px; flex-wrap:wrap; }
+        .button { min-height:42px; display:inline-flex; align-items:center; justify-content:center; padding:9px 12px; border:1px solid var(--line); border-radius:9px; color:var(--ink); background:#fff; text-decoration:none; font-weight:800; cursor:pointer; }
+        .button.primary { color:#fff; background:var(--red); border-color:var(--red); }
+        .button.danger { color:#8c1d22; border-color:#dcb5b7; }
+        .photo-strip { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; }
+        .photo-strip img { width:100%; aspect-ratio:1; object-fit:cover; border-radius:7px; background:#eee; }
+        .edit-box { display:grid; gap:9px; padding-top:11px; border-top:1px solid var(--line); }
+        .edit-box[hidden] { display:none; }
+        label { display:grid; gap:4px; color:var(--muted); font-size:.8rem; font-weight:800; }
+        input,select { width:100%; min-height:42px; padding:8px 10px; border:1px solid #cdbfb5; border-radius:8px; color:var(--ink); background:#fff; font:inherit; }
+        input[type=color] { padding:4px; }
+        input[type=range] { padding:0; }
+        .fields-two { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+        .edit-buttons { display:flex; gap:7px; flex-wrap:wrap; }
+        .save-status { min-height:18px; color:var(--green); font-weight:750; font-size:.82rem; }
+        .storage-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:14px; }
+        .storage-card { display:grid; gap:11px; }
+        .storage-cover { width:100%; aspect-ratio:16/9; object-fit:cover; border-radius:10px; background:#e7ddd4; }
+        .storage-placeholder { min-height:150px; display:flex; align-items:center; justify-content:center; border-radius:10px; color:var(--muted); background:#eee7df; font-weight:800; }
+        .storage-card h2 { margin:0; font-size:1.15rem; }
+        .location-table { width:100%; border-collapse:collapse; background:#fff; }
+        .location-table th,.location-table td { padding:11px 10px; border-bottom:1px solid var(--line); text-align:left; }
+        .location-table th { color:var(--muted); font-size:.78rem; text-transform:uppercase; letter-spacing:.04em; }
+        .money { white-space:nowrap; font-variant-numeric:tabular-nums; }
+        .empty { padding:20px; text-align:center; color:var(--muted); }
+        .modal { position:fixed; inset:0; z-index:80; display:flex; align-items:center; justify-content:center; padding:18px; background:rgba(20,12,10,.65); }
+        .modal[hidden] { display:none; }
+        .modal-card { width:min(480px,100%); display:grid; gap:12px; padding:18px; border-radius:14px; background:#fff; }
+        .modal-card h2 { margin:0; }
+        @media(max-width:900px) { .floor-layout { grid-template-columns:1fr; } .detail-card { position:static; } }
+        @media(max-width:600px) { .shell { padding:12px 10px 35px; } .map-header-inner { padding:12px; } .stats { grid-template-columns:1fr 1fr; } .location-table th:nth-child(2),.location-table td:nth-child(2),.location-table th:nth-child(5),.location-table td:nth-child(5) { display:none; } }
+    </style>
+</head>
+<body>
+<header class="map-header">
+    <div class="map-header-inner">
+        <div><h1>🗺️ BrooksHouse Store Map</h1><p>Inventory locations, photos, quantities and values</p></div>
+        <div class="header-actions">
+            <a href="/dashboard">Dashboard</a>
+            <a href="/storage-gallery">Photo Gallery</a>
+            {% if is_admin %}<button class="primary" id="edit-toggle" type="button">✏️ Edit Map</button>{% endif %}
+        </div>
+    </div>
+</header>
+
+<main class="shell">
+    <nav class="tabs" aria-label="Map sections">
+        <button class="tab active" type="button" data-tab="floor">Store Floor</button>
+        <button class="tab" type="button" data-tab="outside">Outside Storage</button>
+        <button class="tab" type="button" data-tab="all">All Inventory Locations</button>
+    </nav>
+
+    <section class="panel" id="panel-floor">
+        <div class="floor-layout" id="floor-layout">
+            <div class="map-wrap">
+                <div class="map-toolbar"><p id="map-updated"></p><span class="badge" id="mode-badge">View only</span></div>
+                <div class="map-canvas-shell"><div class="map-canvas" id="map-canvas" aria-label="Interactive BrooksHouse store floor plan"></div></div>
+            </div>
+            <aside class="card detail-card">
+                <span class="badge" id="area-kind">Map</span>
+                <h2 id="area-title">Select an area</h2>
+                <div class="muted" id="area-scope">Tap a fixture, wall, divider or department.</div>
+                <div class="stats">
+                    <div class="stat"><small>Products</small><strong id="stat-products">—</strong></div>
+                    <div class="stat"><small>Units</small><strong id="stat-units">—</strong></div>
+                    <div class="stat"><small>Inventory cost</small><strong id="stat-cost">—</strong></div>
+                    <div class="stat"><small>Store value</small><strong id="stat-store">—</strong></div>
+                    <div class="stat"><small>Suggested retail</small><strong id="stat-suggested">—</strong></div>
+                    <div class="stat"><small>Potential margin</small><strong id="stat-margin">—</strong></div>
+                </div>
+                <div class="photo-strip" id="area-photos"></div>
+                <div class="detail-actions">
+                    <a class="button" id="view-inventory" href="/inventory/search">View Inventory</a>
+                    {% if is_admin %}<button class="button" id="photo-button" type="button" disabled>📷 Add Photo</button>{% endif %}
+                </div>
+
+                {% if is_admin %}
+                <div class="edit-box" id="edit-box" hidden>
+                    <label>Name<input id="field-label" maxlength="100"></label>
+                    <div class="fields-two">
+                        <label>Type<select id="field-kind"><option>fixture</option><option>zone</option><option>wall</option><option>divider</option><option>door</option></select></label>
+                        <label>Color<input id="field-color" type="color"></label>
+                    </div>
+                    <div class="fields-two">
+                        <label>Width<input id="field-width" type="number" min="8" max="1000"></label>
+                        <label>Height<input id="field-height" type="number" min="5" max="650"></label>
+                    </div>
+                    <label>Rotation: <span id="rotation-label">0°</span><input id="field-rotation" type="range" min="0" max="355" step="5"></label>
+                    <label>Inventory location<select id="field-location"><option value="">Not linked yet</option></select></label>
+                    <label>Container / shelf / pallet code<input id="field-container" maxlength="120" placeholder="Example: PICKSLOT01-S01"></label>
+                    <div class="edit-buttons">
+                        <button class="button" type="button" data-add="fixture">+ Fixture</button>
+                        <button class="button" type="button" data-add="wall">+ Wall</button>
+                        <button class="button" type="button" data-add="divider">+ Divider</button>
+                        <button class="button danger" id="delete-area" type="button">Delete</button>
+                    </div>
+                    <button class="button primary" id="save-map" type="button">Save for Every Device</button>
+                    <div class="save-status" id="save-status"></div>
+                </div>
+                {% endif %}
+            </aside>
+        </div>
+    </section>
+
+    <section class="panel" id="panel-outside" hidden><div class="storage-grid" id="storage-grid"></div></section>
+    <section class="panel" id="panel-all" hidden><div class="card" style="overflow:auto"><table class="location-table"><thead><tr><th>Location</th><th>Type</th><th>Products</th><th>Units</th><th>Cost value</th><th>Store value</th><th></th></tr></thead><tbody id="location-rows"></tbody></table></div></section>
+</main>
+
+{% if is_admin %}
+<div class="modal" id="photo-modal" hidden>
+    <form class="modal-card" id="photo-form">
+        <h2>Add location photo</h2>
+        <div class="muted" id="photo-area-name"></div>
+        <label>Take or choose photo<input type="file" name="photo" accept="image/*" capture="environment" required></label>
+        <label>Caption<input name="caption" maxlength="500" placeholder="What does this photo show?"></label>
+        <div class="edit-buttons"><button class="button primary" type="submit">Upload Photo</button><button class="button" id="close-photo" type="button">Cancel</button></div>
+        <div class="save-status" id="photo-status"></div>
+    </form>
+</div>
+{% endif %}
+
+<script id="initial-payload" type="application/json">{{ payload_json | safe }}</script>
+<script>
+(() => {
+    const isAdmin = {{ 'true' if is_admin else 'false' }};
+    let payload = JSON.parse(document.getElementById('initial-payload').textContent);
+    let areas = payload.areas.map(area => ({...area}));
+    let selectedId = null;
+    let editing = false;
+    let dragging = null;
+    const canvas = document.getElementById('map-canvas');
+    const floorLayout = document.getElementById('floor-layout');
+    const money = value => new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'}).format(Number(value || 0));
+    const byId = id => areas.find(area => area.id === id);
+    const escapeHtml = value => String(value ?? '').replace(/[&<>'"]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
+
+    function renderMap() {
+        canvas.innerHTML = '';
+        areas.forEach(area => {
+            const element = document.createElement('button');
+            element.type = 'button';
+            element.className = `map-object ${area.kind}${area.id === selectedId ? ' selected' : ''}`;
+            element.dataset.id = area.id;
+            element.textContent = ['wall','divider'].includes(area.kind) ? '' : area.label;
+            element.setAttribute('aria-label', area.label);
+            Object.assign(element.style, {
+                left:`${area.x}px`, top:`${area.y}px`, width:`${area.width}px`, height:`${area.height}px`,
+                backgroundColor:area.color, transform:`rotate(${area.rotation || 0}deg)`
+            });
+            element.addEventListener('click', () => selectArea(area.id));
+            element.addEventListener('pointerdown', event => startDrag(event, area.id));
+            canvas.appendChild(element);
+        });
+    }
+
+    function selectArea(id) {
+        selectedId = id;
+        renderMap();
+        const area = byId(id);
+        if (!area) return;
+        document.getElementById('area-kind').textContent = area.kind;
+        document.getElementById('area-title').textContent = area.label;
+        document.getElementById('area-scope').textContent = area.location_name ? `${area.location_name}${area.container_id ? ' · ' + area.container_id : ' · Entire location'}` : 'Not linked to inventory yet';
+        const summary = area.summary || {};
+        document.getElementById('stat-products').textContent = summary.linked ? summary.products.toLocaleString() : '—';
+        document.getElementById('stat-units').textContent = summary.linked ? summary.units.toLocaleString() : '—';
+        document.getElementById('stat-cost').textContent = summary.linked ? money(summary.cost_value) : '—';
+        document.getElementById('stat-store').textContent = summary.linked ? money(summary.store_value) : '—';
+        document.getElementById('stat-suggested').textContent = summary.linked ? money(summary.suggested_value) : '—';
+        document.getElementById('stat-margin').textContent = summary.linked ? money(summary.margin) : '—';
+        const photos = document.getElementById('area-photos'); photos.innerHTML = '';
+        (area.photos || []).slice(0,6).forEach(item => { const image=document.createElement('img'); image.src=item.image_path; image.alt=item.caption || area.label; photos.appendChild(image); });
+        const inventoryLink = document.getElementById('view-inventory');
+        inventoryLink.href = area.location_id ? `/inventory/search?location_id=${encodeURIComponent(area.location_id)}${area.container_id ? '&container_id=' + encodeURIComponent(area.container_id) : ''}&stock_status=all&run_report=1` : '/inventory/search';
+        if (isAdmin) { document.getElementById('photo-button').disabled = !area.location_id; populateEditor(area); }
+    }
+
+    function populateEditor(area) {
+        document.getElementById('field-label').value = area.label;
+        document.getElementById('field-kind').value = area.kind;
+        document.getElementById('field-color').value = area.color;
+        document.getElementById('field-width').value = area.width;
+        document.getElementById('field-height').value = area.height;
+        document.getElementById('field-rotation').value = area.rotation || 0;
+        document.getElementById('rotation-label').textContent = `${area.rotation || 0}°`;
+        document.getElementById('field-location').value = area.location_id || '';
+        document.getElementById('field-container').value = area.container_id || '';
+    }
+
+    function startDrag(event,id) {
+        if (!editing) return;
+        event.preventDefault(); selectArea(id);
+        const area=byId(id); const rect=canvas.getBoundingClientRect();
+        dragging={id,startX:event.clientX,startY:event.clientY,x:area.x,y:area.y,scaleX:1000/rect.width,scaleY:650/rect.height};
+        event.currentTarget.setPointerCapture(event.pointerId);
+    }
+    canvas.addEventListener('pointermove', event => {
+        if (!dragging) return;
+        const area=byId(dragging.id);
+        area.x=Math.max(0,Math.min(1000-area.width,Math.round(dragging.x+(event.clientX-dragging.startX)*dragging.scaleX)));
+        area.y=Math.max(0,Math.min(650-area.height,Math.round(dragging.y+(event.clientY-dragging.startY)*dragging.scaleY)));
+        const element=canvas.querySelector(`[data-id="${CSS.escape(area.id)}"]`); if(element){element.style.left=`${area.x}px`;element.style.top=`${area.y}px`;}
+        setDirty('Object moved — save when finished.');
+    });
+    canvas.addEventListener('pointerup',()=>dragging=null); canvas.addEventListener('pointercancel',()=>dragging=null);
+
+    function setDirty(message) { if(isAdmin) document.getElementById('save-status').textContent=message; }
+    function updateSelected(field,value) { const area=byId(selectedId); if(!area) return; area[field]=value; renderMap(); setDirty('Unsaved changes.'); }
+    if (isAdmin) {
+        const locationSelect=document.getElementById('field-location');
+        payload.locations.forEach(location => { const option=document.createElement('option');option.value=location.location_id;option.textContent=location.location_name;locationSelect.appendChild(option); });
+        document.getElementById('edit-toggle').addEventListener('click',()=>{ editing=!editing; floorLayout.classList.toggle('editing',editing);document.getElementById('edit-box').hidden=!editing;document.getElementById('mode-badge').textContent=editing?'Admin editing':'View only';document.getElementById('edit-toggle').textContent=editing?'✓ Done Editing':'✏️ Edit Map'; });
+        document.getElementById('field-label').addEventListener('input',e=>updateSelected('label',e.target.value||'Unnamed area'));
+        document.getElementById('field-kind').addEventListener('change',e=>updateSelected('kind',e.target.value));
+        document.getElementById('field-color').addEventListener('input',e=>updateSelected('color',e.target.value));
+        document.getElementById('field-width').addEventListener('input',e=>updateSelected('width',Math.max(8,Number(e.target.value)||8)));
+        document.getElementById('field-height').addEventListener('input',e=>updateSelected('height',Math.max(5,Number(e.target.value)||5)));
+        document.getElementById('field-rotation').addEventListener('input',e=>{document.getElementById('rotation-label').textContent=`${e.target.value}°`;updateSelected('rotation',Number(e.target.value));});
+        document.getElementById('field-location').addEventListener('change',e=>{const area=byId(selectedId);if(!area)return;area.location_id=e.target.value?Number(e.target.value):null;area.location_name=payload.locations.find(item=>item.location_id===area.location_id)?.location_name||null;setDirty('Inventory link changed — save to update values.');selectArea(area.id);});
+        document.getElementById('field-container').addEventListener('input',e=>updateSelected('container_id',e.target.value));
+        document.querySelectorAll('[data-add]').forEach(button=>button.addEventListener('click',()=>addArea(button.dataset.add)));
+        document.getElementById('delete-area').addEventListener('click',()=>{if(!selectedId)return;areas=areas.filter(area=>area.id!==selectedId);selectedId=null;renderMap();setDirty('Object deleted — save when finished.');});
+        document.getElementById('save-map').addEventListener('click',saveMap);
+        document.getElementById('photo-button').addEventListener('click',()=>{const area=byId(selectedId);if(!area)return;document.getElementById('photo-area-name').textContent=area.label;document.getElementById('photo-modal').hidden=false;});
+        document.getElementById('close-photo').addEventListener('click',()=>document.getElementById('photo-modal').hidden=true);
+        document.getElementById('photo-form').addEventListener('submit',uploadPhoto);
+    }
+
+    function addArea(kind) {
+        const settings=kind==='wall'?{label:'Wall',width:180,height:14,color:'#555555'}:kind==='divider'?{label:'Divider',width:120,height:7,color:'#999999'}:{label:'New fixture',width:120,height:60,color:'#d66543'};
+        const area={id:`${kind}-${Date.now()}`,kind,x:430,y:300,rotation:0,location_id:null,container_id:'',summary:{linked:false},photos:[],...settings};
+        areas.push(area);selectArea(area.id);setDirty(`${settings.label} added — drag it into place.`);
+    }
+    async function saveMap() {
+        const statusBox=document.getElementById('save-status');statusBox.textContent='Saving…';
+        try { const response=await fetch('/api/store-map/layout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({areas})});const result=await response.json();if(!response.ok)throw new Error(result.detail||'Save failed');payload=result.payload;areas=payload.areas.map(area=>({...area}));statusBox.textContent=result.message;renderMap();if(selectedId)selectArea(selectedId);renderOutside();renderLocations(); }
+        catch(error){statusBox.textContent=error.message;}
+    }
+    async function uploadPhoto(event) {
+        event.preventDefault();const statusBox=document.getElementById('photo-status');const area=byId(selectedId);if(!area)return;
+        const formData=new FormData(event.currentTarget);formData.append('area_key',area.id);statusBox.textContent='Uploading…';
+        try {const response=await fetch('/api/store-map/photo',{method:'POST',body:formData});const result=await response.json();if(!response.ok)throw new Error(result.detail||'Upload failed');payload=result.payload;areas=payload.areas.map(item=>({...item}));document.getElementById('photo-modal').hidden=true;event.currentTarget.reset();renderMap();selectArea(area.id);renderOutside();statusBox.textContent='';}
+        catch(error){statusBox.textContent=error.message;}
+    }
+
+    function renderOutside() {
+        const grid=document.getElementById('storage-grid');grid.innerHTML='';
+        payload.outside_storage.forEach(location=>{const summary=location.summary;const image=location.cover_image_path||(location.photos[0]&&location.photos[0].image_path);const card=document.createElement('article');card.className='card storage-card';card.innerHTML=`${image?`<img class="storage-cover" src="${escapeHtml(image)}" alt="${escapeHtml(location.display_name)}">`:'<div class="storage-placeholder">No cover photo yet</div>'}<h2>${escapeHtml(location.display_name)}</h2><div class="stats"><div class="stat"><small>Products</small><strong>${summary.products.toLocaleString()}</strong></div><div class="stat"><small>Units</small><strong>${summary.units.toLocaleString()}</strong></div><div class="stat"><small>Cost value</small><strong>${money(summary.cost_value)}</strong></div><div class="stat"><small>Store value</small><strong>${money(summary.store_value)}</strong></div></div><div class="detail-actions"><a class="button primary" href="${location.gallery_url}">Open Load Map & Photos</a><a class="button" href="/inventory/search?location_id=${location.location_id}&stock_status=all&run_report=1">View Inventory</a></div>`;grid.appendChild(card);});
+        if(!payload.outside_storage.length)grid.innerHTML='<div class="card empty">No active trailer or container locations were found.</div>';
+    }
+    function renderLocations() {
+        const body=document.getElementById('location-rows');body.innerHTML='';
+        payload.all_location_summaries.forEach(location=>{const s=location.summary;const row=document.createElement('tr');row.innerHTML=`<td><strong>${escapeHtml(location.location_name)}</strong></td><td>${escapeHtml(location.location_type||'')}</td><td>${s.products.toLocaleString()}</td><td>${s.units.toLocaleString()}</td><td class="money">${money(s.cost_value)}</td><td class="money">${money(s.store_value)}</td><td><a href="/inventory/search?location_id=${location.location_id}&stock_status=all&run_report=1">Open</a></td>`;body.appendChild(row);});
+    }
+    document.querySelectorAll('.tab').forEach(button=>button.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(item=>item.classList.toggle('active',item===button));document.querySelectorAll('.panel').forEach(panel=>panel.hidden=panel.id!==`panel-${button.dataset.tab}`);}));
+    document.getElementById('map-updated').textContent=payload.map.updated_by_name?`Last saved by ${payload.map.updated_by_name}`:'Ready for the first admin layout save';
+    renderMap();renderOutside();renderLocations();
+})();
+</script>
+</body>
+</html>

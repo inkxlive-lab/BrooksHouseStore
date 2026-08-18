@@ -1,0 +1,900 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>Bulk Transfer | BrooksHouse Store</title>
+
+    <link
+        rel="stylesheet"
+        href="/static/store.css"
+    >
+
+    <style>
+        .transfer-settings-grid {
+            display: grid;
+            grid-template-columns: repeat(
+                auto-fit,
+                minmax(220px, 1fr)
+            );
+            gap: 1rem;
+        }
+
+        .batch-scan-grid {
+            display: grid;
+            grid-template-columns: 2fr 1fr auto;
+            gap: 0.75rem;
+            align-items: end;
+        }
+
+        .batch-list {
+            display: grid;
+            gap: 0.75rem;
+            margin-top: 1rem;
+        }
+
+        .batch-line {
+            display: grid;
+            grid-template-columns:
+                minmax(180px, 2fr)
+                minmax(110px, 1fr)
+                minmax(100px, 1fr)
+                auto;
+            gap: 0.75rem;
+            align-items: center;
+            padding: 0.85rem;
+            border: 1px solid #dddddd;
+            border-radius: 10px;
+            background: white;
+        }
+
+        .batch-line-product strong,
+        .batch-line-product span {
+            display: block;
+        }
+
+        .available-warning {
+            font-weight: 700;
+        }
+
+        .batch-summary {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+
+        @media (max-width: 760px) {
+            .batch-scan-grid,
+            .batch-line {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <header class="store-header">
+        <div>
+            <p class="eyebrow">The BrooksHouse Store</p>
+            <h1>Bulk Inventory Transfer</h1>
+
+            <p class="subtitle">
+                Scan multiple products and move them between
+                two inventory locations in one transaction.
+            </p>
+        </div>
+
+        <nav>
+            <a href="/storage-gallery">Storage Gallery</a>
+
+            <a href="/smart-scan">Smart Scan</a>
+
+            <a href="/dashboard">Dashboard</a>
+            <a href="/scan">Scan Item</a>
+            <a href="/inventory/replenishment">
+                Replenishment
+            </a>
+            <a href="/inventory/search">
+                Inventory Search
+            </a>
+            <a href="/inventory/transfer">
+                Single Transfer
+            </a>
+            <a href="/inventory/adjust/batch">
+                Batch Adjustment
+            </a>
+            <a href="/products">Products</a>
+        </nav>
+    </header>
+
+    <main class="page-container">
+        {% if message %}
+        <section class="alert success">
+            {{ message }}
+        </section>
+        {% endif %}
+
+        {% if error %}
+        <section class="alert error">
+            {{ error }}
+        </section>
+        {% endif %}
+
+        {% if saved_lines %}
+        <section class="dashboard-panel">
+            <div class="dashboard-panel-heading">
+                <div>
+                    <p class="eyebrow">Transfer saved</p>
+                    <h2>Transferred products</h2>
+                </div>
+
+                <span class="dashboard-badge">
+                    {{ saved_lines | length }}
+                </span>
+            </div>
+
+            <div class="dashboard-table-wrap">
+                <table class="dashboard-table">
+                    <thead>
+                        <tr>
+                            <th>Product</th>
+                            <th>Barcode</th>
+                            <th>Moved</th>
+                            <th>Source</th>
+                            <th>Destination</th>
+                        </tr>
+                    </thead>
+
+                    <tbody>
+                        {% for row in saved_lines %}
+                        <tr>
+                            <td>{{ row.product_name }}</td>
+                            <td>{{ row.barcode }}</td>
+                            <td>
+                                {{ row.quantity_transferred }}
+                            </td>
+                            <td>
+                                {{ row.source_before }}
+                                →
+                                {{ row.source_after }}
+                            </td>
+                            <td>
+                                {{ row.destination_before }}
+                                →
+                                {{ row.destination_after }}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </section>
+        {% endif %}
+
+        <form
+            id="batch-transfer-form"
+            action="/inventory/transfer/batch"
+            method="post"
+        >
+            <section class="form-card">
+                <div class="section-heading">
+                    <span>1</span>
+
+                    <div>
+                        <h2>Transfer locations</h2>
+
+                        <p>
+                            Every item in this batch will move
+                            between these two locations.
+                        </p>
+                    </div>
+                </div>
+
+                <div class="transfer-settings-grid">
+                    <label class="field">
+                        <span>Source location</span>
+
+                        <select
+                            name="source_location_id"
+                            id="source-location"
+                            required
+                        >
+                            <option value="">
+                                Select source
+                            </option>
+
+                            {% for location in locations %}
+                            <option
+                                value="{{ location.location_id }}"
+                            >
+                                {{ location.location_name }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </label>
+
+                    <label class="field">
+                        <span>Source Pallet / Container ID</span>
+
+                        <input
+                            type="text"
+                            name="source_container_id"
+                            id="source-container"
+                            placeholder="Example: TOTE-A-1"
+                        >
+                    </label>
+
+                    <label class="field">
+                        <span>Destination location</span>
+
+                        <select
+                            name="destination_location_id"
+                            id="destination-location"
+                            required
+                        >
+                            <option value="">
+                                Select destination
+                            </option>
+
+                            {% for location in locations %}
+                            <option
+                                value="{{ location.location_id }}"
+                            >
+                                {{ location.location_name }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </label>
+
+                    <label class="field">
+                        <span>Destination Pallet / Container ID</span>
+
+                        <input
+                            type="text"
+                            name="destination_container_id"
+                            id="destination-container"
+                            placeholder="Example: TOTE-B-1"
+                        >
+                    </label>
+
+                    <label class="field">
+                        <span>Reference number</span>
+
+                        <input
+                            type="text"
+                            name="reference_number"
+                            placeholder="Optional"
+                        >
+                    </label>
+
+                    <label class="field">
+                        <span>Transfer notes</span>
+
+                        <input
+                            type="text"
+                            name="notes"
+                            placeholder="Optional transfer notes"
+                        >
+                    </label>
+                </div>
+            </section>
+
+            <section class="form-card">
+                <div class="section-heading">
+                    <span>2</span>
+
+                    <div>
+                        <h2>Scan items</h2>
+
+                        <p>
+                            Select the source location before
+                            scanning so availability can be checked.
+                        </p>
+                    </div>
+                </div>
+
+                <div class="batch-scan-grid">
+                    <label class="field">
+                        <span>Barcode</span>
+
+                        <input
+                            type="text"
+                            id="barcode-input"
+                            inputmode="numeric"
+                            autocomplete="off"
+                            placeholder="Scan barcode"
+                        >
+                    </label>
+
+                    <label class="field">
+                        <span>Transfer quantity</span>
+
+                        <input
+                            type="number"
+                            id="quantity-input"
+                            min="1"
+                            value="1"
+                        >
+                    </label>
+
+                    <button
+                        type="button"
+                        id="add-item-button"
+                        class="primary-button"
+                    >
+                        Add Item
+                    </button>
+                </div>
+
+                <p
+                    id="lookup-message"
+                    class="scan-help"
+                ></p>
+            </section>
+
+            <section class="form-card">
+                <div class="section-heading">
+                    <span>3</span>
+
+                    <div>
+                        <h2>Transfer list</h2>
+                        <p>
+                            Review quantities before saving.
+                        </p>
+                    </div>
+                </div>
+
+                <div
+                    id="empty-list-message"
+                    class="empty-state"
+                >
+                    No items have been added yet.
+                </div>
+
+                <div
+                    id="batch-list"
+                    class="batch-list"
+                ></div>
+
+                <div class="batch-summary">
+                    <strong>
+                        Products:
+                        <span id="product-count">0</span>
+                    </strong>
+
+                    <strong>
+                        Units:
+                        <span id="unit-count">0</span>
+                    </strong>
+                </div>
+
+                <input
+                    type="hidden"
+                    name="items_json"
+                    id="items-json"
+                    value="[]"
+                >
+            </section>
+
+            <div class="form-actions">
+                <button
+                    type="button"
+                    id="clear-list-button"
+                    class="secondary-button"
+                >
+                    Clear List
+                </button>
+
+                <a
+                    href="/inventory/transfer"
+                    class="secondary-button link-button"
+                >
+                    Cancel
+                </a>
+
+                <button
+                    type="submit"
+                    class="primary-button"
+                >
+                    Save Bulk Transfer
+                </button>
+            </div>
+        </form>
+    </main>
+
+    <script>
+        const items = [];
+
+        const form = document.querySelector(
+            "#batch-transfer-form"
+        );
+
+        const sourceLocation = document.querySelector(
+            "#source-location"
+        );
+
+        const sourceContainer = document.querySelector(
+            "#source-container"
+        );
+
+        const destinationContainer = document.querySelector(
+            "#destination-container"
+        );
+
+        const destinationLocation = document.querySelector(
+            "#destination-location"
+        );
+
+        const barcodeInput = document.querySelector(
+            "#barcode-input"
+        );
+
+        const quantityInput = document.querySelector(
+            "#quantity-input"
+        );
+
+        const addButton = document.querySelector(
+            "#add-item-button"
+        );
+
+        const clearButton = document.querySelector(
+            "#clear-list-button"
+        );
+
+        const listContainer = document.querySelector(
+            "#batch-list"
+        );
+
+        const emptyMessage = document.querySelector(
+            "#empty-list-message"
+        );
+
+        const itemsJson = document.querySelector(
+            "#items-json"
+        );
+
+        const productCount = document.querySelector(
+            "#product-count"
+        );
+
+        const unitCount = document.querySelector(
+            "#unit-count"
+        );
+
+        const lookupMessage = document.querySelector(
+            "#lookup-message"
+        );
+
+        function updateHiddenValue() {
+            itemsJson.value = JSON.stringify(
+                items.map((item) => ({
+                    product_id: item.product_id,
+                    product_name: item.product_name,
+                    barcode: item.barcode,
+                    quantity: item.quantity,
+                }))
+            );
+        }
+
+        function renderList() {
+            listContainer.innerHTML = "";
+
+            emptyMessage.style.display = (
+                items.length ? "none" : "block"
+            );
+
+            for (const item of items) {
+                const row = document.createElement("div");
+                row.className = "batch-line";
+
+                const productCell = document.createElement(
+                    "div"
+                );
+
+                productCell.className = "batch-line-product";
+
+                const productName = document.createElement(
+                    "strong"
+                );
+
+                productName.textContent = item.product_name;
+
+                const barcode = document.createElement(
+                    "span"
+                );
+
+                barcode.textContent = item.barcode;
+
+                productCell.append(
+                    productName,
+                    barcode
+                );
+
+                const availableCell = document.createElement(
+                    "div"
+                );
+
+                availableCell.innerHTML = (
+                    "<span>Available</span><br>"
+                    + "<strong>"
+                    + item.quantity_available
+                    + "</strong>"
+                );
+
+                const quantityCell = document.createElement(
+                    "div"
+                );
+
+                const quantityField = document.createElement(
+                    "input"
+                );
+
+                quantityField.type = "number";
+                quantityField.min = "1";
+                quantityField.max = String(
+                    item.quantity_available
+                );
+                quantityField.value = String(
+                    item.quantity
+                );
+
+                quantityField.addEventListener(
+                    "change",
+                    () => {
+                        let newQuantity = Number(
+                            quantityField.value
+                        );
+
+                        if (
+                            !Number.isInteger(newQuantity)
+                            || newQuantity < 1
+                        ) {
+                            newQuantity = 1;
+                        }
+
+                        if (
+                            newQuantity
+                            > item.quantity_available
+                        ) {
+                            newQuantity = (
+                                item.quantity_available
+                            );
+
+                            lookupMessage.textContent = (
+                                "Transfer quantity was limited "
+                                + "to the available source "
+                                + "inventory."
+                            );
+                        }
+
+                        item.quantity = newQuantity;
+                        quantityField.value = String(
+                            newQuantity
+                        );
+
+                        renderList();
+                    }
+                );
+
+                quantityCell.appendChild(
+                    quantityField
+                );
+
+                const removeButton = document.createElement(
+                    "button"
+                );
+
+                removeButton.type = "button";
+                removeButton.className = (
+                    "secondary-button"
+                );
+                removeButton.textContent = "Remove";
+
+                removeButton.addEventListener(
+                    "click",
+                    () => {
+                        const index = items.findIndex(
+                            (candidate) => (
+                                candidate.product_id
+                                === item.product_id
+                            )
+                        );
+
+                        if (index >= 0) {
+                            items.splice(index, 1);
+                        }
+
+                        renderList();
+                    }
+                );
+
+                row.append(
+                    productCell,
+                    availableCell,
+                    quantityCell,
+                    removeButton
+                );
+
+                listContainer.appendChild(row);
+            }
+
+            productCount.textContent = String(
+                items.length
+            );
+
+            unitCount.textContent = String(
+                items.reduce(
+                    (total, item) => (
+                        total + item.quantity
+                    ),
+                    0
+                )
+            );
+
+            updateHiddenValue();
+        }
+
+        async function addItem() {
+            lookupMessage.textContent = "";
+
+            const barcode = barcodeInput.value.trim();
+
+            const quantity = Number(
+                quantityInput.value
+            );
+
+            if (!sourceLocation.value) {
+                lookupMessage.textContent = (
+                    "Select the source location first."
+                );
+
+                sourceLocation.focus();
+                return;
+            }
+
+            if (!barcode) {
+                lookupMessage.textContent = (
+                    "Scan or enter a barcode."
+                );
+
+                barcodeInput.focus();
+                return;
+            }
+
+            if (
+                !Number.isInteger(quantity)
+                || quantity < 1
+            ) {
+                lookupMessage.textContent = (
+                    "Transfer quantity must be at least 1."
+                );
+
+                quantityInput.focus();
+                return;
+            }
+
+            const response = await fetch(
+                "/inventory/transfer/batch/lookup"
+                + "?barcode="
+                + encodeURIComponent(barcode)
+                + "&source_location_id="
+                + encodeURIComponent(
+                    sourceLocation.value
+                )
+                + "&source_container_id="
+                + encodeURIComponent(
+                    sourceContainer.value.trim()
+                )
+            );
+
+            const result = await response.json();
+
+            if (!result.found) {
+                lookupMessage.textContent = (
+                    result.error
+                    || "Product was not found."
+                );
+
+                barcodeInput.focus();
+                barcodeInput.select();
+                return;
+            }
+
+            if (result.quantity_available < 1) {
+                lookupMessage.textContent = (
+                    result.product_name
+                    + " has no available inventory at "
+                    + result.source_location
+                    + " / "
+                    + (
+                        result.source_container_id
+                        || "No Container ID"
+                    )
+                    + "."
+                );
+
+                barcodeInput.focus();
+                barcodeInput.select();
+                return;
+            }
+
+            const existing = items.find(
+                (item) => (
+                    item.product_id
+                    === result.product_id
+                )
+            );
+
+            const combinedQuantity = (
+                (existing ? existing.quantity : 0)
+                + quantity
+            );
+
+            if (
+                combinedQuantity
+                > result.quantity_available
+            ) {
+                lookupMessage.textContent = (
+                    "Only "
+                    + result.quantity_available
+                    + " unit(s) of "
+                    + result.product_name
+                    + " are available at "
+                    + result.source_location
+                    + " / "
+                    + (
+                        result.source_container_id
+                        || "No Container ID"
+                    )
+                    + "."
+                );
+
+                barcodeInput.focus();
+                barcodeInput.select();
+                return;
+            }
+
+            if (existing) {
+                existing.quantity = combinedQuantity;
+                existing.quantity_available = (
+                    result.quantity_available
+                );
+            }
+            else {
+                items.push({
+                    product_id: result.product_id,
+                    product_name: result.product_name,
+                    barcode: result.barcode,
+                    quantity: quantity,
+                    quantity_available: (
+                        result.quantity_available
+                    ),
+                });
+            }
+
+            lookupMessage.textContent = (
+                result.product_name
+                + " added. Matched pallet: "
+                + (
+                    result.source_container_id
+                    || "No Container ID"
+                )
+                + ". Source available: "
+                + result.quantity_available
+                + "."
+            );
+
+            barcodeInput.value = "";
+            quantityInput.value = "1";
+            barcodeInput.focus();
+
+            renderList();
+        }
+
+        addButton.addEventListener(
+            "click",
+            addItem
+        );
+
+        barcodeInput.addEventListener(
+            "keydown",
+            (event) => {
+                if (event.key === "Enter") {
+                    event.preventDefault();
+                    addItem();
+                }
+            }
+        );
+
+        clearButton.addEventListener(
+            "click",
+            () => {
+                items.length = 0;
+                renderList();
+                barcodeInput.focus();
+            }
+        );
+
+        sourceLocation.addEventListener(
+            "change",
+            () => {
+                if (items.length) {
+                    items.length = 0;
+                    renderList();
+
+                    lookupMessage.textContent = (
+                        "The transfer list was cleared "
+                        + "because the source location changed."
+                    );
+                }
+            }
+        );
+
+        sourceContainer.addEventListener(
+            "change",
+            () => {
+                if (items.length) {
+                    items.length = 0;
+                    renderList();
+
+                    lookupMessage.textContent = (
+                        "The transfer list was cleared "
+                        + "because the source Container ID "
+                        + "changed."
+                    );
+                }
+            }
+        );
+
+        form.addEventListener(
+            "submit",
+            (event) => {
+                if (!items.length) {
+                    event.preventDefault();
+
+                    lookupMessage.textContent = (
+                        "Add at least one item before "
+                        + "saving the transfer."
+                    );
+
+                    return;
+                }
+
+                const sameLocation = (
+                    sourceLocation.value
+                    === destinationLocation.value
+                );
+
+                const sameContainer = (
+                    sourceContainer.value.trim().toUpperCase()
+                    === destinationContainer.value
+                        .trim()
+                        .toUpperCase()
+                );
+
+                if (sameLocation && sameContainer) {
+                    event.preventDefault();
+
+                    lookupMessage.textContent = (
+                        "Source and destination cannot be "
+                        + "the same location and "
+                        + "Container ID."
+                    );
+
+                    return;
+                }
+
+                updateHiddenValue();
+            }
+        );
+
+        renderList();
+    </script>
+</body>
+</html>

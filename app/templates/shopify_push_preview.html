@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>Shopify Push Preview | BrooksHouse Store</title>
+
+    <link
+        rel="stylesheet"
+        href="/static/store.css"
+    >
+</head>
+
+<body>
+    <header class="store-header">
+        <div>
+            <p class="eyebrow">The BrooksHouse Store</p>
+
+            <h1>Shopify Final Push Preview</h1>
+
+            <p class="subtitle">
+                Final safety review before any Shopify inventory update.
+            </p>
+        </div>
+
+        <nav>
+            <a href="/storage-gallery">Storage Gallery</a>
+
+            <a href="/smart-scan">Smart Scan</a>
+
+            <a href="/channels/amazon/mapping">Amazon Mapping</a>
+            <a href="/channels/shopify/storefront-import">Storefront Import</a>
+            <a href="/dashboard">Dashboard</a>
+            <a href="/inventory/replenishment">
+                Replenishment
+            </a>
+
+            <a href="/channels/shopify/reconcile">
+                Shopify Compare
+            </a>
+
+            <a href="/channels/shopify/settings">
+                Shopify Settings
+            </a>
+
+            <a href="/channels/shopify/approve">
+                Approval Queue
+            </a>
+
+            <a href="/channels/shopify/push-preview">
+                Push Preview
+            </a>
+        </nav>
+    </header>
+
+    <main class="page-container">
+        {% if message %}
+        <section class="alert success">
+            <strong>{{ message }}</strong>
+        </section>
+        {% endif %}
+
+        {% if error %}
+        <section class="alert error">
+            <strong>{{ error }}</strong>
+        </section>
+        {% endif %}
+
+        <section class="approval-summary">
+            <article class="dashboard-card">
+                <span>Saved approvals</span>
+                <strong>{{ summary.total }}</strong>
+                <p>Records in the approval file.</p>
+            </article>
+
+            <article class="dashboard-card">
+                <span>Ready</span>
+                <strong>{{ summary.ready }}</strong>
+                <p>Passed all preview checks.</p>
+            </article>
+
+            <article class="dashboard-card">
+                <span>Stale</span>
+                <strong>{{ summary.stale }}</strong>
+                <p>Must be approved again.</p>
+            </article>
+
+            <article class="dashboard-card">
+                <span>Blocked</span>
+                <strong>{{ summary.blocked }}</strong>
+                <p>Missing data or no update needed.</p>
+            </article>
+        </section>
+
+        <section class="dashboard-panel">
+            <div class="dashboard-panel-heading">
+                <div>
+                    <p class="eyebrow">Shopify destination</p>
+
+                    <h2>Shopify inventory location</h2>
+
+                    <p>
+                        Enter the Shopify GraphQL location ID that will
+                        receive the approved quantities.
+                    </p>
+                </div>
+            </div>
+
+            <form
+                action="/channels/shopify/push-preview/settings"
+                method="post"
+                class="report-filter-form"
+            >
+                <div class="form-grid">
+                    <label class="field">
+                        <span>Shopify location name</span>
+
+                        <input
+                            type="text"
+                            name="shopify_location_name"
+                            value="{{ push_settings.shopify_location_name }}"
+                            placeholder="Example: Main Store"
+                            required
+                        >
+                    </label>
+
+                    <label class="field">
+                        <span>Shopify GraphQL location ID</span>
+
+                        <input
+                            type="text"
+                            name="shopify_location_id"
+                            value="{{ push_settings.shopify_location_id }}"
+                            placeholder="gid://shopify/Location/123456789"
+                            required
+                        >
+                    </label>
+                </div>
+
+                <div class="form-actions">
+                    <button
+                        type="submit"
+                        class="primary-button"
+                    >
+                        Save Shopify Destination
+                    </button>
+                </div>
+            </form>
+        </section>
+
+        <section class="shopify-setting-warning">
+            <strong>Live Shopify inventory tool:</strong>
+
+            Only records marked Ready will be sent. Shopify must still
+            match the quantity shown under Current Shopify or the update
+            will be rejected.
+        </section>
+
+        <section class="dashboard-panel approval-panel">
+            <div class="dashboard-panel-heading">
+                <div>
+                    <p class="eyebrow">Final review</p>
+
+                    <h2>Approved quantity changes</h2>
+
+                    <p>
+                        Shopify’s imported quantity is used as the
+                        concurrency check before the future update.
+                    </p>
+                </div>
+
+                <span class="dashboard-badge">
+                    {{ rows | length }}
+                </span>
+            </div>
+
+            {% if rows %}
+            <div class="dashboard-table-wrap">
+                <table class="dashboard-table push-preview-table">
+                    <thead>
+                        <tr>
+                            <th>Status</th>
+                            <th>Product</th>
+                            <th>Barcode</th>
+                            <th>Approved Local</th>
+                            <th>Current Local</th>
+                            <th>Approved Shopify</th>
+                            <th>Current Shopify</th>
+                            <th>Send</th>
+                            <th>Difference</th>
+                            <th>Inventory Item</th>
+                        </tr>
+                    </thead>
+
+                    <tbody>
+                        {% for row in rows %}
+                        <tr>
+                            <td>
+                                <span
+                                    class="
+                                        push-preview-status
+                                        push-preview-{{ row.status }}
+                                    "
+                                >
+                                    {{ row.status_label }}
+                                </span>
+                            </td>
+
+                            <td>
+                                {% if row.product_id %}
+                                <a
+                                    href="/products/{{ row.product_id }}"
+                                >
+                                    <strong>
+                                        {{ row.product_name }}
+                                    </strong>
+                                </a>
+                                {% else %}
+                                <strong>
+                                    {{ row.product_name }}
+                                </strong>
+                                {% endif %}
+
+                                {% if row.details %}
+                                <div class="preview-details">
+                                    {{ row.details }}
+                                </div>
+                                {% endif %}
+                            </td>
+
+                            <td>
+                                {{ row.barcode or "—" }}
+                            </td>
+
+                            <td>
+                                {{
+                                    row.approved_local_quantity
+                                    if row.approved_local_quantity
+                                    is not none
+                                    else "—"
+                                }}
+                            </td>
+
+                            <td>
+                                {{
+                                    row.current_local_quantity
+                                    if row.current_local_quantity
+                                    is not none
+                                    else "—"
+                                }}
+                            </td>
+
+                            <td>
+                                {{
+                                    row.approved_shopify_quantity
+                                    if row.approved_shopify_quantity
+                                    is not none
+                                    else "—"
+                                }}
+                            </td>
+
+                            <td>
+                                {{
+                                    row.current_shopify_quantity
+                                    if row.current_shopify_quantity
+                                    is not none
+                                    else "—"
+                                }}
+                            </td>
+
+                            <td>
+                                {% if row.ready %}
+                                <strong>
+                                    {{ row.quantity_to_send }}
+                                </strong>
+                                {% else %}
+                                    —
+                                {% endif %}
+                            </td>
+
+                            <td>
+                                {% if row.difference is not none %}
+                                <strong
+                                    class="
+                                        {% if row.difference > 0 %}
+                                            positive-change
+                                        {% elif row.difference < 0 %}
+                                            negative-change
+                                        {% endif %}
+                                    "
+                                >
+                                    {% if row.difference > 0 %}
+                                        +{{ row.difference }}
+                                    {% else %}
+                                        {{ row.difference }}
+                                    {% endif %}
+                                </strong>
+                                {% else %}
+                                    —
+                                {% endif %}
+                            </td>
+
+                            <td class="inventory-item-cell">
+                                {{
+                                    row.inventory_item_id
+                                    or "Missing"
+                                }}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div class="empty-history">
+                <h3>No saved approvals</h3>
+
+                <p>
+                    Approve Shopify inventory mismatches before opening
+                    the final preview.
+                </p>
+
+                <a
+                    class="primary-button link-button"
+                    href="/channels/shopify/approve"
+                >
+                    Open Approval Queue
+                </a>
+            </div>
+            {% endif %}
+        </section>
+
+        {% if summary.ready > 0 %}
+        <section class="final-confirmation-placeholder">
+            <strong>
+                {{ summary.ready }} record(s) passed the preview.
+            </strong>
+
+            <p>
+                This will set Shopify Available inventory to the Current
+                Local quantity for every Ready record.
+            </p>
+
+            <form
+                action="/channels/shopify/push-preview/execute"
+                method="post"
+                onsubmit="
+                    return confirm(
+                        'Push {{ summary.ready }} approved inventory '
+                        + 'quantity change(s) to Shopify?'
+                    );
+                "
+            >
+                <button
+                    type="submit"
+                    class="primary-button"
+                >
+                    Push Approved Quantities to Shopify
+                </button>
+            </form>
+        </section>
+        {% endif %}
+    </main>
+</body>
+</html>

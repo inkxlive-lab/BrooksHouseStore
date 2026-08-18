@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>Inventory Adjustment | BrooksHouse Store</title>
+
+    <link
+        rel="stylesheet"
+        href="/static/store.css"
+    >
+</head>
+
+<body>
+    <header class="store-header">
+        <div>
+            <p class="eyebrow">The BrooksHouse Store</p>
+
+            <h1>Inventory Adjustment</h1>
+
+            <p class="subtitle">
+                Correct inventory using a physical count.
+            </p>
+
+            <div class="header-actions">
+                <a
+                    class="primary-button link-button"
+                    href="/inventory/adjust/batch"
+                >
+                    Batch Scan Adjustment
+                </a>
+            </div>
+        </div>
+
+        <nav>
+            <a href="/storage-gallery">Storage Gallery</a>
+
+            <a href="/smart-scan">Smart Scan</a>
+
+            <a href="/channels/amazon/mapping">Amazon Mapping</a>
+            <a href="/dashboard">Dashboard</a>
+            <a href="/channels/shopify/reconcile">Shopify Compare</a>
+            <a href="/channels/shopify/storefront-import">Storefront Import</a>
+            <a href="/channels/shopify/settings">Shopify Settings</a>
+            <a href="/channels/shopify/approve">Approval Queue</a>
+            <a href="/inventory/search">Inventory Search</a>
+            <a href="/inventory/replenishment">
+                Replenishment
+            </a>
+            <a href="/scan">Scan Item</a>
+            <a href="/inventory/receive">Receive Inventory</a>
+            <a href="/inventory/transfer">Transfer Inventory</a>
+            <a href="/products">Products</a>
+        </nav>
+    </header>
+
+    <main class="page-container">
+        {% if message %}
+        <section class="alert success">
+            <strong>{{ message }}</strong>
+
+            {% if product %}
+            <div class="alert-actions">
+                <a href="/products/{{ product.product_id }}">
+                    View Product
+                </a>
+
+                <a href="/inventory/adjust">
+                    Adjust Another Item
+                </a>
+            </div>
+            {% endif %}
+        </section>
+        {% endif %}
+
+        {% if error %}
+        <section class="alert error">
+            <strong>{{ error }}</strong>
+        </section>
+        {% endif %}
+
+        <section class="scan-card">
+            <form
+                action="/inventory/adjust"
+                method="get"
+                class="scan-form"
+            >
+                <label class="field">
+                    <span>Scan or enter an existing product barcode</span>
+
+                    <input
+                        type="text"
+                        name="barcode"
+                        inputmode="numeric"
+                        autocomplete="off"
+                        placeholder="Scan barcode here"
+                        value="{{ scanned_barcode or '' }}"
+                        autofocus
+                        required
+                    >
+                </label>
+
+                <button
+                    type="submit"
+                    class="primary-button"
+                >
+                    Find Product
+                </button>
+            </form>
+        </section>
+
+        {% if searched and not product %}
+        <section class="result-card no-match">
+            <div class="result-label">Product not found</div>
+
+            <h2>This item is not in your BrooksHouse products.</h2>
+
+            <p>
+                Check the barcode through the Scan Item page first.
+            </p>
+
+            <a
+                class="primary-button link-button"
+                href="/scan"
+            >
+                Check Item
+            </a>
+        </section>
+        {% endif %}
+
+        {% if product %}
+        <section class="adjustment-layout">
+            <article class="result-card store-match">
+                <div class="result-label">
+                    Existing BrooksHouse product
+                </div>
+
+                <h2>{{ product.product_name }}</h2>
+
+                {% if product.brand %}
+                <p>{{ product.brand }}</p>
+                {% endif %}
+
+                <div class="result-grid">
+                    <div>
+                        <span>Barcode</span>
+
+                        <strong>
+                            {% if product.barcodes %}
+                                {{ product.barcodes[0].barcode }}
+                            {% else %}
+                                No barcode
+                            {% endif %}
+                        </strong>
+                    </div>
+
+                    <div>
+                        <span>Total inventory</span>
+
+                        <strong>
+                            {{
+                                product.inventory_records
+                                | sum(attribute="quantity_on_hand")
+                            }}
+                        </strong>
+                    </div>
+                </div>
+
+                <div class="location-quantity-list">
+                    <h3>Inventory by location</h3>
+
+                    {% if product.inventory_records %}
+                        {% for record in product.inventory_records %}
+                        <div class="location-quantity-row">
+                            <span>
+                                {{ record.location.location_name }}
+                                {% if record.container_id %}
+                                    / {{ record.container_id }}
+                                {% else %}
+                                    / No container
+                                {% endif %}
+                            </span>
+
+                            <strong>
+                                {{ record.quantity_on_hand }}
+                            </strong>
+                        </div>
+                        {% endfor %}
+                    {% else %}
+                        <p>
+                            This product does not have inventory at any
+                            location yet.
+                        </p>
+                    {% endif %}
+                </div>
+            </article>
+
+            <form
+                class="product-form"
+                action="/inventory/adjust"
+                method="post"
+            >
+                <input
+                    type="hidden"
+                    name="product_id"
+                    value="{{ product.product_id }}"
+                >
+
+                <input
+                    type="hidden"
+                    name="barcode"
+                    value="{{ scanned_barcode }}"
+                >
+
+                <section class="form-card">
+                    <div class="section-heading">
+                        <span>1</span>
+
+                        <div>
+                            <h2>Physical count</h2>
+
+                            <p>
+                                Enter the quantity physically present at
+                                the selected location.
+                            </p>
+                        </div>
+                    </div>
+
+                    <div class="form-grid">
+                        <label class="field">
+                            <span>Inventory location *</span>
+
+                            <select
+                                name="location_id"
+                                id="adjustment-location"
+                                required
+                            >
+                                <option value="">
+                                    Select location
+                                </option>
+
+                                {% for location in locations %}
+                                <option
+                                    value="{{ location.location_id }}"
+                                    {% if selected_location_id == location.location_id %}
+                                    selected
+                                    {% endif %}
+                                >
+                                    {{ location.location_name }}
+                                </option>
+                                {% endfor %}
+                            </select>
+                        </label>
+
+                        <label class="field">
+                            <span>Pallet / Container</span>
+
+                            <select
+                                name="container_id"
+                                id="adjustment-container"
+                            >
+                                <option value="">
+                                    No pallet / container
+                                </option>
+
+                                {% for record in product.inventory_records %}
+                                    {% if record.container_id %}
+                                    <option
+                                        value="{{ record.container_id }}"
+                                        data-location-id="{{ record.location_id }}"
+                                        {% if selected_container_id == record.container_id %}
+                                        selected
+                                        {% endif %}
+                                    >
+                                        {{ record.container_id }}
+                                        - {{ record.quantity_on_hand }} in system
+                                    </option>
+                                    {% endif %}
+                                {% endfor %}
+                            </select>
+                        </label>
+
+                        <label class="field">
+                            <span>Current system quantity</span>
+
+                            <input
+                                type="number"
+                                id="current-system-quantity"
+                                value=""
+                                readonly
+                            >
+                        </label>
+
+                        <label class="field">
+                            <span>Physical quantity counted *</span>
+
+                            <input
+                                type="number"
+                                name="physical_quantity"
+                                id="physical-quantity"
+                                min="0"
+                                value="0"
+                                required
+                            >
+                        </label>
+
+                        <label class="field">
+                            <span>Calculated difference</span>
+
+                            <input
+                                type="text"
+                                id="calculated-difference"
+                                value=""
+                                readonly
+                            >
+                        </label>
+
+                        <label class="field">
+                            <span>Adjustment reason *</span>
+
+                            <select name="reason" required>
+                                <option value="">
+                                    Select reason
+                                </option>
+
+                                <option value="cycle_count">
+                                    Cycle count correction
+                                </option>
+
+                                <option value="shrinkage">
+                                    Missing / shrinkage
+                                </option>
+
+                                <option value="damage">
+                                    Damaged inventory
+                                </option>
+
+                                <option value="found_inventory">
+                                    Found inventory
+                                </option>
+
+                                <option value="data_entry_error">
+                                    Previous data-entry error
+                                </option>
+
+                                <option value="return">
+                                    Customer return correction
+                                </option>
+
+                                <option value="other">
+                                    Other
+                                </option>
+                            </select>
+                        </label>
+
+                        <label class="field">
+                            <span>Reference number</span>
+
+                            <input
+                                type="text"
+                                name="reference_number"
+                                placeholder="Example: COUNT-0805"
+                            >
+                        </label>
+
+                        <label class="field full-width">
+                            <span>Adjustment notes</span>
+
+                            <textarea
+                                name="notes"
+                                rows="4"
+                                placeholder="Explain why the count changed"
+                            ></textarea>
+                        </label>
+                    </div>
+                </section>
+
+                <div class="form-actions">
+                    <a
+                        class="secondary-button link-button"
+                        href="/scan"
+                    >
+                        Cancel
+                    </a>
+
+                    <button
+                        type="submit"
+                        class="primary-button"
+                    >
+                        Save Adjustment
+                    </button>
+                </div>
+            </form>
+        </section>
+        {% endif %}
+    </main>
+
+    <script>
+        const locationSelect = document.querySelector(
+            "#adjustment-location"
+        );
+
+        const containerSelect = document.querySelector(
+            "#adjustment-container"
+        );
+
+        const currentInput = document.querySelector(
+            "#current-system-quantity"
+        );
+
+        const physicalInput = document.querySelector(
+            "#physical-quantity"
+        );
+
+        const differenceInput = document.querySelector(
+            "#calculated-difference"
+        );
+
+        const inventoryRecords = [
+            {% for record in product.inventory_records %}
+            {
+                locationId: "{{ record.location_id }}",
+                containerId: {{ (record.container_id or "") | tojson }},
+                quantity: {{ record.quantity_on_hand or 0 }}
+            }{% if not loop.last %},{% endif %}
+            {% endfor %}
+        ];
+
+        function filterContainersForLocation() {
+            if (!locationSelect || !containerSelect) {
+                return;
+            }
+
+            const locationId = locationSelect.value;
+            const selectedContainer = containerSelect.value;
+
+            for (const option of containerSelect.options) {
+                if (!option.value) {
+                    option.hidden = false;
+                    continue;
+                }
+
+                option.hidden =
+                    option.dataset.locationId !== locationId;
+            }
+
+            const selectedStillVisible = Array.from(
+                containerSelect.options
+            ).some(
+                option =>
+                    option.value === selectedContainer
+                    && !option.hidden
+            );
+
+            if (!selectedStillVisible) {
+                containerSelect.value = "";
+            }
+        }
+
+        function getCurrentQuantity() {
+            if (!locationSelect) {
+                return 0;
+            }
+
+            const locationId = locationSelect.value;
+            const containerId = containerSelect?.value || "";
+
+            const record = inventoryRecords.find(
+                item =>
+                    item.locationId === locationId
+                    && item.containerId === containerId
+            );
+
+            return Number(record?.quantity || 0);
+        }
+
+        function updateAdjustmentPreview() {
+            filterContainersForLocation();
+
+            const currentQuantity = getCurrentQuantity();
+            const physicalQuantity = Number(
+                physicalInput?.value || 0
+            );
+
+            currentInput.value = currentQuantity;
+
+            const difference =
+                physicalQuantity - currentQuantity;
+
+            differenceInput.value =
+                difference > 0
+                    ? `+${difference}`
+                    : `${difference}`;
+        }
+
+        locationSelect?.addEventListener(
+            "change",
+            updateAdjustmentPreview
+        );
+
+        containerSelect?.addEventListener(
+            "change",
+            updateAdjustmentPreview
+        );
+
+        physicalInput?.addEventListener(
+            "input",
+            updateAdjustmentPreview
+        );
+
+        updateAdjustmentPreview();
+	        const adjustScanForm = document.querySelector(".scan-form");
+        const adjustBarcodeInput =
+            adjustScanForm?.querySelector('input[name="barcode"]');
+
+        let adjustScanTimer;
+
+        adjustBarcodeInput?.addEventListener("input", function () {
+            clearTimeout(adjustScanTimer);
+
+            adjustScanTimer = setTimeout(function () {
+                const barcode = adjustBarcodeInput.value.trim();
+
+                if (barcode.length >= 8) {
+                    adjustScanForm.requestSubmit();
+                }
+            }, 250);
+        });
+
+    </script>
+</body>
+</html>
