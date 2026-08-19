@@ -82,6 +82,7 @@ from app.schemas import ProductCreate
 
 class SmartScanApproval(BaseModel):
     barcode: str
+    product_name: str | None = None
     description: str | None = None
     unit_weight: str | None = None
     source: str | None = None
@@ -110,7 +111,23 @@ ALLOWED_IMAGE_TYPES = {
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    Base.metadata.create_all(bind=engine)
+    # Product-enrichment tables require the explicit preview-first migration.
+    # Keep the application's legacy create-all behavior for every other table.
+    enrichment_table_names = {
+        "product_enrichment_batches",
+        "product_enrichment_items",
+        "product_enrichment_proposals",
+        "product_enrichment_audit_events",
+        "product_enrichment_lookup_cache",
+    }
+    Base.metadata.create_all(
+        bind=engine,
+        tables=[
+            table
+            for table_name, table in Base.metadata.tables.items()
+            if table_name not in enrichment_table_names
+        ],
+    )
 
     migration_key = "default-stocked-price-099-20260817"
     manifest_path = (
@@ -1452,6 +1469,17 @@ def approve_smart_scan(item: SmartScanApproval):
         # Approved values belong on the BrooksHouse product. The imported
         # master catalog remains unchanged as a reference source.
         if store_product:
+            from app.services.smart_scan_updates import (
+                approved_product_update_values,
+            )
+            product_name, description, brand, category = (
+                approved_product_update_values(
+                    item.product_name,
+                    item.description,
+                    item.brand,
+                    item.category,
+                )
+            )
             cursor.execute(
                 """
                 UPDATE products
@@ -1463,10 +1491,10 @@ def approve_smart_scan(item: SmartScanApproval):
                 WHERE product_id = ?
                 """,
                 (
-                    item.description,
-                    item.description,
-                    item.brand,
-                    item.category,
+                    product_name,
+                    description,
+                    brand,
+                    category,
                     timestamp,
                     store_product["product_id"],
                 ),
@@ -13399,6 +13427,11 @@ install_kids_helper(app)
 # BROOKSHOUSE ROLE ACCESS CONTROL
 from app.access_control import install_access_control
 install_access_control(app)
+
+
+# OWNER-ADMIN PRODUCT ENRICHMENT REVIEW
+from app.product_enrichment import install_product_enrichment
+install_product_enrichment(app)
 
 
 # BROOKSHOUSE SHARED STORE + INVENTORY LOCATION MAP

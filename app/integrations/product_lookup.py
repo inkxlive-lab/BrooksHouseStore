@@ -42,8 +42,10 @@ def _empty_result(barcode: str, source: str, error: str | None = None):
     return result
 
 
-def _lookup_upcitemdb(barcode: str):
+def _lookup_upcitemdb(barcode: str, before_request=None):
     try:
+        if before_request:
+            before_request()
         response = requests.get(
             UPCITEMDB_URL,
             params={"upc": barcode},
@@ -101,10 +103,12 @@ def _lookup_upcitemdb(barcode: str):
         return _empty_result(barcode, "UPCitemdb", str(exc))
 
 
-def _lookup_upcitemdb_page(barcode: str):
+def _lookup_upcitemdb_page(barcode: str, before_request=None):
     """Use UPCitemdb's public product page when its trial API is limited."""
 
     try:
+        if before_request:
+            before_request()
         response = requests.get(
             UPCITEMDB_PAGE_URL.format(barcode=barcode),
             headers={
@@ -210,8 +214,15 @@ def _lookup_upcitemdb_page(barcode: str):
         )
 
 
-def _lookup_open_facts(provider_name: str, url: str, barcode: str):
+def _lookup_open_facts(
+    provider_name: str,
+    url: str,
+    barcode: str,
+    before_request=None,
+):
     try:
+        if before_request:
+            before_request()
         response = requests.get(
             url.format(barcode=barcode),
             headers=REQUEST_HEADERS,
@@ -271,7 +282,7 @@ def _lookup_open_facts(provider_name: str, url: str, barcode: str):
         return _empty_result(barcode, provider_name, str(exc))
 
 
-def _fallback_results(barcode: str):
+def _fallback_results(barcode: str, before_request=None):
     results = []
 
     with ThreadPoolExecutor(max_workers=3) as executor:
@@ -281,6 +292,7 @@ def _fallback_results(barcode: str):
                 provider_name,
                 url,
                 barcode,
+                before_request,
             ): provider_name
             for provider_name, url in OPEN_FACTS_PROVIDERS
         }
@@ -336,7 +348,7 @@ def _merge_results(primary: dict, fallback: dict):
     return merged
 
 
-def lookup_upc_online(barcode: str):
+def lookup_upc_online(barcode: str, before_request=None):
     """Return normalized internet data with image-capable fallbacks."""
 
     barcode = str(barcode).strip()
@@ -344,7 +356,7 @@ def lookup_upc_online(barcode: str):
     if not barcode:
         return _empty_result("", "Internet", "No barcode supplied")
 
-    primary = _lookup_upcitemdb(barcode)
+    primary = _lookup_upcitemdb(barcode, before_request)
 
     # Avoid three extra requests when UPCitemdb already supplied an image.
     if primary.get("found") and primary.get("images"):
@@ -353,12 +365,12 @@ def lookup_upc_online(barcode: str):
     # The public page often remains available when the trial API reaches
     # its daily limit. It is UPC-specific and therefore takes priority over
     # community databases that can contain incorrect barcode associations.
-    page_result = _lookup_upcitemdb_page(barcode)
+    page_result = _lookup_upcitemdb_page(barcode, before_request)
 
     if page_result.get("found"):
         return _merge_results(primary, page_result)
 
-    fallbacks = _fallback_results(barcode)
+    fallbacks = _fallback_results(barcode, before_request)
     best_fallback = next(
         (
             result

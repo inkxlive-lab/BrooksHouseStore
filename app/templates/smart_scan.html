@@ -1318,7 +1318,8 @@ async function approveProduct() {
 
                 body: JSON.stringify({
                     barcode: currentData.barcode,
-                    description: description,
+                    product_name: description,
+                    description: null,
                     unit_weight: weight,
                     source: [
                         titleChoice,

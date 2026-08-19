@@ -6,6 +6,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
@@ -236,6 +237,160 @@ class ProductImage(Base):
     product: Mapped["Product"] = relationship(
         back_populates="images",
     )
+
+
+class ProductEnrichmentBatch(Base):
+    __tablename__ = "product_enrichment_batches"
+
+    batch_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    status: Mapped[str] = mapped_column(
+        String(30), nullable=False, default="draft", index=True
+    )
+    requested_batch_size: Mapped[int] = mapped_column(Integer, nullable=False, default=10)
+    selection_config_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    next_item_position: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    selected_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    processed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    approved_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    rejected_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    applied_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_by_user_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    created_by_name: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    paused_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.now, onupdate=datetime.now
+    )
+
+    items: Mapped[list["ProductEnrichmentItem"]] = relationship(
+        back_populates="batch", cascade="all, delete-orphan"
+    )
+
+
+class ProductEnrichmentItem(Base):
+    __tablename__ = "product_enrichment_items"
+    __table_args__ = (
+        UniqueConstraint("batch_id", "product_id", name="uq_enrichment_batch_product"),
+        UniqueConstraint("batch_id", "position", name="uq_enrichment_batch_position"),
+    )
+
+    item_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    batch_id: Mapped[int] = mapped_column(
+        ForeignKey("product_enrichment_batches.batch_id"), nullable=False, index=True
+    )
+    product_id: Mapped[int] = mapped_column(
+        ForeignKey("products.product_id"), nullable=False, index=True
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    primary_barcode: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    missing_fields_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    product_snapshot_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    status: Mapped[str] = mapped_column(
+        String(30), nullable=False, default="pending", index=True
+    )
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_retry_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    lookup_completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    applied_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.now, onupdate=datetime.now
+    )
+
+    batch: Mapped["ProductEnrichmentBatch"] = relationship(back_populates="items")
+    product: Mapped["Product"] = relationship()
+    proposals: Mapped[list["ProductEnrichmentProposal"]] = relationship(
+        back_populates="item", cascade="all, delete-orphan"
+    )
+
+
+class ProductEnrichmentProposal(Base):
+    __tablename__ = "product_enrichment_proposals"
+
+    proposal_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    item_id: Mapped[int] = mapped_column(
+        ForeignKey("product_enrichment_items.item_id"), nullable=False, index=True
+    )
+    field_name: Mapped[str] = mapped_column(String(60), nullable=False, index=True)
+    proposed_value: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    normalized_value: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    source_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    source_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    source_reference: Mapped[Optional[str]] = mapped_column(String(300), nullable=True)
+    confidence: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 4), nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(30), nullable=False, default="proposed", index=True
+    )
+    error_code: Mapped[Optional[str]] = mapped_column(String(60), nullable=True)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    original_proposal_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("product_enrichment_proposals.proposal_id"), nullable=True
+    )
+    reviewed_by_user_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    reviewed_by_name: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.now, onupdate=datetime.now
+    )
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    applied_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    item: Mapped["ProductEnrichmentItem"] = relationship(back_populates="proposals")
+
+
+class ProductEnrichmentAuditEvent(Base):
+    __tablename__ = "product_enrichment_audit_events"
+
+    event_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    batch_id: Mapped[int] = mapped_column(
+        ForeignKey("product_enrichment_batches.batch_id"), nullable=False, index=True
+    )
+    item_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("product_enrichment_items.item_id"), nullable=True, index=True
+    )
+    proposal_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("product_enrichment_proposals.proposal_id"), nullable=True
+    )
+    event_type: Mapped[str] = mapped_column(String(60), nullable=False, index=True)
+    actor_user_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    actor_name: Mapped[str] = mapped_column(String(120), nullable=False, default="System")
+    actor_role: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    field_name: Mapped[Optional[str]] = mapped_column(String(60), nullable=True)
+    old_value: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    new_value: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    source_name: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    details_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
+
+
+class ProductEnrichmentLookupCache(Base):
+    __tablename__ = "product_enrichment_lookup_cache"
+
+    cache_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    cache_key: Mapped[str] = mapped_column(String(180), nullable=False, unique=True)
+    source_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    source_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.now, onupdate=datetime.now
+    )
+
+
+Index(
+    "ix_enrichment_proposal_item_field_status",
+    ProductEnrichmentProposal.item_id,
+    ProductEnrichmentProposal.field_name,
+    ProductEnrichmentProposal.status,
+)
 
 
 class InventoryLocation(Base):
