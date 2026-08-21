@@ -16,11 +16,12 @@ from app.services.channel_inventory_reconciliation import (
 )
 
 
-RANK_LABELS = {
-    1: "exact_identifier_match",
-    2: "strong_existing_cross_reference",
-    3: "high_confidence_human_approval",
-    4: "no_viable_candidate",
+CLASSIFICATION_ORDER = {
+    "A_EXACT": 1,
+    "B_STRONG": 2,
+    "C_CANDIDATE": 3,
+    "E_AMBIGUOUS": 4,
+    "D_NO_MATCH": 5,
 }
 
 
@@ -28,16 +29,21 @@ RANK_LABELS = {
 class MappingProposal:
     channel: str
     source_key: str
+    marketplace_order_item_identifiers: str
+    marketplace_sku: str
     marketplace_title: str
+    marketplace_barcode: str
+    marketplace_asin: str
+    marketplace_listing_identifiers: str
     marketplace_identifiers: str
     order_line_count: int
     unit_count: int
     order_count: int
     candidate_product_id: int | None
+    candidate_product_barcode: str
     candidate_product_name: str
     evidence: str
-    confidence_rank: int
-    confidence_level: str
+    match_classification: str
     candidate_alternatives: str
     projected_line_outcomes: str
 
@@ -124,16 +130,18 @@ def _unmatched_lines(connection: sqlite3.Connection, cutoff: str) -> list[dict]:
     return rows
 
 
-def _product_catalog(connection: sqlite3.Connection) -> tuple[dict[int, str], dict[str, set[int]]]:
+def _product_catalog(connection: sqlite3.Connection) -> tuple[dict[int, str], dict[str, set[int]], dict[int, list[str]]]:
     products = {int(row["product_id"]): _text(row["product_name"]) for row in connection.execute(
         "SELECT product_id,product_name FROM products WHERE COALESCE(active,1)=1"
     )}
     barcodes: dict[str, set[int]] = defaultdict(set)
+    product_barcodes: dict[int, list[str]] = defaultdict(list)
     for row in connection.execute("SELECT product_id,barcode FROM product_barcodes"):
         normalized = _barcode(row["barcode"])
         if normalized and int(row["product_id"]) in products:
             barcodes[normalized].add(int(row["product_id"]))
-    return products, barcodes
+            product_barcodes[int(row["product_id"])].append(_text(row["barcode"]))
+    return products, barcodes, product_barcodes
 
 
 def _cross_references(connection: sqlite3.Connection) -> dict[tuple[str, str, str], list[tuple[int, str]]]:
@@ -242,7 +250,7 @@ def _project_category(connection: sqlite3.Connection, line: dict, product_id: in
 
 def analyze_unmatched(connection: sqlite3.Connection, cutoff: str) -> tuple[list[MappingProposal], dict]:
     lines = _unmatched_lines(connection, cutoff)
-    products, barcodes = _product_catalog(connection)
+    products, barcodes, product_barcodes = _product_catalog(connection)
     cross_refs = _cross_references(connection)
     listing_refs = _listing_identifier_candidates(connection, barcodes)
     all_codes = {_barcode(value) for row in lines for value in (row.get("barcode"), row.get("sku")) if _barcode(value)}
@@ -252,7 +260,9 @@ def analyze_unmatched(connection: sqlite3.Connection, cutoff: str) -> tuple[list
         groups[_source_key(line["channel"], line)].append(line)
 
     proposals = []
-    approved_line_candidates: dict[tuple[str, str, str], int] = {}
+    scenario_candidates: dict[str, dict[tuple[str, str, str], int]] = {
+        "exact_only": {}, "exact_and_strong": {},
+    }
     for source_key, grouped_lines in groups.items():
         sample = grouped_lines[0]
         channel = sample["channel"]
@@ -268,8 +278,7 @@ def analyze_unmatched(connection: sqlite3.Connection, cutoff: str) -> tuple[list
         for raw_label in ("barcode", "sku"):
             code = _barcode(identifiers[raw_label])
             matched = barcodes.get(code, set())
-            if len(matched) == 1:
-                product_id = next(iter(matched))
+            for product_id in matched:
                 exact_ids.add(product_id)
                 evidence_by_product[product_id].append(f"exact {raw_label} {code} in product_barcodes")
                 if master_evidence.get(code):
@@ -284,23 +293,27 @@ def analyze_unmatched(connection: sqlite3.Connection, cutoff: str) -> tuple[list
                 cross_ids.add(product_id)
                 evidence_by_product[product_id].append(f"exact {key[1]} cross-reference in {source}")
 
-        rank = 4
+        classification = "D_NO_MATCH"
         selected = None
         title_options = _title_candidates(f"{title} {_text(sample.get('variant_title'))}", products)
-        if len(exact_ids) == 1:
+        if len(exact_ids) == 1 and (not cross_ids or cross_ids == exact_ids):
             selected = next(iter(exact_ids))
-            rank = 1
-        elif len(cross_ids) == 1:
+            classification = "A_EXACT"
+        elif len(exact_ids) > 1 or len(cross_ids) > 1 or (exact_ids and cross_ids and exact_ids != cross_ids):
+            classification = "E_AMBIGUOUS"
+        elif not exact_ids and len(cross_ids) == 1:
             selected = next(iter(cross_ids))
-            rank = 2
-        elif title_options:
+            classification = "B_STRONG"
+        elif not exact_ids and not cross_ids and title_options:
             best_id, best_score = title_options[0]
             second_score = title_options[1][1] if len(title_options) > 1 else 0
-            allowed = (not exact_ids or best_id in exact_ids) and (not cross_ids or best_id in cross_ids)
-            if best_score >= 0.88 and best_score - second_score >= 0.08 and allowed:
+            plausible = [item for item in title_options if item[1] >= 0.72]
+            if plausible and (len(plausible) == 1 or best_score - second_score >= 0.08):
                 selected = best_id
-                rank = 3
-                evidence_by_product[selected].append(f"unique normalized title similarity {best_score:.3f}; margin {best_score-second_score:.3f}")
+                classification = "C_CANDIDATE"
+                evidence_by_product[selected].append(f"plausible normalized title similarity {best_score:.3f}; margin {best_score-second_score:.3f}; human approval required")
+            elif len(plausible) > 1:
+                classification = "E_AMBIGUOUS"
         alternatives = []
         candidate_pool = sorted(exact_ids | cross_ids | {item[0] for item in title_options})
         title_scores = dict(title_options)
@@ -310,41 +323,78 @@ def analyze_unmatched(connection: sqlite3.Connection, cutoff: str) -> tuple[list
         if selected is not None:
             for line in grouped_lines:
                 outcomes[_project_category(connection, line, selected)] += 1
-                if rank <= 3:
-                    approved_line_candidates[(channel, _text(line["order_id"]), _text(line["order_line_id"]))] = selected
+                line_key = (channel, _text(line["order_id"]), _text(line["order_line_id"]))
+                if classification == "A_EXACT":
+                    scenario_candidates["exact_only"][line_key] = selected
+                    scenario_candidates["exact_and_strong"][line_key] = selected
+                elif classification == "B_STRONG":
+                    scenario_candidates["exact_and_strong"][line_key] = selected
         reason = evidence_by_product.get(selected, []) if selected is not None else []
-        if rank == 4:
-            if len(exact_ids) > 1 or len(cross_ids) > 1:
-                reason.append("conflicting or ambiguous exact evidence; no safe unique candidate")
+        if classification in {"D_NO_MATCH", "E_AMBIGUOUS"}:
+            if classification == "E_AMBIGUOUS":
+                reason.append(
+                    "conflicting identifier evidence; no safe unique candidate"
+                    if exact_ids or cross_ids
+                    else "multiple plausible title candidates; human review cannot safely choose one"
+                )
             else:
-                reason.append("no exact cross-reference and title evidence below conservative threshold")
+                reason.append("no exact cross-reference and no title candidate met the 0.72 review threshold")
+        listing_ids = {
+            "external_product_id": identifiers["external_product_id"],
+            "external_variant_id": identifiers["external_variant_id"],
+            "marketplace_item_id": identifiers["external_id"],
+        }
         proposals.append(MappingProposal(
             channel=channel, source_key=source_key, marketplace_title=title,
+            marketplace_order_item_identifiers=json.dumps([
+                {"order_id": _text(line["order_id"]), "order_line_id": _text(line["order_line_id"])}
+                for line in grouped_lines
+            ], separators=(",", ":")),
+            marketplace_sku=identifiers["sku"], marketplace_barcode=identifiers["barcode"],
+            marketplace_asin=identifiers["external_id"] if channel == "amazon" else "",
+            marketplace_listing_identifiers=json.dumps(listing_ids, separators=(",", ":")),
             marketplace_identifiers=json.dumps(identifiers, separators=(",", ":")),
             order_line_count=len(grouped_lines), unit_count=sum(max(int(line["units"] or 0), 0) for line in grouped_lines),
             order_count=len({_text(line["order_id"]) for line in grouped_lines}),
-            candidate_product_id=selected, candidate_product_name=products.get(selected, "") if selected else "",
-            evidence="; ".join(reason), confidence_rank=rank,
-            confidence_level=RANK_LABELS[rank], candidate_alternatives=json.dumps(alternatives, separators=(",", ":")),
+            candidate_product_id=selected,
+            candidate_product_barcode=product_barcodes.get(selected, [""])[0] if selected else "",
+            candidate_product_name=products.get(selected, "") if selected else "",
+            evidence="; ".join(reason), match_classification=classification,
+            candidate_alternatives=json.dumps(alternatives, separators=(",", ":")),
             projected_line_outcomes=json.dumps(dict(outcomes), separators=(",", ":")),
         ))
 
-    proposals.sort(key=lambda item: (item.channel, item.confidence_rank, -item.order_line_count, item.source_key))
+    proposals.sort(key=lambda item: (CLASSIFICATION_ORDER[item.match_classification], -item.order_line_count, -item.unit_count, item.channel, item.source_key))
     current = reconcile(connection, cutoff)
-    projected = Counter(row.fulfillment_category for row in current)
     current_by_key = {(row.channel, row.order_id, row.order_line_id): row for row in current}
-    for key, product_id in approved_line_candidates.items():
-        old = current_by_key.get(key)
-        line = next((item for item in lines if (item["channel"], _text(item["order_id"]), _text(item["order_line_id"])) == key), None)
-        if old and line:
-            projected[old.fulfillment_category] -= 1
-            projected[_project_category(connection, line, product_id)] += 1
+    line_by_key = {(item["channel"], _text(item["order_id"]), _text(item["order_line_id"])): item for item in lines}
+    projections = {}
+    for scenario, candidates in scenario_candidates.items():
+        projected = Counter(row.fulfillment_category for row in current)
+        for key, product_id in candidates.items():
+            old = current_by_key.get(key)
+            line = line_by_key.get(key)
+            if old and line:
+                projected[old.fulfillment_category] -= 1
+                projected[_project_category(connection, line, product_id)] += 1
+        projections[scenario] = {key: value for key, value in projected.items() if value}
+    group_counts = Counter(item.match_classification for item in proposals)
+    line_counts = Counter()
+    unit_counts = Counter()
+    for item in proposals:
+        line_counts[item.match_classification] += item.order_line_count
+        unit_counts[item.match_classification] += item.unit_count
     summary = {
         "unmatched_lines": len(lines), "group_count": len(proposals),
         "by_channel": dict(Counter(line["channel"] for line in lines)),
-        "groups_by_confidence": dict(Counter(item.confidence_level for item in proposals)),
-        "resolvable_lines_if_rank_1_to_3_approved": len(approved_line_candidates),
-        "resolvable_units_if_rank_1_to_3_approved": sum(int(line["units"] or 0) for line in lines if (line["channel"], _text(line["order_id"]), _text(line["order_line_id"])) in approved_line_candidates),
-        "projected_reconciliation_categories": {key: value for key, value in projected.items() if value},
+        "groups_by_classification": dict(group_counts),
+        "lines_by_classification": dict(line_counts),
+        "units_by_classification": dict(unit_counts),
+        "lines_matched_if_exact_approved": len(scenario_candidates["exact_only"]),
+        "additional_lines_if_strong_approved": len(scenario_candidates["exact_and_strong"]) - len(scenario_candidates["exact_only"]),
+        "remaining_manual_review_lines_after_exact_and_strong": len(lines) - len(scenario_candidates["exact_and_strong"]),
+        "remaining_manual_review_groups_after_exact_and_strong": sum(group_counts[key] for key in ("C_CANDIDATE", "D_NO_MATCH", "E_AMBIGUOUS")),
+        "projected_reconciliation_exact_only": projections["exact_only"],
+        "projected_reconciliation_exact_and_strong": projections["exact_and_strong"],
     }
     return proposals, summary

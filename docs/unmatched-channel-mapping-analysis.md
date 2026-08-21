@@ -6,18 +6,22 @@ identity. It inspects existing product barcodes, products, master catalog,
 channel listings, channel mapping rules, Amazon listings/links, and Walmart
 listings/links. It never writes a mapping.
 
-Ranking is deliberately conservative:
+Classification is deliberately conservative:
 
-1. A unique exact UPC/EAN/GTIN/barcode in `product_barcodes`.
-2. A unique existing channel rule, linked marketplace listing, or listing-to-
-   barcode cross-reference.
-3. A unique normalized-title candidate scoring at least 0.88 with at least a
-   0.08 lead over the next candidate. Human approval is always required.
-4. No viable unique candidate, including conflicting exact evidence.
+- `A_EXACT`: unique exact UPC/EAN/GTIN/barcode evidence with no conflicting
+  cross-reference.
+- `B_STRONG`: one unique existing channel rule, linked marketplace listing, or
+  listing-to-barcode cross-reference. Human approval is still required.
+- `C_CANDIDATE`: one plausible normalized-title candidate scoring at least 0.72
+  and clearly leading other plausible results. Human approval is required.
+- `D_NO_MATCH`: no exact/cross-reference evidence and no title result reaches
+  the candidate threshold.
+- `E_AMBIGUOUS`: conflicting identifiers or multiple plausible candidates.
 
-The projected reconciliation assumes a reviewer approves ranks 1–3. It does not
-install those mappings; each affected line is evaluated with the existing
-Storefront → Store Back Room → owed/replenishment policy in memory only.
+Separate projections model approval of `A_EXACT` only and `A_EXACT` plus
+`B_STRONG`. Candidate and ambiguous results remain manual work. No mappings are
+installed; each affected line is evaluated with the existing Storefront → Store
+Back Room → owed/replenishment policy in memory only.
 
 Example:
 
@@ -27,6 +31,9 @@ python analyze_unmatched_channel_lines.py --days 30 `
   --json reports/unmatched-mapping.json `
   --markdown reports/unmatched-mapping.md
 ```
+
+Use `--cutoff <ISO timestamp>` to reproduce a previously reported rolling
+cohort exactly; otherwise `--days` is measured from the current run time.
 
 CSV/JSON include alternatives and per-group projected outcomes. The Markdown
 file is the human approval queue. No apply option exists.

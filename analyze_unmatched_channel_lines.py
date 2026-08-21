@@ -17,15 +17,17 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--database", default="app/data/brookshouse_store.db")
     parser.add_argument("--days", type=int, default=30)
+    parser.add_argument("--cutoff", help="Optional fixed ISO timestamp for a reproducible review cohort")
     parser.add_argument("--csv")
     parser.add_argument("--json")
     parser.add_argument("--markdown")
     args = parser.parse_args()
     if not 1 <= args.days <= 180:
         parser.error("--days must be between 1 and 180")
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=args.days)).isoformat()
+    cutoff = args.cutoff or (datetime.now(timezone.utc) - timedelta(days=args.days)).isoformat()
     with connect_read_only(args.database) as connection:
         proposals, summary = analyze_unmatched(connection, cutoff)
+    summary["cutoff"] = cutoff
     rows = [proposal.as_dict() for proposal in proposals]
     if args.csv and rows:
         target = Path(args.csv)
@@ -45,11 +47,12 @@ def main() -> int:
             "# Unmatched channel mapping review", "",
             f"- Unmatched order lines: {summary['unmatched_lines']}",
             f"- Grouped marketplace identities: {summary['group_count']}",
-            f"- Lines resolvable if rank 1–3 proposals are approved: {summary['resolvable_lines_if_rank_1_to_3_approved']}",
-            f"- Units resolved: {summary['resolvable_units_if_rank_1_to_3_approved']}", "",
+            f"- Lines matched if EXACT proposals are approved: {summary['lines_matched_if_exact_approved']}",
+            f"- Additional lines matched if STRONG proposals are approved: {summary['additional_lines_if_strong_approved']}",
+            f"- Remaining manual-review lines: {summary['remaining_manual_review_lines_after_exact_and_strong']}", "",
         ]
         for channel in ("shopify", "walmart", "amazon"):
-            lines.extend([f"## {channel.title()}", "", "| Rank | Marketplace item | Candidate | Evidence | Lines | Units |", "|---:|---|---|---|---:|---:|"])
+            lines.extend([f"## {channel.title()}", "", "| Class | Marketplace item | Candidate | Evidence | Lines | Units |", "|---|---|---|---|---:|---:|"])
             for row in (item for item in rows if item["channel"] == channel):
                 identifiers = json.loads(row["marketplace_identifiers"])
                 identity = "; ".join(f"{key}={value}" for key, value in identifiers.items() if value) or row["source_key"]
@@ -58,11 +61,13 @@ def main() -> int:
                 safe_evidence = row["evidence"].replace("|", "\\|")
                 safe_identity = identity.replace("|", "\\|")
                 safe_candidate = candidate.replace("|", "\\|")
-                lines.append(f"| {row['confidence_rank']} | {safe_title}<br>{safe_identity} | {safe_candidate} | {safe_evidence} | {row['order_line_count']} | {row['unit_count']} |")
+                lines.append(f"| {row['match_classification']} | {safe_title}<br>{safe_identity} | {safe_candidate} | {safe_evidence} | {row['order_line_count']} | {row['unit_count']} |")
             lines.append("")
-        lines.extend(["## Projected reconciliation if rank 1–3 proposals are approved", ""])
-        for category, count in summary["projected_reconciliation_categories"].items():
-            lines.append(f"- {category}: {count}")
+        for label, key in (("EXACT only", "projected_reconciliation_exact_only"), ("EXACT + STRONG", "projected_reconciliation_exact_and_strong")):
+            lines.extend([f"## Projected reconciliation — {label}", ""])
+            for category, count in summary[key].items():
+                lines.append(f"- {category}: {count}")
+            lines.append("")
         target.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(json.dumps(summary, indent=2))
     return 0

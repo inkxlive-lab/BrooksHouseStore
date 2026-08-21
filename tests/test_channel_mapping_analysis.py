@@ -36,8 +36,8 @@ def fixture_copy(directory: Path) -> Path:
     copied = directory / "mapping-copy.db"
     with closing(sqlite3.connect(source)) as connection:
         connection.executescript(SCHEMA)
-        connection.executemany("INSERT INTO products VALUES(?,?,1)", [(10,"Exact Widget"),(11,"Rule Widget"),(12,"Blue Widget 12 Ounce"),(13,"Unrelated Item")])
-        connection.execute("INSERT INTO product_barcodes VALUES(1,10,'001234567890')")
+        connection.executemany("INSERT INTO products VALUES(?,?,1)", [(10,"Exact Widget"),(11,"Rule Widget"),(12,"Blue Widget 12 Ounce"),(13,"Unrelated Item"),(14,"First Duplicate"),(15,"Second Duplicate")])
+        connection.executemany("INSERT INTO product_barcodes VALUES(?,?,?)", [(1,10,'001234567890'),(2,14,'009999999999'),(3,15,'009999999999')])
         connection.execute("INSERT INTO master_catalog VALUES(1,'1234567890','001234567890','Exact Widget Catalog')")
         connection.execute("INSERT INTO inventory_locations VALUES(1,'BrooksHouse Storefront','store',1)")
         connection.executemany("INSERT INTO inventory VALUES(?,?,?,?,?,?)", [(1,10,1,'',20,0),(2,11,1,'',20,0),(3,12,1,'',20,0)])
@@ -50,6 +50,7 @@ def fixture_copy(directory: Path) -> Path:
             ('L3','O1','Rule Widget','','RULE','','P2','V2',None,1,1,'unmatched','',0),
             ('L4','O1','Blue Widget 12 Ounce','','','','P3','V3',None,1,1,'unmatched','',0),
             ('L5','O1','Mystery Product','','','','P4','V4',None,1,1,'unmatched','',0),
+            ('L6','O1','Duplicate Barcode Product','','','009999999999','P5','V5',None,1,1,'ambiguous','duplicate_barcode',0),
         ])
         connection.commit()
     shutil.copy2(source, copied)
@@ -70,13 +71,17 @@ class MappingAnalysisTests(unittest.TestCase):
             with self.assertRaises(sqlite3.OperationalError):
                 connection.execute("UPDATE products SET active=0")
         by_key = {proposal.source_key: proposal for proposal in proposals}
-        self.assertEqual(by_key["shopify:variant:v1"].confidence_rank, 1)
+        self.assertEqual(by_key["shopify:variant:v1"].match_classification, "A_EXACT")
         self.assertEqual(by_key["shopify:variant:v1"].order_line_count, 2)
-        self.assertEqual(by_key["shopify:variant:v2"].confidence_rank, 2)
-        self.assertEqual(by_key["shopify:variant:v3"].confidence_rank, 3)
-        self.assertEqual(by_key["shopify:variant:v4"].confidence_rank, 4)
-        self.assertEqual(summary["resolvable_lines_if_rank_1_to_3_approved"], 4)
-        self.assertEqual(summary["projected_reconciliation_categories"]["unmatched_or_ambiguous"], 1)
+        self.assertEqual(by_key["shopify:variant:v2"].match_classification, "B_STRONG")
+        self.assertEqual(by_key["shopify:variant:v3"].match_classification, "C_CANDIDATE")
+        self.assertEqual(by_key["shopify:variant:v4"].match_classification, "D_NO_MATCH")
+        self.assertEqual(by_key["shopify:variant:v5"].match_classification, "E_AMBIGUOUS")
+        self.assertEqual(summary["lines_matched_if_exact_approved"], 2)
+        self.assertEqual(summary["additional_lines_if_strong_approved"], 1)
+        self.assertEqual(summary["remaining_manual_review_lines_after_exact_and_strong"], 3)
+        self.assertEqual(summary["projected_reconciliation_exact_only"]["unmatched_or_ambiguous"], 4)
+        self.assertEqual(summary["projected_reconciliation_exact_and_strong"]["unmatched_or_ambiguous"], 3)
 
 
 if __name__ == "__main__":
