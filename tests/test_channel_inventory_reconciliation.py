@@ -24,9 +24,9 @@ def make_copy(tmp_path):
     copied = tmp_path / "fixture-copy.db"
     with closing(sqlite3.connect(source)) as connection:
         connection.executescript(SCHEMA)
-        connection.executemany("INSERT INTO inventory_locations VALUES(?,?,?,1)", [(1,"BrooksHouse Storefront","store"),(5,"Online Orders / Reserved","reserved"),(7,"Trailer 1","trailer")])
+        connection.executemany("INSERT INTO inventory_locations VALUES(?,?,?,1)", [(1,"BrooksHouse Storefront","store"),(2,"Store Back Room","storage"),(5,"Online Orders / Reserved","reserved"),(7,"Trailer 1","trailer")])
         connection.execute("INSERT INTO products VALUES(10,'Widget')")
-        connection.executemany("INSERT INTO inventory VALUES(?,?,?,?,?,?)", [(1,10,5,"",2,0),(2,10,1,"PICK-A",5,1),(3,10,7,"TOTE",100,0)])
+        connection.executemany("INSERT INTO inventory VALUES(?,?,?,?,?,?)", [(1,10,5,"",20,0),(2,10,1,"PICK-A",5,1),(3,10,7,"TOTE",100,0),(4,10,2,"BACK",6,0)])
         connection.execute("INSERT INTO product_pick_slots VALUES(10,1,'PICK-A','now')")
         connection.execute("INSERT INTO shopify_sales_orders VALUES('O1','2026-08-20',0,NULL,'paid','fulfilled',0,'now')")
         connection.execute("INSERT INTO shopify_sales_lines VALUES('L1','O1','V1',10,'SKU','123',3,3,'matched','barcode',0)")
@@ -43,13 +43,53 @@ class ReconciliationTests(unittest.TestCase):
     def tearDown(self):
         self.temporary_directory.cleanup()
 
-    def test_reserved_then_pick_slot_and_never_trailer(self):
+    def test_storefront_is_first_and_reserved_is_not_eligible(self):
         with connect_read_only(self.copied) as connection:
             row = reconcile(connection, "2026-01-01")[0]
         self.assertEqual(row.action, "deduct_preview")
         self.assertEqual(row.deduction_location, "BrooksHouse Storefront")
         self.assertEqual((row.quantity_before, row.quantity_after), (5, 2))
-        self.assertNotIn("Trailer", row.eligible_quantities)
+        self.assertNotIn("Online Orders / Reserved", row.eligible_quantities)
+        self.assertIn("Trailer 1", row.replenishment_sources)
+
+    def test_back_room_is_second_priority(self):
+        with closing(sqlite3.connect(self.copied)) as connection:
+            connection.execute("UPDATE inventory SET quantity_on_hand=2 WHERE inventory_id=2")
+            connection.commit()
+        with connect_read_only(self.copied) as connection:
+            row = reconcile(connection, "2026-01-01")[0]
+        self.assertEqual(row.fulfillment_category, "immediately_fulfillable_back_room")
+        self.assertEqual(row.deduction_location, "Store Back Room")
+
+    def test_unfulfilled_line_stays_owed_and_proposes_replenishment(self):
+        with closing(sqlite3.connect(self.copied)) as connection:
+            connection.execute("UPDATE inventory SET quantity_on_hand=0 WHERE location_id IN (1,2)")
+            connection.commit()
+        with connect_read_only(self.copied) as connection:
+            row = reconcile(connection, "2026-01-01")[0]
+        self.assertEqual(row.fulfillment_category, "reserved_owed_replenishment_available")
+        self.assertEqual(row.commitment_delta_required, 3)
+        self.assertEqual(row.proposed_work_item, "propose_replenishment_to_store_fulfillment")
+        self.assertEqual(row.deduction_location, "")
+
+    def test_companywide_unavailable_remains_owed(self):
+        with closing(sqlite3.connect(self.copied)) as connection:
+            connection.execute("UPDATE inventory SET quantity_on_hand=0 WHERE location_id IN (1,2,5)")
+            connection.execute("UPDATE inventory SET quantity_on_hand=2 WHERE location_id=7")
+            connection.commit()
+        with connect_read_only(self.copied) as connection:
+            row = reconcile(connection, "2026-01-01")[0]
+        self.assertEqual(row.fulfillment_category, "reserved_owed_unavailable_companywide")
+        self.assertEqual(row.commitment_delta_required, 3)
+
+    def test_staged_reserved_pool_requires_allocation_review(self):
+        with closing(sqlite3.connect(self.copied)) as connection:
+            connection.execute("UPDATE inventory SET quantity_on_hand=0 WHERE location_id IN (1,2,7)")
+            connection.commit()
+        with connect_read_only(self.copied) as connection:
+            row = reconcile(connection, "2026-01-01")[0]
+        self.assertEqual(row.fulfillment_category, "reserved_owed_staged_pool_review")
+        self.assertEqual(row.proposed_work_item, "reconcile_reserved_staging_allocation_ownership")
 
     def test_unique_ledger_marks_line_applied_on_copied_database(self):
         with closing(sqlite3.connect(self.copied)) as connection:

@@ -31,13 +31,30 @@ CREATE TABLE IF NOT EXISTS channel_inventory_ledger (
     applied_at TEXT NOT NULL,
     UNIQUE(channel_name, order_id, order_line_id, event_type)
 );
+
+CREATE TABLE IF NOT EXISTS channel_inventory_allocations (
+    allocation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel_name TEXT NOT NULL,
+    order_id TEXT NOT NULL,
+    order_line_id TEXT NOT NULL,
+    event_type TEXT NOT NULL DEFAULT 'commitment',
+    product_id INTEGER NOT NULL,
+    quantity_committed INTEGER NOT NULL,
+    quantity_staged INTEGER NOT NULL DEFAULT 0,
+    quantity_unlocated INTEGER NOT NULL,
+    staged_inventory_id INTEGER,
+    source_updated_at TEXT,
+    updated_at TEXT NOT NULL,
+    UNIQUE(channel_name, order_id, order_line_id, event_type)
+);
 """
 
-EXCLUDED_LOCATION_TYPES = {
-    "catalog", "container", "hold", "mobile_inventory", "mobile_storage",
-    "reserved", "storage", "trailer", "warehouse",
-}
+STOREFRONT_NAME = "brookshouse storefront"
+BACK_ROOM_NAME = "store back room"
 RESERVED_LOCATION_NAME = "online orders / reserved"
+REPLENISHMENT_TYPES = {
+    "container", "mobile_inventory", "mobile_storage", "storage", "trailer", "warehouse",
+}
 
 
 @dataclass(frozen=True)
@@ -49,6 +66,10 @@ class ReconciliationRow:
     product_id: int | None
     quantity_sold: int
     eligible_quantities: str
+    replenishment_sources: str
+    staged_reserved_quantities: str
+    existing_commitment_quantity: int
+    commitment_delta_required: int
     deduction_inventory_id: int | None
     deduction_location: str
     deduction_container: str
@@ -58,7 +79,9 @@ class ReconciliationRow:
     match_status: str
     match_confidence: str
     lifecycle_event: str
+    fulfillment_category: str
     action: str
+    proposed_work_item: str
     review_reason: str
 
     def as_dict(self) -> dict:
@@ -181,42 +204,81 @@ def _already_applied(connection: sqlite3.Connection, row: dict) -> bool:
     ).fetchone() is not None
 
 
-def _eligible_inventory(connection: sqlite3.Connection, product_id: int) -> list[dict]:
-    pick_slot = None
-    if _table_exists(connection, "product_pick_slots"):
-        pick_slot = connection.execute(
-            "SELECT location_id,container_id FROM product_pick_slots WHERE product_id=?",
-            (product_id,),
+def _existing_commitment(connection: sqlite3.Connection, row: dict) -> int:
+    if row["channel"] == "amazon" and _table_exists(connection, "amazon_order_inventory_sync"):
+        found = connection.execute(
+            """SELECT quantity_added FROM amazon_order_inventory_sync
+                WHERE amazon_order_id=? AND order_item_id=?""",
+            (_text(row["order_id"]), _text(row["order_line_id"])),
         ).fetchone()
+        return max(int(found[0] or 0), 0) if found else 0
+    if row["channel"] == "walmart" and _table_exists(connection, "walmart_order_inventory_sync"):
+        found = connection.execute(
+            """SELECT quantity_added FROM walmart_order_inventory_sync
+                WHERE purchase_order_id=? AND line_number=?""",
+            (_text(row["order_id"]), _text(row["marketplace_id"])),
+        ).fetchone()
+        return max(int(found[0] or 0), 0) if found else 0
+    if _table_exists(connection, "channel_inventory_allocations"):
+        found = connection.execute(
+            """SELECT quantity_committed FROM channel_inventory_allocations
+                WHERE channel_name=? AND order_id=? AND order_line_id=?
+                  AND event_type='commitment'""",
+            (row["channel"], _text(row["order_id"]), _text(row["order_line_id"])),
+        ).fetchone()
+        return max(int(found[0] or 0), 0) if found else 0
+    return 0
+
+
+def _inventory_by_location(connection: sqlite3.Connection, product_id: int) -> tuple[list[dict], list[dict], list[dict]]:
     rows = connection.execute(
         """SELECT i.inventory_id,i.location_id,l.location_name,l.location_type,
                   i.container_id,i.quantity_on_hand,i.quantity_reserved,l.active
              FROM inventory i JOIN inventory_locations l ON l.location_id=i.location_id
             WHERE i.product_id=? ORDER BY i.inventory_id""", (product_id,)
     ).fetchall()
-    eligible = []
+    grouped: dict[int, dict] = {}
     for item in rows:
         name = _text(item["location_name"])
         kind = _text(item["location_type"]).casefold()
         container = _text(item["container_id"])
-        priority = None
-        if name.casefold() == RESERVED_LOCATION_NAME:
-            priority = 10
-        elif pick_slot and int(item["location_id"]) == int(pick_slot["location_id"]) and container.casefold() == _text(pick_slot["container_id"]).casefold() and kind not in {"trailer", "mobile_inventory", "mobile_storage", "hold", "catalog"}:
-            priority = 20
-        elif kind == "store" and int(item["active"] or 0) == 1:
-            priority = 30
-        if priority is None or kind in EXCLUDED_LOCATION_TYPES and name.casefold() != RESERVED_LOCATION_NAME:
+        if int(item["active"] or 0) != 1:
             continue
         on_hand = int(item["quantity_on_hand"] or 0)
         reserved = int(item["quantity_reserved"] or 0)
-        available = on_hand if name.casefold() == RESERVED_LOCATION_NAME else max(on_hand - reserved, 0)
-        eligible.append({
-            "inventory_id": int(item["inventory_id"]), "location_id": int(item["location_id"]),
-            "location": name, "container": container, "on_hand": on_hand,
-            "reserved": reserved, "available": available, "priority": priority,
+        available = max(on_hand - reserved, 0)
+        location_id = int(item["location_id"])
+        group = grouped.setdefault(location_id, {
+            "location_id": location_id, "location": name, "location_type": kind,
+            "inventory_ids": [], "containers": [], "on_hand": 0, "reserved": 0,
+            "available": 0,
         })
-    return sorted(eligible, key=lambda item: (item["priority"], item["inventory_id"]))
+        group["inventory_ids"].append(int(item["inventory_id"]))
+        if container:
+            group["containers"].append(container)
+        group["on_hand"] += on_hand
+        group["reserved"] += reserved
+        group["available"] += available
+    eligible = []
+    replenishment = []
+    staged_reserved = []
+    for group in grouped.values():
+        name = group["location"].casefold()
+        if name == STOREFRONT_NAME:
+            group["priority"] = 10
+            eligible.append(group)
+        elif name == BACK_ROOM_NAME:
+            group["priority"] = 20
+            eligible.append(group)
+        elif name == RESERVED_LOCATION_NAME:
+            staged_reserved.append(group)
+        elif name != RESERVED_LOCATION_NAME and group["location_type"] in REPLENISHMENT_TYPES:
+            replenishment.append(group)
+    return (
+        sorted(eligible, key=lambda item: item["priority"]),
+        sorted(replenishment, key=lambda item: (item["location"].casefold(), item["location_id"])),
+        staged_reserved,
+    )
 
 
 def reconcile(connection: sqlite3.Connection, cutoff: str) -> list[ReconciliationRow]:
@@ -226,29 +288,53 @@ def reconcile(connection: sqlite3.Connection, cutoff: str) -> list[Reconciliatio
         lifecycle, lifecycle_reason = _lifecycle(source)
         match_status, confidence, match_reason = _match(source)
         applied = _already_applied(connection, source)
-        eligible = _eligible_inventory(connection, int(source["product_id"])) if source.get("product_id") is not None else []
+        eligible, replenishment, staged_reserved = _inventory_by_location(connection, int(source["product_id"])) if source.get("product_id") is not None else ([], [], [])
         chosen = next((item for item in eligible if item["available"] >= quantity and quantity > 0), None)
+        existing_commitment = _existing_commitment(connection, source)
+        commitment_delta = max(quantity - existing_commitment, 0) if lifecycle == "sale" and match_status == "matched" and not applied else 0
+        reserve_available = sum(item["available"] for item in replenishment)
+        staged_physical = sum(item["on_hand"] for item in staged_reserved)
         reasons = [reason for reason in (lifecycle_reason, match_reason) if reason]
         if applied:
             reasons.append("order line is already recorded as applied")
         if quantity <= 0:
             reasons.append("sale quantity is zero")
-        if match_status == "matched" and lifecycle == "sale" and not applied and quantity > 0 and chosen is None:
-            reasons.append("no single eligible sellable/pick location has sufficient stock")
-        action = "deduct_preview" if not reasons and chosen else "review"
+        category = "review_lifecycle"
+        work_item = ""
+        if match_status != "matched":
+            category = "unmatched_or_ambiguous"
+        elif lifecycle == "sale" and not applied and quantity > 0 and chosen:
+            category = "immediately_fulfillable_storefront" if chosen["location"].casefold() == STOREFRONT_NAME else "immediately_fulfillable_back_room"
+        elif lifecycle == "sale" and not applied and quantity > 0:
+            reasons.append("Storefront and Store Back Room cannot satisfy the complete line")
+            if reserve_available >= quantity:
+                category = "reserved_owed_replenishment_available"
+                work_item = "propose_replenishment_to_store_fulfillment"
+            elif staged_physical >= quantity:
+                category = "reserved_owed_staged_pool_review"
+                work_item = "reconcile_reserved_staging_allocation_ownership"
+            else:
+                category = "reserved_owed_unavailable_companywide"
+                work_item = "investigate_unlocated_online_order_inventory"
+        action = "deduct_preview" if category.startswith("immediately_fulfillable") and not reasons else "review"
         output.append(ReconciliationRow(
             channel=source["channel"], order_id=_text(source["order_id"]),
             order_line_id=_text(source["order_line_id"]),
             identifier=_identifier(("sku", source.get("sku")), ("barcode", source.get("barcode")), ("marketplace_id", source.get("marketplace_id"))),
             product_id=int(source["product_id"]) if source.get("product_id") is not None else None,
             quantity_sold=quantity, eligible_quantities=json.dumps(eligible, separators=(",", ":")),
-            deduction_inventory_id=chosen["inventory_id"] if chosen else None,
+            replenishment_sources=json.dumps(replenishment, separators=(",", ":")),
+            staged_reserved_quantities=json.dumps(staged_reserved, separators=(",", ":")),
+            existing_commitment_quantity=existing_commitment,
+            commitment_delta_required=commitment_delta,
+            deduction_inventory_id=chosen["inventory_ids"][0] if chosen and len(chosen["inventory_ids"]) == 1 else None,
             deduction_location=chosen["location"] if chosen else "",
-            deduction_container=chosen["container"] if chosen else "",
+            deduction_container=",".join(chosen["containers"]) if chosen else "",
             quantity_before=chosen["on_hand"] if chosen else None,
             quantity_after=chosen["on_hand"] - quantity if chosen else None,
             already_applied=applied, match_status=match_status,
             match_confidence=confidence, lifecycle_event=lifecycle, action=action,
+            fulfillment_category=category, proposed_work_item=work_item,
             review_reason="; ".join(reasons),
         ))
     return output

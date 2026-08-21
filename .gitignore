@@ -77,6 +77,7 @@ brookshouse-server-error.log
 
 # Backups, operational imports, and generated exports
 backups/
+codex-backups/
 exports/
 imports/
 labels/

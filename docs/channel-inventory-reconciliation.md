@@ -12,15 +12,20 @@ python reconcile_channel_inventory.py --days 30 --csv reports/channel-inventory.
 
 ## Proposed location priority
 
-1. `Online Orders / Reserved`, when that product has enough quantity there.
-2. The product's exact `product_pick_slots` location/container, if it is not a
-   trailer, mobile, hold, or catalog location.
-3. An active `store` location row with enough unreserved quantity.
+1. `BrooksHouse Storefront`.
+2. `Store Back Room`.
+3. Stop and review while retaining the order as committed/owed.
 
-One location must cover the full line. The preview does not split a line. It
-never falls through to back room, warehouse, storage container, trailer,
-mobile inventory, hold, damaged/returns, or catalog inventory merely because
-stock exists there.
+One eligible physical location must cover the full line. Inventory rows within
+that location are aggregated, but the preview never combines Storefront and
+Back Room to satisfy one line. `Online Orders / Reserved` is allocated/staged
+inventory and is not a general source for a new sale.
+
+The workflow never automatically deducts Warehouse, Trailer, Trailer 1/2/3,
+Storage Container, On-the-Road Trailer, Damaged / Returns, catalog, hold, or
+review inventory. Available warehouse/trailer/container/mobile/storage stock is
+reported separately as a potential replenishment source and produces a proposed
+replenishment work item; it remains untouched.
 
 ## Review and lifecycle rules
 
@@ -29,10 +34,42 @@ lines, Amazon-fulfilled orders, cancellations, refunds, returns, and restock
 signals are review items. A refund/return never proposes a positive inventory
 change; physical restock confirmation must be a separate future event.
 
+## Commitment, staging, and owed inventory
+
+Every uniquely matched active sale needs a line-level commitment even when no
+eligible physical source can fulfill it. The proposed
+`channel_inventory_allocations` record stores `quantity_committed`,
+`quantity_staged`, and `quantity_unlocated`, keyed by channel/order/line/event.
+This represents owed units without inventing physical stock.
+
+`inventory.quantity_on_hand` in `Online Orders / Reserved` means merchandise is
+physically present there. `inventory.quantity_reserved` may reserve those staged
+physical units once the allocation points to that inventory row. Unlocated units
+remain only in the allocation record and a work item.
+
+- Found and staged: transfer the physical units with normal audited inventory
+  transactions, attach the allocation to the staged row, and move units from
+  `quantity_unlocated` to `quantity_staged`; fulfillment later consumes the
+  staged units once.
+- Cancelled before fulfillment: release physical `quantity_reserved`, close the
+  commitment with a distinct cancellation event, and cancel its open work item.
+- Quantity changed: atomically adjust the same commitment to the latest source
+  quantity; release excess reservations or create an incremental owed amount.
+- Returned/restocked: a refund alone changes nothing. After physical inspection,
+  use a separate `restock` event and audited receiving transaction into the
+  confirmed location.
+- Stock never found: keep the allocation visible as unlocated until a human
+  records cancellation, substitution, external procurement, or an approved
+  shortage/write-off resolution. Never fabricate or silently clear inventory.
+
+Existing physical quantity in `Online Orders / Reserved` without line-level
+allocation ownership is reported as a staged-pool review. It is neither offered
+to a new order nor counted as genuinely unavailable company-wide.
+
 ## Future idempotent apply design (not enabled)
 
-The module exposes reviewed `channel_inventory_ledger` DDL for a later approved
-migration. The unique key is `(channel_name, order_id, order_line_id, event_type)`.
+The module exposes reviewed ledger/allocation DDL for a later approved migration.
+Both use `(channel_name, order_id, order_line_id, event_type)` uniqueness.
 A future apply path must use `BEGIN IMMEDIATE`, re-check that unique key, re-check
 the source line and chosen inventory row, insert the negative inventory
 transaction, update inventory, and insert the ledger record in one transaction.

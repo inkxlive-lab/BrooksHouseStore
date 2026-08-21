@@ -36,7 +36,16 @@ def main() -> int:
         target = Path(args.json)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(rows, indent=2), encoding="utf-8")
-    summary = {"lines": len(rows), "deduct_preview": sum(r["action"] == "deduct_preview" for r in rows), "review": sum(r["action"] == "review" for r in rows)}
+    categories = {}
+    for row in rows:
+        category = row["fulfillment_category"]
+        categories[category] = categories.get(category, 0) + 1
+    summary = {
+        "lines": len(rows),
+        "deduct_preview": sum(r["action"] == "deduct_preview" for r in rows),
+        "review": sum(r["action"] == "review" for r in rows),
+        "categories": categories,
+    }
     print(json.dumps(summary, indent=2))
     return 0
 
