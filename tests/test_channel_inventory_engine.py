@@ -24,9 +24,13 @@ CREATE TABLE inventory_transactions(transaction_id INTEGER PRIMARY KEY AUTOINCRE
 CREATE TABLE shopify_sales_orders(shopify_order_id TEXT PRIMARY KEY,processed_at TEXT,test_order INTEGER,cancelled_at TEXT,fulfillment_status TEXT);
 CREATE TABLE shopify_sales_lines(shopify_line_id TEXT PRIMARY KEY,shopify_order_id TEXT,product_id INTEGER,quantity INTEGER,current_quantity INTEGER,sku TEXT,title TEXT,updated_at TEXT,match_status TEXT);
 CREATE TABLE amazon_order_history(amazon_order_id TEXT PRIMARY KEY,created_time TEXT,fulfillment_status TEXT);
-CREATE TABLE amazon_order_item_history(amazon_order_id TEXT,order_item_id TEXT,product_id INTEGER,quantity_ordered INTEGER,seller_sku TEXT,title TEXT,synced_at TEXT);
+CREATE TABLE amazon_order_item_history(amazon_order_id TEXT,order_item_id TEXT,product_id INTEGER,quantity_ordered INTEGER,seller_sku TEXT,asin TEXT,title TEXT,synced_at TEXT);
+CREATE TABLE amazon_listings(amazon_listing_id INTEGER PRIMARY KEY,seller_sku TEXT,asin TEXT,approval_status TEXT,inventory_status TEXT);
+CREATE TABLE amazon_product_links(amazon_product_link_id INTEGER PRIMARY KEY,amazon_listing_id INTEGER,product_id INTEGER,match_status TEXT);
 CREATE TABLE walmart_orders(purchase_order_id TEXT PRIMARY KEY,order_date TEXT,walmart_status TEXT,synced_at TEXT);
 CREATE TABLE walmart_order_lines(order_line_id INTEGER PRIMARY KEY,purchase_order_id TEXT,product_id INTEGER,quantity INTEGER,sku TEXT,item_name TEXT,line_status TEXT);
+CREATE TABLE walmart_listings(walmart_listing_id INTEGER PRIMARY KEY,seller_sku TEXT);
+CREATE TABLE walmart_product_links(walmart_product_link_id INTEGER PRIMARY KEY,walmart_listing_id INTEGER,product_id INTEGER,match_status TEXT);
 CREATE TABLE operations_work_queue(task_id INTEGER PRIMARY KEY AUTOINCREMENT,task_key TEXT UNIQUE,task_type TEXT,title TEXT,details TEXT,priority TEXT,status TEXT,source_channel TEXT,source_reference TEXT,product_id INTEGER,location_id INTEGER,requested_quantity INTEGER,created_at TEXT,updated_at TEXT,source_location_id INTEGER,source_container_id TEXT,destination_location_id INTEGER,destination_container_id TEXT);
 """
 
@@ -76,11 +80,15 @@ class ChannelInventoryEngineTests(unittest.TestCase):
         with closing(sqlite3.connect(db)) as connection:
             if channel == "amazon":
                 connection.execute("INSERT INTO amazon_order_history VALUES('A1','2026-08-20','Unfulfilled')")
-                connection.execute("INSERT INTO amazon_order_item_history VALUES('A1','AL1',10,2,'SKU','Widget','v1')")
+                connection.execute("INSERT INTO amazon_order_item_history VALUES('A1','AL1',10,2,'SKU','ASIN1','Widget','v1')")
+                connection.execute("INSERT INTO amazon_listings VALUES(1,'SKU','ASIN1','approved','active')")
+                connection.execute("INSERT INTO amazon_product_links VALUES(1,1,10,'linked')")
                 key = ("amazon","A1","AL1")
             else:
                 connection.execute("INSERT INTO walmart_orders VALUES('W1','2026-08-20','Created','v1')")
                 connection.execute("INSERT INTO walmart_order_lines VALUES(101,'W1',10,2,'SKU','Widget','Created')")
+                connection.execute("INSERT INTO walmart_listings VALUES(1,'SKU')")
+                connection.execute("INSERT INTO walmart_product_links VALUES(1,1,10,'linked')")
                 key = ("walmart","W1","101")
             connection.commit()
         return key
@@ -98,6 +106,42 @@ class ChannelInventoryEngineTests(unittest.TestCase):
                 self.assertEqual((first["status"],second["status"]),("deducted","already_applied"))
                 self.assertEqual((quantities[1],tx,ledger,tuple(allocation)),
                                  (3,1,1,("deducted",2,2,0,0)))
+
+    def test_amazon_and_walmart_unsafe_authoritative_mappings_are_review_only(self):
+        cases = (("missing", None), ("unlinked", "unlinked"), ("disabled", "disabled"), ("ambiguous", "ambiguous"),
+                 ("conflicting", "linked"), ("disabled_product", "linked"))
+        for channel in ("amazon","walmart"):
+            for state, status in cases:
+                with self.subTest(channel=channel,state=state):
+                    root = self.root / f"{channel}-{state}"; root.mkdir()
+                    db = make_copy(root,storefront=5)
+                    key = self._add_channel_line(db,channel)
+                    with closing(sqlite3.connect(db)) as connection:
+                        table = f"{channel}_product_links"
+                        if state == "missing":
+                            connection.execute(f"DELETE FROM {table}")
+                        elif state == "conflicting":
+                            connection.execute("INSERT INTO products VALUES(11,'Other',1,1)")
+                            connection.execute(f"UPDATE {table} SET product_id=11,match_status=?",(status,))
+                        elif state == "disabled_product":
+                            connection.execute("UPDATE products SET active=0 WHERE product_id=10")
+                        else:
+                            connection.execute(f"UPDATE {table} SET match_status=?",(status,))
+                        connection.commit()
+                    before = inventory_state(db)
+                    result = apply_sale_to_copy(db,*key)
+                    self.assertEqual(result["status"],"review")
+                    self.assertEqual(inventory_state(db),before)
+
+    def test_disabled_amazon_listing_is_review_only(self):
+        db = make_copy(self.root,storefront=5)
+        key = self._add_channel_line(db,"amazon")
+        with closing(sqlite3.connect(db)) as connection:
+            connection.execute("UPDATE amazon_listings SET approval_status='rejected'")
+            connection.commit()
+        before = inventory_state(db)
+        self.assertEqual(apply_sale_to_copy(db,*key)["status"],"review")
+        self.assertEqual(inventory_state(db),before)
 
     def test_storefront_complete_fulfillment(self):
         db = make_copy(self.root, storefront=5, back_room=10)
@@ -177,6 +221,38 @@ class ChannelInventoryEngineTests(unittest.TestCase):
         self.assertEqual(physical,{1:0,5:0})
         self.assertEqual(ownership,[(1,3),(5,2)])
 
+    def test_location_policy_is_explicit_ordered_and_allowlisted(self):
+        db = make_copy(self.root,quantity=5,storefront=3,back_room=3,reserve=50,staged=50)
+        single = apply_sale_to_copy(db,"shopify","O1","L1")
+        self.assertEqual(single["status"],"replenishment_needed")
+        with closing(sqlite3.connect(db)) as connection:
+            connection.execute("DELETE FROM channel_inventory_ledger")
+            connection.execute("DELETE FROM channel_inventory_allocations")
+            connection.execute("DELETE FROM operations_work_queue")
+            connection.commit()
+        multi = apply_sale_to_copy(db,"shopify","O1","L1",allocation_policy="ordered_multi_location",
+                                   eligible_locations=("BrooksHouse Storefront","Store Back Room"))
+        with closing(sqlite3.connect(db)) as connection:
+            quantities = dict(connection.execute("SELECT inventory_id,quantity_on_hand FROM inventory"))
+            metadata = connection.execute("SELECT metadata_json FROM channel_inventory_ledger").fetchone()[0]
+        self.assertEqual(multi["status"],"deducted")
+        self.assertEqual((quantities[1],quantities[2],quantities[3],quantities[4]),(0,1,50,50))
+        self.assertIn('"allocation_policy":"ordered_multi_location"',metadata)
+        self.assertEqual(multi["plan"]["location_name"],"BrooksHouse Storefront -> Store Back Room")
+
+    def test_location_allowlist_never_uses_unapproved_locations(self):
+        db = make_copy(self.root,quantity=2,storefront=0,back_room=0,reserve=50,staged=50)
+        result = apply_sale_to_copy(db,"shopify","O1","L1",allocation_policy="ordered_multi_location",
+                                    eligible_locations=("BrooksHouse Storefront","Store Back Room"))
+        quantities = inventory_state(db)[0]
+        self.assertEqual(result["status"],"replenishment_needed")
+        self.assertEqual((quantities[3],quantities[4]),(50,50))
+        rejected_root = self.root / "unapproved-location"; rejected_root.mkdir()
+        rejected_db = make_copy(rejected_root,quantity=2,storefront=0,back_room=0,reserve=50)
+        with self.assertRaises(ValueError):
+            apply_sale_to_copy(rejected_db,"shopify","O1","L1",allocation_policy="ordered_multi_location",
+                               eligible_locations=("Warehouse",))
+
     def test_cancellation_before_fulfillment_releases_owed(self):
         db = make_copy(self.root,storefront=0,back_room=0,reserve=0)
         apply_sale_to_copy(db,"shopify","O1","L1")
@@ -215,6 +291,19 @@ class ChannelInventoryEngineTests(unittest.TestCase):
         quantities, tx, ledger, _ = inventory_state(db)
         self.assertEqual((first["status"],second["status"]),("physically_restocked","already_applied"))
         self.assertEqual((quantities[1],tx,ledger),(5,2,2))
+
+    def test_cumulative_restock_is_capped_at_legitimately_returnable_quantity(self):
+        db = make_copy(self.root,quantity=5,storefront=5)
+        apply_sale_to_copy(db,"shopify","O1","L1")
+        first = confirm_restock_to_copy(db,"shopify","O1","L1",1,2,"return-1")
+        second = confirm_restock_to_copy(db,"shopify","O1","L1",1,2,"return-2")
+        third = confirm_restock_to_copy(db,"shopify","O1","L1",1,2,"return-3")
+        duplicate = confirm_restock_to_copy(db,"shopify","O1","L1",1,2,"return-3")
+        blocked = confirm_restock_to_copy(db,"shopify","O1","L1",1,1,"return-4")
+        self.assertEqual((first["quantity"],second["quantity"],third["quantity"]),(2,2,1))
+        self.assertEqual(third["status"],"partially_restocked_capped")
+        self.assertEqual((duplicate["status"],blocked["status"]),("already_applied","over_restock_blocked"))
+        self.assertEqual(inventory_state(db)[0][1],5)
 
     def test_unmatched_product_is_review_only(self):
         db = make_copy(self.root,mapped=False)

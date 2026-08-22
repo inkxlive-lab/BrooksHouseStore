@@ -14,11 +14,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from app.services.channel_inventory_mapping import validate_mapping
+
 
 PRODUCTION_DB = (Path(__file__).resolve().parents[1] / "data" / "brookshouse_store.db").resolve()
 STOREFRONT = "BrooksHouse Storefront"
 BACK_ROOM = "Store Back Room"
 RESERVED = "Online Orders / Reserved"
+ALLOCATION_POLICIES = {"single_location_only", "ordered_multi_location"}
+DEFAULT_ELIGIBLE_LOCATIONS = (STOREFRONT, BACK_ROOM)
 RESERVE_TYPES = {"warehouse", "trailer", "container", "mobile_inventory", "mobile_storage", "storage"}
 
 COPY_SCHEMA = """
@@ -36,7 +40,11 @@ CREATE TABLE channel_inventory_ledger (
     allocation_id INTEGER,
     metadata_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL,
-    UNIQUE(channel_name, order_id, order_line_id, event_type)
+    CHECK(channel_name IN ('shopify','amazon','walmart')),
+    CHECK(ordered_quantity>=0), CHECK(length(trim(event_type))>0),
+    UNIQUE(channel_name, order_id, order_line_id, event_type),
+    FOREIGN KEY(product_id) REFERENCES products(product_id),
+    FOREIGN KEY(allocation_id) REFERENCES channel_inventory_allocations(allocation_id)
 );
 CREATE TABLE channel_inventory_allocations (
     allocation_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -53,7 +61,11 @@ CREATE TABLE channel_inventory_allocations (
     source_version TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    UNIQUE(channel_name, order_id, order_line_id)
+    CHECK(channel_name IN ('shopify','amazon','walmart')),
+    CHECK(ordered_quantity>=0 AND deducted_quantity>=0 AND staged_quantity>=0 AND unlocated_quantity>=0 AND restored_quantity>=0),
+    CHECK(status IN ('deducted','replenishment_needed','unlocated','staged','cancelled')),
+    UNIQUE(channel_name, order_id, order_line_id),
+    FOREIGN KEY(product_id) REFERENCES products(product_id)
 );
 CREATE TABLE channel_inventory_allocation_inventory (
     allocation_inventory_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -62,14 +74,20 @@ CREATE TABLE channel_inventory_allocation_inventory (
     deducted_quantity INTEGER NOT NULL DEFAULT 0,
     staged_quantity INTEGER NOT NULL DEFAULT 0,
     reserved_quantity INTEGER NOT NULL DEFAULT 0,
-    UNIQUE(allocation_id, inventory_id)
+    CHECK(deducted_quantity>=0 AND staged_quantity>=0 AND reserved_quantity>=0),
+    UNIQUE(allocation_id, inventory_id),
+    FOREIGN KEY(allocation_id) REFERENCES channel_inventory_allocations(allocation_id),
+    FOREIGN KEY(inventory_id) REFERENCES inventory(inventory_id)
 );
 CREATE TABLE channel_inventory_event_transactions (
     event_id INTEGER NOT NULL,
     inventory_transaction_id INTEGER NOT NULL UNIQUE,
     inventory_id INTEGER NOT NULL,
     quantity_change INTEGER NOT NULL,
-    PRIMARY KEY(event_id, inventory_transaction_id)
+    PRIMARY KEY(event_id, inventory_transaction_id),
+    FOREIGN KEY(event_id) REFERENCES channel_inventory_ledger(event_id),
+    FOREIGN KEY(inventory_transaction_id) REFERENCES inventory_transactions(transaction_id),
+    FOREIGN KEY(inventory_id) REFERENCES inventory(inventory_id)
 );
 """
 
@@ -90,6 +108,7 @@ class SourceLine:
     product_id: int | None
     quantity: int
     sku: str
+    asin: str
     title: str
     status: str
     source_version: str
@@ -109,6 +128,8 @@ class EnginePlan:
     inventory_deductions: tuple[tuple[int, int], ...]
     replenishment_candidates: tuple[dict, ...]
     reason: str
+    allocation_policy: str = "single_location_only"
+    eligible_locations: tuple[str, ...] = DEFAULT_ELIGIBLE_LOCATIONS
 
     def as_dict(self) -> dict:
         result = asdict(self)
@@ -174,7 +195,7 @@ def load_source_line(connection: sqlite3.Connection, channel: str, order_id: str
     channel = channel.casefold()
     if channel == "shopify":
         row = connection.execute(
-            """SELECT l.product_id,l.quantity,l.current_quantity,l.sku,l.title,l.match_status,
+            """SELECT l.product_id,l.quantity,l.current_quantity,l.sku,'' asin,l.title,l.match_status,
                       o.cancelled_at,o.fulfillment_status,
                       COALESCE(l.updated_at,'') || ':' || COALESCE(o.cancelled_at,'') || ':' ||
                       COALESCE(o.fulfillment_status,'') source_version
@@ -188,7 +209,7 @@ def load_source_line(connection: sqlite3.Connection, channel: str, order_id: str
         mapping_status = _text(row["match_status"])
     elif channel == "amazon":
         row = connection.execute(
-            """SELECT i.product_id,i.quantity_ordered quantity,i.seller_sku sku,i.title,
+            """SELECT i.product_id,i.quantity_ordered quantity,i.seller_sku sku,i.asin,i.title,
                       o.fulfillment_status status,i.synced_at source_version
                  FROM amazon_order_item_history i JOIN amazon_order_history o ON o.amazon_order_id=i.amazon_order_id
                 WHERE i.amazon_order_id=? AND i.order_item_id=?""", (order_id, order_line_id)
@@ -200,7 +221,7 @@ def load_source_line(connection: sqlite3.Connection, channel: str, order_id: str
         mapping_status = "matched" if row["product_id"] is not None else "unmatched"
     elif channel == "walmart":
         row = connection.execute(
-            """SELECT l.product_id,l.quantity,l.sku,l.item_name title,
+            """SELECT l.product_id,l.quantity,l.sku,'' asin,l.item_name title,
                       COALESCE(NULLIF(l.line_status,''),o.walmart_status) status,o.synced_at source_version
                  FROM walmart_order_lines l JOIN walmart_orders o ON o.purchase_order_id=l.purchase_order_id
                 WHERE l.purchase_order_id=? AND CAST(l.order_line_id AS TEXT)=?""", (order_id, str(order_line_id))
@@ -215,7 +236,7 @@ def load_source_line(connection: sqlite3.Connection, channel: str, order_id: str
     return SourceLine(
         channel=channel, order_id=str(order_id), order_line_id=str(order_line_id),
         product_id=int(row["product_id"]) if row["product_id"] is not None else None,
-        quantity=quantity, sku=_text(row["sku"]), title=_text(row["title"]),
+        quantity=quantity, sku=_text(row["sku"]), asin=_text(row["asin"]), title=_text(row["title"]),
         status=status, source_version=_text(row["source_version"]), mapping_status=mapping_status,
     )
 
@@ -265,6 +286,42 @@ def _deduction_plan(rows: list[sqlite3.Row], quantity: int) -> tuple[tuple[int, 
     return tuple(result)
 
 
+def _policy_deduction_plan(connection: sqlite3.Connection, product_id: int, quantity: int,
+                           allocation_policy: str, eligible_locations: tuple[str, ...]) -> tuple[tuple[int, int], ...]:
+    if allocation_policy not in ALLOCATION_POLICIES:
+        raise ValueError(f"Unsupported allocation policy: {allocation_policy}")
+    if not eligible_locations:
+        raise ValueError("At least one eligible location is required")
+    unapproved = [name for name in eligible_locations if name not in DEFAULT_ELIGIBLE_LOCATIONS]
+    if unapproved:
+        raise ValueError(f"Unapproved marketplace fulfillment locations: {', '.join(unapproved)}")
+    if allocation_policy == "single_location_only":
+        for location in eligible_locations:
+            plan = _deduction_plan(_location_rows(connection, product_id, location), quantity)
+            if plan:
+                return plan
+        return ()
+    remaining = quantity
+    selected = []
+    for location in eligible_locations:
+        for inventory_id, available in _deduction_plan_partial(_location_rows(connection, product_id, location), remaining):
+            selected.append((inventory_id, available)); remaining -= available
+        if remaining == 0:
+            return tuple(selected)
+    return ()
+
+
+def _deduction_plan_partial(rows: list[sqlite3.Row], quantity: int) -> tuple[tuple[int, int], ...]:
+    remaining, result = quantity, []
+    for row in rows:
+        take = min(remaining, max(int(row["quantity_on_hand"] or 0) - int(row["quantity_reserved"] or 0), 0))
+        if take:
+            result.append((int(row["inventory_id"]), take)); remaining -= take
+        if remaining == 0:
+            break
+    return tuple(result)
+
+
 def _replenishment_candidates(connection: sqlite3.Connection, product_id: int) -> tuple[dict, ...]:
     rows = connection.execute(
         """SELECT i.inventory_id,l.location_id,l.location_name,l.location_type,i.container_id,
@@ -290,7 +347,9 @@ def _replenishment_candidates(connection: sqlite3.Connection, product_id: int) -
     return tuple(candidates)
 
 
-def preview_line(connection: sqlite3.Connection, channel: str, order_id: str, order_line_id: str) -> EnginePlan:
+def preview_line(connection: sqlite3.Connection, channel: str, order_id: str, order_line_id: str,
+                 allocation_policy: str = "single_location_only",
+                 eligible_locations: tuple[str, ...] = DEFAULT_ELIGIBLE_LOCATIONS) -> EnginePlan:
     source = load_source_line(connection, channel, order_id, order_line_id)
     if connection.execute(
         "SELECT 1 FROM channel_inventory_ledger WHERE channel_name=? AND order_id=? AND order_line_id=? AND event_type='sale_commitment'",
@@ -298,24 +357,30 @@ def preview_line(connection: sqlite3.Connection, channel: str, order_id: str, or
     ).fetchone():
         return EnginePlan(source.channel, source.order_id, source.order_line_id, source.product_id, source.quantity,
                           source.source_version, "already_applied", "", (), (), "sale commitment already exists")
-    if source.product_id is None or source.mapping_status.casefold() in {"unmatched", "ambiguous", "conflict", "unlinked"}:
+    mapping = validate_mapping(connection, source.channel, source.product_id, source.sku, source.asin, source.mapping_status)
+    if not mapping.safe:
         return EnginePlan(source.channel, source.order_id, source.order_line_id, None, source.quantity,
-                          source.source_version, "review", "", (), (), "product mapping is unmatched or ambiguous")
+                          source.source_version, "review", "", (), (), f"unsafe mapping ({mapping.status}): {mapping.reason}")
     if "cancel" in source.status.casefold():
         return EnginePlan(source.channel, source.order_id, source.order_line_id, source.product_id, source.quantity,
                           source.source_version, "review", "", (), (), "source line is cancelled")
     if source.quantity <= 0:
         return EnginePlan(source.channel, source.order_id, source.order_line_id, source.product_id, source.quantity,
                           source.source_version, "review", "", (), (), "source quantity is zero")
-    for location in (STOREFRONT, BACK_ROOM):
-        deductions = _deduction_plan(_location_rows(connection, source.product_id, location), source.quantity)
-        if deductions:
-            return EnginePlan(source.channel, source.order_id, source.order_line_id, source.product_id, source.quantity,
-                              source.source_version, "deduct", location, deductions, (), "")
+    deductions = _policy_deduction_plan(connection, source.product_id, source.quantity,
+                                        allocation_policy, eligible_locations)
+    if deductions:
+        used_ids = {row_id for row_id, _ in deductions}
+        used_locations = [location for location in eligible_locations if any(
+            int(row["inventory_id"]) in used_ids for row in _location_rows(connection, source.product_id, location))]
+        return EnginePlan(source.channel, source.order_id, source.order_line_id, source.product_id, source.quantity,
+                          source.source_version, "deduct", " -> ".join(used_locations), deductions, (), "",
+                          allocation_policy, eligible_locations)
     candidates = _replenishment_candidates(connection, source.product_id)
     return EnginePlan(source.channel, source.order_id, source.order_line_id, source.product_id, source.quantity,
                       source.source_version, "owe", "", (), candidates,
-                      "eligible inventory unavailable; replenishment required" if candidates else "inventory unlocated company-wide")
+                      "eligible inventory unavailable; replenishment required" if candidates else "inventory unlocated company-wide",
+                      allocation_policy, eligible_locations)
 
 
 def _verify_preview(current: EnginePlan, expected: EnginePlan | None) -> None:
@@ -408,12 +473,14 @@ def _work_item(connection: sqlite3.Connection, source: SourceLine, candidates: t
 
 
 def apply_sale_to_copy(database: str | Path, channel: str, order_id: str, order_line_id: str,
-                       expected_preview: EnginePlan | None = None) -> dict:
+                       expected_preview: EnginePlan | None = None,
+                       allocation_policy: str = "single_location_only",
+                       eligible_locations: tuple[str, ...] = DEFAULT_ELIGIBLE_LOCATIONS) -> dict:
     connection = connect_copy(database)
     try:
         connection.execute("BEGIN IMMEDIATE")
         _require_copy_schema(connection)
-        current = preview_line(connection, channel, order_id, order_line_id)
+        current = preview_line(connection, channel, order_id, order_line_id, allocation_policy, eligible_locations)
         if current.action == "already_applied":
             source = load_source_line(connection, channel, order_id, order_line_id)
             allocation = _allocation(connection, source)
@@ -440,7 +507,9 @@ def apply_sale_to_copy(database: str | Path, channel: str, order_id: str, order_
         allocation_id = int(cursor.lastrowid)
         event_id = _insert_event(connection, source, "sale_commitment", status,
                                  -source.quantity if current.action == "deduct" else 0, allocation_id,
-                                 {"location": current.location_name, "replenishment_candidates": current.replenishment_candidates})
+                                 {"location": current.location_name, "allocation_policy": current.allocation_policy,
+                                  "eligible_locations": current.eligible_locations,
+                                  "replenishment_candidates": current.replenishment_candidates})
         if current.action == "deduct":
             for inventory_id, quantity in current.inventory_deductions:
                 updated = connection.execute(
@@ -740,20 +809,37 @@ def confirm_restock_to_copy(database: str | Path, channel: str, order_id: str, o
         ).fetchone():
             connection.rollback()
             return {"status": "already_applied"}
-        event_id = _insert_event(connection, source, event_type, "physically_restocked", quantity,
-                                 int(allocation["allocation_id"]), {"restock_reference": restock_reference})
+        totals = connection.execute(
+            """SELECT COALESCE(SUM(CASE WHEN cet.quantity_change<0 THEN -cet.quantity_change ELSE 0 END),0),
+                      COALESCE(SUM(CASE WHEN cet.quantity_change>0 THEN cet.quantity_change ELSE 0 END),0)
+                 FROM channel_inventory_ledger l
+                 JOIN channel_inventory_event_transactions cet ON cet.event_id=l.event_id
+                WHERE l.allocation_id=?""", (allocation["allocation_id"],)).fetchone()
+        returnable = max(int(totals[0])-int(totals[1]), 0)
+        applied_quantity = min(quantity, returnable)
+        outcome = "physically_restocked" if applied_quantity == quantity else (
+            "partially_restocked_capped" if applied_quantity else "over_restock_blocked")
+        event_id = _insert_event(connection, source, event_type, outcome, applied_quantity,
+                                 int(allocation["allocation_id"]), {"restock_reference": restock_reference,
+                                 "requested_quantity": quantity, "returnable_before": returnable,
+                                 "applied_quantity": applied_quantity})
+        if applied_quantity == 0:
+            connection.commit()
+            return {"status": "over_restock_blocked", "event_id": event_id, "requested_quantity": quantity,
+                    "quantity": 0, "returnable_quantity": 0}
         inventory = connection.execute("SELECT product_id FROM inventory WHERE inventory_id=?", (inventory_id,)).fetchone()
         if inventory is None or int(inventory[0]) != int(source.product_id or 0):
             raise StalePreview("Restock destination does not belong to mapped product")
         connection.execute("UPDATE inventory SET quantity_on_hand=quantity_on_hand+?,updated_at=? WHERE inventory_id=?",
-                           (quantity, _now(), inventory_id))
-        _inventory_transaction(connection, event_id, inventory_id, quantity, "channel_return_restock", source)
+                           (applied_quantity, _now(), inventory_id))
+        _inventory_transaction(connection, event_id, inventory_id, applied_quantity, "channel_return_restock", source)
         connection.execute(
             "UPDATE channel_inventory_allocations SET restored_quantity=restored_quantity+?,updated_at=? WHERE allocation_id=?",
-            (quantity, _now(), allocation["allocation_id"]),
+            (applied_quantity, _now(), allocation["allocation_id"]),
         )
         connection.commit()
-        return {"status": "physically_restocked", "event_id": event_id, "quantity": quantity}
+        return {"status": outcome, "event_id": event_id, "requested_quantity": quantity,
+                "quantity": applied_quantity, "returnable_quantity": returnable-applied_quantity}
     except Exception:
         connection.rollback()
         raise
