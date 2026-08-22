@@ -2,6 +2,7 @@ import shutil
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from pathlib import Path
@@ -21,7 +22,7 @@ CREATE TABLE inventory_locations(location_id INTEGER PRIMARY KEY,location_name T
 CREATE TABLE inventory(inventory_id INTEGER PRIMARY KEY,product_id INTEGER,location_id INTEGER,container_id TEXT,quantity_on_hand INTEGER,quantity_reserved INTEGER,reorder_level INTEGER,updated_at TEXT);
 CREATE TABLE inventory_transactions(transaction_id INTEGER PRIMARY KEY AUTOINCREMENT,product_id INTEGER,location_id INTEGER,container_id TEXT,transaction_type TEXT,quantity_change INTEGER,unit_cost REAL,reference_number TEXT,notes TEXT,created_at TEXT);
 CREATE TABLE shopify_sales_orders(shopify_order_id TEXT PRIMARY KEY,processed_at TEXT,test_order INTEGER,cancelled_at TEXT,fulfillment_status TEXT);
-CREATE TABLE shopify_sales_lines(shopify_line_id TEXT PRIMARY KEY,shopify_order_id TEXT,product_id INTEGER,quantity INTEGER,current_quantity INTEGER,sku TEXT,title TEXT,updated_at TEXT);
+CREATE TABLE shopify_sales_lines(shopify_line_id TEXT PRIMARY KEY,shopify_order_id TEXT,product_id INTEGER,quantity INTEGER,current_quantity INTEGER,sku TEXT,title TEXT,updated_at TEXT,match_status TEXT);
 CREATE TABLE amazon_order_history(amazon_order_id TEXT PRIMARY KEY,created_time TEXT,fulfillment_status TEXT);
 CREATE TABLE amazon_order_item_history(amazon_order_id TEXT,order_item_id TEXT,product_id INTEGER,quantity_ordered INTEGER,seller_sku TEXT,title TEXT,synced_at TEXT);
 CREATE TABLE walmart_orders(purchase_order_id TEXT PRIMARY KEY,order_date TEXT,walmart_status TEXT,synced_at TEXT);
@@ -46,8 +47,8 @@ def make_copy(directory: Path, *, quantity=2, storefront=5, back_room=10, reserv
             (3,10,3,"WH",reserve,0,0,"before"),(4,10,5,"STAGED",staged,0,0,"before"),
         ])
         connection.execute("INSERT INTO shopify_sales_orders VALUES('O1','2026-08-20',0,NULL,'unfulfilled')")
-        connection.execute("INSERT INTO shopify_sales_lines VALUES('L1','O1',?,?,?,?,?,?)",
-                           (10 if mapped else None,quantity,quantity,'SKU','Widget','v1'))
+        connection.execute("INSERT INTO shopify_sales_lines VALUES('L1','O1',?,?,?,?,?,?,?)",
+                           (10 if mapped else None,quantity,quantity,'SKU','Widget','v1','matched' if mapped else 'unmatched'))
         connection.commit()
     shutil.copy2(source, copied)
     initialize_copy_schema(copied)
@@ -70,6 +71,33 @@ class ChannelInventoryEngineTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+
+    def _add_channel_line(self, db, channel):
+        with closing(sqlite3.connect(db)) as connection:
+            if channel == "amazon":
+                connection.execute("INSERT INTO amazon_order_history VALUES('A1','2026-08-20','Unfulfilled')")
+                connection.execute("INSERT INTO amazon_order_item_history VALUES('A1','AL1',10,2,'SKU','Widget','v1')")
+                key = ("amazon","A1","AL1")
+            else:
+                connection.execute("INSERT INTO walmart_orders VALUES('W1','2026-08-20','Created','v1')")
+                connection.execute("INSERT INTO walmart_order_lines VALUES(101,'W1',10,2,'SKU','Widget','Created')")
+                key = ("walmart","W1","101")
+            connection.commit()
+        return key
+
+    def test_amazon_and_walmart_normal_sale_and_duplicate_sync(self):
+        for channel in ("amazon","walmart"):
+            with self.subTest(channel=channel):
+                channel_root = self.root / channel
+                channel_root.mkdir()
+                db = make_copy(channel_root,storefront=5)
+                key = self._add_channel_line(db,channel)
+                first = apply_sale_to_copy(db,*key)
+                second = apply_sale_to_copy(db,*key)
+                quantities, tx, ledger, allocation = inventory_state(db)
+                self.assertEqual((first["status"],second["status"]),("deducted","already_applied"))
+                self.assertEqual((quantities[1],tx,ledger,tuple(allocation)),
+                                 (3,1,1,("deducted",2,2,0,0)))
 
     def test_storefront_complete_fulfillment(self):
         db = make_copy(self.root, storefront=5, back_room=10)
@@ -134,7 +162,20 @@ class ChannelInventoryEngineTests(unittest.TestCase):
             connection.execute("UPDATE shopify_sales_lines SET current_quantity=4,updated_at='v3'")
             connection.commit()
         increase = apply_quantity_change_to_copy(db,"shopify","O1","L1")
-        self.assertEqual((increase["unlocated_quantity"],inventory_state(db)[0][1]),(2,3))
+        self.assertEqual((increase["unlocated_quantity"],inventory_state(db)[0][1]),(0,1))
+
+    def test_multi_quantity_uses_multiple_rows_in_one_eligible_location(self):
+        db = make_copy(self.root,quantity=5,storefront=3,back_room=0)
+        with closing(sqlite3.connect(db)) as connection:
+            connection.execute("INSERT INTO inventory VALUES(5,10,1,'FRONT-2',2,0,0,'before')")
+            connection.commit()
+        result = apply_sale_to_copy(db,"shopify","O1","L1")
+        with closing(sqlite3.connect(db)) as connection:
+            physical = dict(connection.execute("SELECT inventory_id,quantity_on_hand FROM inventory WHERE inventory_id IN (1,5)"))
+            ownership = list(connection.execute("SELECT inventory_id,deducted_quantity FROM channel_inventory_allocation_inventory ORDER BY inventory_id"))
+        self.assertEqual(result["status"],"deducted")
+        self.assertEqual(physical,{1:0,5:0})
+        self.assertEqual(ownership,[(1,3),(5,2)])
 
     def test_cancellation_before_fulfillment_releases_owed(self):
         db = make_copy(self.root,storefront=0,back_room=0,reserve=0)
@@ -181,6 +222,68 @@ class ChannelInventoryEngineTests(unittest.TestCase):
         result = apply_sale_to_copy(db,"shopify","O1","L1")
         self.assertEqual(result["status"],"review")
         self.assertEqual(inventory_state(db),before)
+
+    def test_ambiguous_product_id_is_review_only(self):
+        db = make_copy(self.root,mapped=True)
+        with closing(sqlite3.connect(db)) as connection:
+            connection.execute("UPDATE shopify_sales_lines SET match_status='ambiguous'")
+            connection.commit()
+        before = inventory_state(db)
+        result = apply_sale_to_copy(db,"shopify","O1","L1")
+        self.assertEqual(result["status"],"review")
+        self.assertEqual(inventory_state(db),before)
+
+    def test_cancel_reactivate_and_cancel_again_is_idempotent(self):
+        db = make_copy(self.root,quantity=2,storefront=5)
+        apply_sale_to_copy(db,"shopify","O1","L1")
+        with closing(sqlite3.connect(db)) as connection:
+            connection.execute("UPDATE shopify_sales_orders SET cancelled_at='c1'")
+            connection.commit()
+        cancel_before_fulfillment_to_copy(db,"shopify","O1","L1")
+        with closing(sqlite3.connect(db)) as connection:
+            connection.execute("UPDATE shopify_sales_orders SET cancelled_at=NULL")
+            connection.execute("UPDATE shopify_sales_lines SET updated_at='v2'")
+            connection.commit()
+        reopened = apply_sale_to_copy(db,"shopify","O1","L1")
+        duplicate = apply_sale_to_copy(db,"shopify","O1","L1")
+        with closing(sqlite3.connect(db)) as connection:
+            connection.execute("UPDATE shopify_sales_orders SET cancelled_at='c2'")
+            connection.commit()
+        cancelled_again = cancel_before_fulfillment_to_copy(db,"shopify","O1","L1")
+        quantities, tx, ledger, allocation = inventory_state(db)
+        self.assertEqual((reopened["status"],duplicate["status"],cancelled_again["status"]),
+                         ("deducted","already_applied","cancelled"))
+        self.assertEqual((quantities[1],tx,ledger,allocation[0]),(5,4,4,"cancelled"))
+
+    def test_failure_after_inventory_update_rolls_back_everything_and_retry_is_safe(self):
+        db = make_copy(self.root,quantity=2,storefront=5)
+        with patch("app.services.channel_inventory_engine._inventory_transaction", side_effect=RuntimeError("injected")):
+            with self.assertRaises(RuntimeError):
+                apply_sale_to_copy(db,"shopify","O1","L1")
+        self.assertEqual(inventory_state(db)[0:3],({1:5,2:10,3:0,4:0},0,0))
+        result = apply_sale_to_copy(db,"shopify","O1","L1")
+        self.assertEqual((result["status"],inventory_state(db)[0][1]),("deducted",3))
+
+    def test_second_row_failure_rolls_back_first_row_and_retry_is_safe(self):
+        db = make_copy(self.root,quantity=5,storefront=3,back_room=0)
+        with closing(sqlite3.connect(db)) as connection:
+            connection.execute("INSERT INTO inventory VALUES(5,10,1,'FRONT-2',2,0,0,'before')")
+            connection.commit()
+        from app.services import channel_inventory_engine as engine
+        original = engine._inventory_transaction
+        calls = {"count": 0}
+        def fail_second(*args, **kwargs):
+            calls["count"] += 1
+            if calls["count"] == 2:
+                raise RuntimeError("injected second-row failure")
+            return original(*args, **kwargs)
+        with patch("app.services.channel_inventory_engine._inventory_transaction", side_effect=fail_second):
+            with self.assertRaises(RuntimeError):
+                apply_sale_to_copy(db,"shopify","O1","L1")
+        with closing(sqlite3.connect(db)) as connection:
+            self.assertEqual(dict(connection.execute("SELECT inventory_id,quantity_on_hand FROM inventory WHERE inventory_id IN (1,5)")),{1:3,5:2})
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM channel_inventory_allocations").fetchone()[0],0)
+        self.assertEqual(apply_sale_to_copy(db,"shopify","O1","L1")["status"],"deducted")
 
     def test_mapping_change_after_preview_is_refused(self):
         db = make_copy(self.root)

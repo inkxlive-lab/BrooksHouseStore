@@ -93,6 +93,7 @@ class SourceLine:
     title: str
     status: str
     source_version: str
+    mapping_status: str
 
 
 @dataclass(frozen=True)
@@ -173,8 +174,10 @@ def load_source_line(connection: sqlite3.Connection, channel: str, order_id: str
     channel = channel.casefold()
     if channel == "shopify":
         row = connection.execute(
-            """SELECT l.product_id,l.quantity,l.current_quantity,l.sku,l.title,
-                      o.cancelled_at,o.fulfillment_status,l.updated_at source_version
+            """SELECT l.product_id,l.quantity,l.current_quantity,l.sku,l.title,l.match_status,
+                      o.cancelled_at,o.fulfillment_status,
+                      COALESCE(l.updated_at,'') || ':' || COALESCE(o.cancelled_at,'') || ':' ||
+                      COALESCE(o.fulfillment_status,'') source_version
                  FROM shopify_sales_lines l JOIN shopify_sales_orders o ON o.shopify_order_id=l.shopify_order_id
                 WHERE l.shopify_order_id=? AND l.shopify_line_id=?""", (order_id, order_line_id)
         ).fetchone()
@@ -182,6 +185,7 @@ def load_source_line(connection: sqlite3.Connection, channel: str, order_id: str
             raise ValueError("Shopify source line not found")
         quantity = max(int(row["current_quantity"] if row["current_quantity"] is not None else row["quantity"] or 0), 0)
         status = "cancelled" if row["cancelled_at"] else _text(row["fulfillment_status"])
+        mapping_status = _text(row["match_status"])
     elif channel == "amazon":
         row = connection.execute(
             """SELECT i.product_id,i.quantity_ordered quantity,i.seller_sku sku,i.title,
@@ -193,6 +197,7 @@ def load_source_line(connection: sqlite3.Connection, channel: str, order_id: str
             raise ValueError("Amazon source line not found")
         quantity = max(int(row["quantity"] or 0), 0)
         status = _text(row["status"])
+        mapping_status = "matched" if row["product_id"] is not None else "unmatched"
     elif channel == "walmart":
         row = connection.execute(
             """SELECT l.product_id,l.quantity,l.sku,l.item_name title,
@@ -204,13 +209,14 @@ def load_source_line(connection: sqlite3.Connection, channel: str, order_id: str
             raise ValueError("Walmart source line not found")
         quantity = max(int(row["quantity"] or 0), 0)
         status = _text(row["status"])
+        mapping_status = "matched" if row["product_id"] is not None else "unmatched"
     else:
         raise ValueError(f"Unsupported channel: {channel}")
     return SourceLine(
         channel=channel, order_id=str(order_id), order_line_id=str(order_line_id),
         product_id=int(row["product_id"]) if row["product_id"] is not None else None,
         quantity=quantity, sku=_text(row["sku"]), title=_text(row["title"]),
-        status=status, source_version=_text(row["source_version"]),
+        status=status, source_version=_text(row["source_version"]), mapping_status=mapping_status,
     )
 
 
@@ -292,9 +298,9 @@ def preview_line(connection: sqlite3.Connection, channel: str, order_id: str, or
     ).fetchone():
         return EnginePlan(source.channel, source.order_id, source.order_line_id, source.product_id, source.quantity,
                           source.source_version, "already_applied", "", (), (), "sale commitment already exists")
-    if source.product_id is None:
+    if source.product_id is None or source.mapping_status.casefold() in {"unmatched", "ambiguous", "conflict", "unlinked"}:
         return EnginePlan(source.channel, source.order_id, source.order_line_id, None, source.quantity,
-                          source.source_version, "review", "", (), (), "product is unmatched")
+                          source.source_version, "review", "", (), (), "product mapping is unmatched or ambiguous")
     if "cancel" in source.status.casefold():
         return EnginePlan(source.channel, source.order_id, source.order_line_id, source.product_id, source.quantity,
                           source.source_version, "review", "", (), (), "source line is cancelled")
@@ -409,6 +415,12 @@ def apply_sale_to_copy(database: str | Path, channel: str, order_id: str, order_
         _require_copy_schema(connection)
         current = preview_line(connection, channel, order_id, order_line_id)
         if current.action == "already_applied":
+            source = load_source_line(connection, channel, order_id, order_line_id)
+            allocation = _allocation(connection, source)
+            if allocation is not None and allocation["status"] == "cancelled" and "cancel" not in source.status.casefold():
+                connection.rollback()
+                connection.close()
+                return apply_quantity_change_to_copy(database, channel, order_id, order_line_id)
             connection.rollback()
             return {"status": "already_applied", "plan": current.as_dict()}
         _verify_preview(current, expected_preview)
@@ -523,12 +535,40 @@ def apply_quantity_change_to_copy(database: str | Path, channel: str, order_id: 
                                  int(allocation["allocation_id"]), {"old_quantity": old_quantity})
         deducted = int(allocation["deducted_quantity"])
         restored = 0
+        additionally_deducted = 0
         if source.quantity < deducted:
             restored = _restore_deducted(connection, source, allocation, event_id, deducted-source.quantity,
                                           "channel_order_quantity_decrease_restore")
             deducted -= restored
+        needed = max(source.quantity-deducted-int(allocation["staged_quantity"]), 0)
+        if needed:
+            for location in (STOREFRONT, BACK_ROOM):
+                additions = _deduction_plan(_location_rows(connection, int(source.product_id), location), needed)
+                if not additions:
+                    continue
+                for inventory_id, quantity in additions:
+                    updated = connection.execute(
+                        """UPDATE inventory SET quantity_on_hand=quantity_on_hand-?,updated_at=?
+                            WHERE inventory_id=? AND quantity_on_hand-COALESCE(quantity_reserved,0)>=?""",
+                        (quantity, _now(), inventory_id, quantity),
+                    )
+                    if updated.rowcount != 1:
+                        raise StalePreview("Eligible inventory changed during quantity increase")
+                    connection.execute(
+                        """INSERT INTO channel_inventory_allocation_inventory(allocation_id,inventory_id,deducted_quantity)
+                             VALUES(?,?,?) ON CONFLICT(allocation_id,inventory_id) DO UPDATE SET
+                             deducted_quantity=deducted_quantity+excluded.deducted_quantity""",
+                        (allocation["allocation_id"], inventory_id, quantity),
+                    )
+                    _inventory_transaction(connection, event_id, inventory_id, -quantity,
+                                           "channel_order_quantity_increase", source)
+                    additionally_deducted += quantity
+                deducted += additionally_deducted
+                break
         unlocated = max(source.quantity-deducted-int(allocation["staged_quantity"]), 0)
         status = "deducted" if deducted == source.quantity else ("replenishment_needed" if _replenishment_candidates(connection, int(source.product_id)) else "unlocated")
+        connection.execute("UPDATE channel_inventory_ledger SET quantity_change=? WHERE event_id=?",
+                           (restored-additionally_deducted, event_id))
         connection.execute(
             """UPDATE channel_inventory_allocations SET ordered_quantity=?,deducted_quantity=?,
                    unlocated_quantity=?,restored_quantity=restored_quantity+?,status=?,source_version=?,updated_at=?
@@ -555,18 +595,21 @@ def cancel_before_fulfillment_to_copy(database: str | Path, channel: str, order_
         source, allocation = _allocation_source(connection, channel, order_id, order_line_id)
         if "cancel" not in source.status.casefold():
             raise StalePreview("Source line is not cancelled")
+        event_type = f"cancellation:{_event_suffix(source.source_version)}"
         existing = connection.execute(
-            "SELECT event_id FROM channel_inventory_ledger WHERE channel_name=? AND order_id=? AND order_line_id=? AND event_type='cancellation'",
-            (source.channel, source.order_id, source.order_line_id),
+            "SELECT event_id FROM channel_inventory_ledger WHERE channel_name=? AND order_id=? AND order_line_id=? AND event_type=?",
+            (source.channel, source.order_id, source.order_line_id, event_type),
         ).fetchone()
         if existing:
             connection.rollback()
             return {"status": "already_applied", "event_id": int(existing[0])}
-        event_id = _insert_event(connection, source, "cancellation", "cancelled", 0,
+        event_id = _insert_event(connection, source, event_type, "cancelled", 0,
                                  int(allocation["allocation_id"]), {"prior_status": allocation["status"]})
         deducted = int(allocation["deducted_quantity"])
         restored = _restore_deducted(connection, source, allocation, event_id, deducted,
                                      "channel_order_cancellation_restore") if deducted else 0
+        connection.execute("UPDATE channel_inventory_ledger SET quantity_change=? WHERE event_id=?",
+                           (restored, event_id))
         for row in connection.execute(
             "SELECT * FROM channel_inventory_allocation_inventory WHERE allocation_id=? AND reserved_quantity>0",
             (allocation["allocation_id"],),
