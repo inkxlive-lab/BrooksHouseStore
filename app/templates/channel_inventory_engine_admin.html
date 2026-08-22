@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Channel Inventory Preflight</title>
+  <style>
+    body{font-family:system-ui,sans-serif;margin:0;background:#f6f4ef;color:#24201d} header{background:#8f1f24;color:#fff;padding:20px}
+    main{max-width:1300px;margin:auto;padding:22px}.notice{background:#fff4ce;border:1px solid #d6b656;padding:14px;border-radius:10px}
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin:18px 0}.card{background:#fff;padding:14px;border-radius:10px;box-shadow:0 1px 4px #0002}.card strong{display:block;font-size:1.8rem}
+    table{width:100%;border-collapse:collapse;background:#fff;font-size:.9rem}th,td{text-align:left;vertical-align:top;padding:8px;border-bottom:1px solid #ddd}th{position:sticky;top:0;background:#eee}
+    .scroll{overflow:auto;max-height:65vh}code{overflow-wrap:anywhere}a{color:inherit}select{padding:7px}
+  </style>
+</head>
+<body><header><a href="/dashboard">&larr; Dashboard</a><h1>Channel Inventory Engine Preflight</h1></header>
+<main>
+  <div class="notice"><strong>Read-only hypothetical preview.</strong> No inventory, reservation, ledger, schema, scheduler, or channel data is changed.
+    {% if not report.engine.installed %}<br><strong>Engine not installed:</strong> {{ report.engine.missing|join(', ') }}{% endif %}
+  </div>
+  <form method="get"><label>Imported in last <select name="hours" onchange="this.form.submit()">
+    {% for value in [1,6,24,72,168,720] %}<option value="{{ value }}" {% if value==hours %}selected{% endif %}>{{ value }} hours</option>{% endfor %}
+  </select></label></form>
+  <p>Hypothetical cutover: <code>{{ report.cutoff }}</code>. A real cutover must use a separately approved, persisted per-channel checkpoint.</p>
+  <section class="grid">
+    <div class="card">Total lines<strong>{{ report.total_order_lines }}</strong></div>
+    {% for key,value in report.counts|dictsort %}<div class="card">{{ key|replace('_',' ')|title }}<strong>{{ value }}</strong><small>{{ report.units.get(key,0) }} units</small></div>{% endfor %}
+  </section>
+  <div class="scroll"><table><thead><tr><th>Channel / identity</th><th>Product / SKU</th><th>Qty</th><th>Status</th><th>Classification</th><th>Proposed result</th><th>Legacy / evidence</th></tr></thead><tbody>
+  {% for row in report.rows %}<tr>
+    <td>{{ row.channel|title }}<br><code>{{ row.order_id }}</code><br><code>{{ row.order_line_id }}</code></td>
+    <td>{{ row.product_id or 'unmatched' }}<br><code>{{ row.sku }}</code></td><td>{{ row.quantity }}</td><td>{{ row.source_status }}</td>
+    <td>{{ row.category|replace('_',' ') }}<br><small>{{ row.reason }}</small></td><td>{{ row.proposed_action }}{% if row.location_name %}<br>{{ row.location_name }}{% endif %}</td>
+    <td>{{ row.legacy_overlap or 'none' }}{% if row.replenishment %}<br>{{ row.replenishment|length }} replenishment source(s){% endif %}</td>
+  </tr>{% endfor %}
+  {% if not report.rows %}<tr><td colspan="7">No source lines entered this hypothetical post-cutover window.</td></tr>{% endif %}
+  </tbody></table></div>
+</main></body></html>

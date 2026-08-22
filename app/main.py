@@ -13450,6 +13450,10 @@ install_shopify_operations(app)
 from app.channel_performance import install_channel_performance
 install_channel_performance(app)
 
+# OWNER-ONLY READ-ONLY CHANNEL INVENTORY DEPLOYMENT PREFLIGHT
+from app.channel_inventory_admin import install_channel_inventory_admin
+install_channel_inventory_admin(app)
+
 # BROOKSHOUSE SALES DASHBOARD INSTALL
 from app.services.sales_dashboard import install_sales_dashboard
 install_sales_dashboard(app)

@@ -14,6 +14,7 @@ from app.services.channel_inventory_engine import (
     apply_sale_to_copy, assert_copy_database, connect_copy, initialize_copy_schema,
     list_source_lines, preview_line,
 )
+from app.services.channel_inventory_controls import effective_control
 
 
 def main() -> int:
@@ -33,11 +34,18 @@ def main() -> int:
         before_inventory = inventory_fingerprint(connection)
         keys = list_source_lines(connection, args.cutoff)
         plans = [preview_line(connection, *key) for key in keys]
+        controls = {channel: effective_control(connection, channel) for channel in ("shopify", "amazon", "walmart")}
     finally:
         connection.close()
     results = []
     if args.apply_to_copy:
         for plan in plans:
+            control = controls[plan.channel]
+            if control["paused"] or control["mode"] != "enabled":
+                results.append({"status": "suppressed_by_control", "channel": plan.channel,
+                                "order_id": plan.order_id, "order_line_id": plan.order_line_id,
+                                "control": control})
+                continue
             # Each event re-previews under BEGIN IMMEDIATE because earlier events
             # in this copied-DB simulation legitimately change later availability.
             results.append(apply_sale_to_copy(database, plan.channel, plan.order_id, plan.order_line_id))
@@ -55,6 +63,7 @@ def main() -> int:
         "inventory_before": before_inventory, "inventory_after": after_inventory,
         "plans": [plan.as_dict() for plan in plans], "results": results,
         "plan_actions": dict(Counter(plan.action for plan in plans)),
+        "controls": controls,
         "result_statuses": dict(Counter(result["status"] for result in results)),
         "ledger_count": int(ledger_count), "allocation_count": int(allocation_count),
     }
