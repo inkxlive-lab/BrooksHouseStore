@@ -15,9 +15,11 @@ from fastapi.templating import Jinja2Templates
 from urllib.error import HTTPError, URLError
 from urllib.request import Request as UrlRequest, urlopen
 
+from app.database_resolution import configured_sqlite_path
+
 
 APP_DIR = Path(__file__).resolve().parent
-DB_PATH = APP_DIR / "data" / "brookshouse_store.db"
+DB_PATH = configured_sqlite_path()
 TEMPLATES = Jinja2Templates(directory=APP_DIR / "templates")
 STOREFRONT_LOCATION_NAME = "BrooksHouse Storefront"
 _SHOPIFY_TOKEN_CACHE: dict[str, Any] = {

@@ -1,16 +1,13 @@
 ﻿"""Amazon-to-BrooksHouse product mapping helpers."""
 
 import sqlite3
-from pathlib import Path
 from typing import Any
 
+from app.database_resolution import configured_sqlite_path
 from app.services.search_helpers import clean_search_term, sql_wildcard_pattern
 
 
-DATABASE_PATH = Path(
-    r"C:\BrooksHouseStore"
-    r"\app\data\brookshouse_store.db"
-)
+DATABASE_PATH = configured_sqlite_path()
 
 
 def connect_database() -> sqlite3.Connection:

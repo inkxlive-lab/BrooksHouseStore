@@ -1,14 +1,11 @@
 ﻿"""Amazon and Walmart status helpers for BrooksHouse products."""
 
 import sqlite3
-from pathlib import Path
 from typing import Any
 
+from app.database_resolution import configured_sqlite_path
 
-DATABASE_PATH = Path(
-    r"C:\BrooksHouseStore"
-    r"\app\data\brookshouse_store.db"
-)
+DATABASE_PATH = configured_sqlite_path()
 
 
 def connect_database() -> sqlite3.Connection:

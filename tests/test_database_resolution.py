@@ -8,12 +8,18 @@ from app.database_resolution import (
     require_application_database_match, resolve_database_url,
 )
 from app.services.channel_inventory_engine import PRODUCTION_DB
+from app.services.amazon_mapping import DATABASE_PATH as AMAZON_MAPPING_DB_PATH
+from app.services.product_channel_status import DATABASE_PATH as PRODUCT_CHANNEL_STATUS_DB_PATH
+from app.shopify_operations import DB_PATH as SHOPIFY_ORDER_DB_PATH
 from app.walmart_order_service import DB_PATH as WALMART_ORDER_DB_PATH
 
 
 class DatabaseResolutionTests(unittest.TestCase):
     def test_application_and_engine_resolve_same_current_database(self):
         self.assertEqual(PRODUCTION_DB,configured_sqlite_path())
+        self.assertEqual(AMAZON_MAPPING_DB_PATH,configured_sqlite_path())
+        self.assertEqual(PRODUCT_CHANNEL_STATUS_DB_PATH,configured_sqlite_path())
+        self.assertEqual(SHOPIFY_ORDER_DB_PATH,configured_sqlite_path())
         self.assertEqual(WALMART_ORDER_DB_PATH,configured_sqlite_path())
         self.assertTrue(database_alignment(PRODUCTION_DB)["matches"])
 
