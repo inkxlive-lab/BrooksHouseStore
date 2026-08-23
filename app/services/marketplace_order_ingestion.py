@@ -16,7 +16,11 @@ from app.database_resolution import configured_application_database, require_app
 SYNC_INTERVAL_SECONDS = 300
 STALE_AFTER_MINUTES = 15
 _WORKER_LOCK = threading.Lock()
-_WORKER_STATE: dict[str, Any] = {"running": False, "started_at": None, "last_cycle_at": None}
+_WORKER_STATE: dict[str, Any] = {
+    "running": False, "started_at": None, "last_cycle_at": None, "last_error": None,
+}
+_WORKER_STOP = threading.Event()
+_WORKER_THREAD: threading.Thread | None = None
 
 
 def _now() -> str:
@@ -318,16 +322,39 @@ def worker_loop(stop_event: threading.Event | None = None, interval_seconds: int
     _WORKER_STATE.update({"running": True, "started_at": _now()})
     try:
         while not stop_event.is_set():
-            run_sync_cycle()
+            try:
+                run_sync_cycle()
+                _WORKER_STATE["last_error"] = None
+            except Exception as error:
+                _WORKER_STATE["last_error"] = f"{type(error).__name__}: {error}"[:1000]
             stop_event.wait(interval_seconds)
     finally:
         _WORKER_STATE["running"] = False
 
 
 def start_worker() -> bool:
+    global _WORKER_THREAD
     with _WORKER_LOCK:
         if _WORKER_STATE["running"]:
             return False
-        thread = threading.Thread(target=worker_loop, name="brookshouse-marketplace-sync", daemon=True)
-        thread.start()
+        _WORKER_STOP.clear()
+        _WORKER_STATE.update({"running": True, "started_at": _now()})
+        _WORKER_THREAD = threading.Thread(
+            target=worker_loop, args=(_WORKER_STOP,), name="brookshouse-marketplace-sync", daemon=True,
+        )
+        _WORKER_THREAD.start()
         return True
+
+
+def stop_worker(timeout: float = 10.0) -> bool:
+    global _WORKER_THREAD
+    with _WORKER_LOCK:
+        thread = _WORKER_THREAD
+        if thread is None:
+            return False
+        _WORKER_STOP.set()
+    thread.join(timeout=timeout)
+    if not thread.is_alive():
+        _WORKER_THREAD = None
+        return True
+    return False

@@ -363,7 +363,7 @@ from app.services.cloud_health import install_cloud_health
 from app.config import should_run_background_jobs
 from app.database_resolution import configured_sqlite_path
 from app.services.marketplace_order_ingestion import (
-    alert_counts, mark_alert_reviewed, start_worker, sync_health,
+    alert_counts, mark_alert_reviewed, start_worker, stop_worker, sync_health,
 )
 from app.services.search_helpers import (
     clean_search_term,
@@ -13277,6 +13277,11 @@ def start_web_push_notifications():
     ensure_vapid_keys()
     if not getattr(app.state, "marketplace_sync_worker_started", False):
         app.state.marketplace_sync_worker_started = start_worker()
+
+
+@app.on_event("shutdown")
+def stop_marketplace_sync_worker():
+    stop_worker()
 
 
 # ============================================================
