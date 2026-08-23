@@ -36,14 +36,29 @@ class ChannelInventoryReviewWorkflowTests(unittest.TestCase):
             connection.execute("ALTER TABLE walmart_listings ADD COLUMN item_name TEXT")
             connection.execute("ALTER TABLE walmart_listings ADD COLUMN created_at TEXT")
             connection.execute("ALTER TABLE walmart_listings ADD COLUMN updated_at TEXT")
+            connection.executescript("""
+                CREATE TABLE sales_channels(channel_id INTEGER PRIMARY KEY,channel_name TEXT);
+                CREATE TABLE channel_listings(
+                    listing_id INTEGER PRIMARY KEY,channel_id INTEGER,external_product_id TEXT,
+                    external_variant_id TEXT,listing_title TEXT,sku TEXT,barcode_raw TEXT,
+                    barcode_exact TEXT,barcode_lookup TEXT,listing_status TEXT);
+            """)
             connection.executemany("INSERT INTO products VALUES(?,?,?,?,?,?)",[
                 (10,"Original Widget",1,1,"OldBrand","Old description"),
                 (11,"Selected Widget",1,1,"Acme","Blue replacement widget"),
-                (1040,"ACE RSBL CLD PK",1,1,"ACE","Reusable cold compress")])
+                (1040,"ACE RSBL CLD PK",1,1,"ACE","Reusable cold compress"),
+                (1929,"Bialetti Impact Sauce Pan",1,1,"Bialetti",
+                 "Impact textured nonstick surface oil distribution 2 quart sauce pan gray")])
             connection.executemany("INSERT INTO product_barcodes VALUES(?,?,?,1)",[
-                (1,11,'987654321'),(2,1040,'051131204010')])
+                (1,11,'987654321'),(2,1040,'051131204010'),(3,1929,'076753075572')])
             connection.executemany("INSERT INTO inventory_locations VALUES(?,?,?,1)",[(1,"BrooksHouse Storefront","store"),(2,"Store Back Room","storage")])
-            connection.executemany("INSERT INTO inventory VALUES(?,?,?,?,?,?,?,?)",[(1,10,1,"F",5,0,0,"x"),(2,11,2,"B",3,0,0,"x")])
+            connection.executemany("INSERT INTO inventory VALUES(?,?,?,?,?,?,?,?)",[(1,10,1,"F",5,0,0,"x"),(2,11,2,"B",3,0,0,"x"),(3,1929,2,"ON-THE-TABLE",18,0,0,"x")])
+            connection.execute("INSERT INTO sales_channels VALUES(1,'walmart')")
+            connection.execute("INSERT INTO channel_listings VALUES(1,1,'1W8WPXMHC4Y8','bp',?,'bp',?,?,?,'PUBLISHED')",
+                               ("Bialetti Impact textured nonstick surface, oil distribution, 2 quart sauce pan, gray",
+                                "076753075572","076753075572","76753075572"))
+            connection.execute("INSERT INTO amazon_listings VALUES(1,'AMZ-SKU','B012TEST','Active','sellable')")
+            connection.execute("INSERT INTO amazon_product_links VALUES(1,1,11,'linked')")
             raw = lambda title: json.dumps({"orderLines":{"orderLine":[{
                 "lineNumber":"1","item":{"sku":"SKU-X","productName":title}}]}})
             connection.execute("INSERT INTO walmart_orders VALUES('W1','2026-08-20','Created','v1',?)",(raw("Marketplace Widget"),))
@@ -61,6 +76,27 @@ class ChannelInventoryReviewWorkflowTests(unittest.TestCase):
         for term in ("Selected","replacement","Acme","987654","11"):
             with self.subTest(term=term):
                 self.assertEqual(search_products(self.db,term)[0]["product_id"],11)
+
+    def test_product_search_prioritizes_exact_id_barcode_and_walmart_sku(self):
+        with closing(sqlite3.connect(self.db)) as connection:
+            before = inventory_fingerprint(connection)
+        cases = {
+            "1929":"Exact product ID",
+            "076753075572":"Exact barcode",
+            "bp":"Exact marketplace identity",
+            "Bialetti Impact textured nonstick surface":"Description",
+        }
+        for term, reason in cases.items():
+            with self.subTest(term=term):
+                result = search_products(self.db,term)
+                self.assertEqual(result[0]["product_id"],1929)
+                self.assertEqual(result[0]["match_reason"],reason)
+        self.assertEqual(search_products(self.db,"999999"),[])
+        self.assertEqual(search_products(self.db,"no product can match this phrase"),[])
+        self.assertEqual(search_products(self.db,"AMZ-SKU")[0]["product_id"],11)
+        self.assertEqual(search_products(self.db,"B012TEST")[0]["product_id"],11)
+        with closing(sqlite3.connect(self.db)) as connection:
+            self.assertEqual(before,inventory_fingerprint(connection))
 
     def test_mapping_requires_preview_and_exact_confirmation_without_inventory_change(self):
         preview = mapping_confirmation_preview(self.db,"walmart","W1","101",1040)
@@ -137,6 +173,7 @@ class ChannelInventoryReviewWorkflowTests(unittest.TestCase):
         self.assertIn('name="selected_product_id"',template)
         self.assertIn('name="confirmation_phrase"',template)
         self.assertIn('value="" autocomplete="off"',template)
+        self.assertIn("No matching product.",template)
         Environment(loader=FileSystemLoader("app/templates")).get_template("channel_inventory_review.html")
 
     def test_incorrect_confirmation_returns_friendly_ui_error_instead_of_500(self):
@@ -155,6 +192,21 @@ class ChannelInventoryReviewWorkflowTests(unittest.TestCase):
             response = endpoint(request,"walmart","W1","101",1040,"1040",30)
         self.assertEqual(response.status_code,400)
         self.assertIn(b"Mapping was not changed",response.body)
+
+    def test_invalid_preview_product_returns_friendly_error_not_500(self):
+        app = FastAPI(); install_channel_inventory_admin(app)
+        endpoint = next(route.endpoint for route in app.routes
+                        if route.path == "/admin/channel-inventory-review/mapping-preview")
+        request = Request({"type":"http","method":"POST","path":"/admin/channel-inventory-review/mapping-preview",
+                           "headers":[],"query_string":b"","server":("test",80),"client":("test",1),"scheme":"http"})
+        request.state.auth_user = SimpleNamespace(role="owner_admin")
+        with patch("app.channel_inventory_admin.PRODUCTION_DB",self.db), \
+             patch("app.channel_inventory_admin._review_context",return_value={"request":request,"error":"No matching product."}), \
+             patch("app.channel_inventory_admin.templates.TemplateResponse",
+                   return_value=HTMLResponse("No matching product.",status_code=400)):
+            response = endpoint(request,"walmart","W1","101",999999,30)
+        self.assertEqual(response.status_code,400)
+        self.assertIn(b"No matching product",response.body)
 
 
 if __name__ == "__main__":

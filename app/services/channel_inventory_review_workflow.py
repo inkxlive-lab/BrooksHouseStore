@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,29 +34,115 @@ def search_products(database: str | Path, query: str, limit: int = 30) -> list[d
         return []
     connection = _connect(database, read_only=True)
     try:
+        tables = {str(row[0]) for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
         product_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(products)")}
-        brand = "COALESCE(p.brand,'')" if "brand" in product_columns else "''"
-        description = "COALESCE(p.description,'')" if "description" in product_columns else "''"
+        brand = "COALESCE(brand,'')" if "brand" in product_columns else "''"
+        description = "COALESCE(description,'')" if "description" in product_columns else "''"
         active = "COALESCE(p.active,1)=1" if "active" in product_columns else "1=1"
-        like = f"%{term}%"
-        rows = connection.execute(
-            f"""SELECT p.product_id,p.product_name,{brand} brand,
-                      {description} description,
-                      (SELECT pb.barcode FROM product_barcodes pb WHERE pb.product_id=p.product_id
-                        ORDER BY pb.is_primary DESC,pb.barcode_id LIMIT 1) barcode,
-                      COALESCE(SUM(CASE WHEN l.active=1 THEN i.quantity_on_hand-COALESCE(i.quantity_reserved,0) ELSE 0 END),0) available
-                 FROM products p LEFT JOIN inventory i ON i.product_id=p.product_id
-                 LEFT JOIN inventory_locations l ON l.location_id=i.location_id
-                WHERE {active} AND
-                      (CAST(p.product_id AS TEXT)=? OR p.product_name LIKE ? COLLATE NOCASE
-                       OR {brand} LIKE ? COLLATE NOCASE
-                       OR {description} LIKE ? COLLATE NOCASE
-                       OR EXISTS(SELECT 1 FROM product_barcodes pb WHERE pb.product_id=p.product_id
-                                 AND CAST(pb.barcode AS TEXT) LIKE ?))
-                GROUP BY p.product_id,p.product_name
-                ORDER BY CASE WHEN CAST(p.product_id AS TEXT)=? THEN 0 ELSE 1 END,p.product_name LIMIT ?""",
-            (term,like,like,like,like,term,max(1,min(int(limit),100)))).fetchall()
-        return [dict(row) for row in rows]
+        products = {int(row["product_id"]):dict(row) for row in connection.execute(
+            f"SELECT p.product_id,p.product_name,{brand} brand,{description} description FROM products p WHERE {active}")}
+        barcode_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(product_barcodes)")}
+        barcode_order = []
+        if "is_primary" in barcode_columns:
+            barcode_order.append("COALESCE(is_primary,0) DESC")
+        if "barcode_id" in barcode_columns:
+            barcode_order.append("barcode_id")
+        barcode_sql = "SELECT product_id,barcode FROM product_barcodes"
+        if barcode_order:
+            barcode_sql += " ORDER BY " + ",".join(barcode_order)
+        barcodes: dict[int,list[str]] = {}
+        barcode_index: dict[str,set[int]] = {}
+        for row in connection.execute(barcode_sql):
+            product_id, value = int(row[0]), str(row[1] or "").strip()
+            if product_id not in products or not value:
+                continue
+            barcodes.setdefault(product_id,[]).append(value)
+            barcode_index.setdefault(value.lstrip("0") or "0",set()).add(product_id)
+
+        available = {int(row[0]):int(row[1] or 0) for row in connection.execute(
+            """SELECT i.product_id,SUM(CASE WHEN l.active=1
+                       THEN i.quantity_on_hand-COALESCE(i.quantity_reserved,0) ELSE 0 END)
+                 FROM inventory i JOIN inventory_locations l USING(location_id) GROUP BY i.product_id""")}
+        normalized = " ".join(re.findall(r"[a-z0-9]+",term.casefold()))
+        barcode_term = term.lstrip("0") or "0"
+        strong_channel_products: set[int] = set()
+
+        if {"walmart_listings","walmart_product_links"} <= tables:
+            strong_channel_products.update(int(row[0]) for row in connection.execute(
+                """SELECT wpl.product_id FROM walmart_product_links wpl
+                     JOIN walmart_listings wl USING(walmart_listing_id)
+                    WHERE TRIM(wl.seller_sku)=? COLLATE NOCASE
+                      AND lower(COALESCE(wpl.match_status,''))='linked' AND wpl.product_id IS NOT NULL""",(term,)))
+        if {"amazon_listings","amazon_product_links"} <= tables:
+            amazon_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(amazon_listings)")}
+            predicates, params = [], []
+            for column in ("seller_sku","asin"):
+                if column in amazon_columns:
+                    predicates.append(f"TRIM(al.{column})=? COLLATE NOCASE"); params.append(term)
+            if predicates:
+                strong_channel_products.update(int(row[0]) for row in connection.execute(
+                    f"""SELECT apl.product_id FROM amazon_product_links apl JOIN amazon_listings al USING(amazon_listing_id)
+                          WHERE ({' OR '.join(predicates)}) AND lower(COALESCE(apl.match_status,'')) IN ('linked','approved')
+                            AND apl.product_id IS NOT NULL""",params))
+
+        if {"channel_listings","sales_channels"} <= tables:
+            listing_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(channel_listings)")}
+            identity_columns = [column for column in
+                                ("sku","external_product_id","external_variant_id","barcode_raw","barcode_exact","barcode_lookup")
+                                if column in listing_columns]
+            predicates = [f"TRIM(CAST(cl.{column} AS TEXT))=? COLLATE NOCASE" for column in identity_columns]
+            barcode_select = [column for column in ("barcode_lookup","barcode_exact","barcode_raw")
+                              if column in listing_columns]
+            if predicates and barcode_select:
+                expressions = ",".join(f"cl.{column}" for column in barcode_select)
+                rows = connection.execute(
+                    f"SELECT {expressions} FROM channel_listings cl JOIN sales_channels sc USING(channel_id) "
+                    f"WHERE {' OR '.join(predicates)}",tuple(term for _ in predicates)).fetchall()
+                for row in rows:
+                    for value in row:
+                        key = str(value or "").strip().lstrip("0") or "0"
+                        strong_channel_products.update(barcode_index.get(key,set()))
+
+        ranked = []
+        numeric = term.isdigit()
+        for product_id, product in products.items():
+            name = " ".join(re.findall(r"[a-z0-9]+",str(product.get("product_name") or "").casefold()))
+            product_brand = " ".join(re.findall(r"[a-z0-9]+",str(product.get("brand") or "").casefold()))
+            product_description = " ".join(re.findall(r"[a-z0-9]+",str(product.get("description") or "").casefold()))
+            query_tokens = set(normalized.split())
+            product_tokens = set(f"{name} {product_brand} {product_description}".split())
+            exact_barcode = product_id in barcode_index.get(barcode_term,set())
+            partial_barcode = numeric and len(term) >= 6 and any(term in value for value in barcodes.get(product_id,[]))
+            if str(product_id) == term:
+                score, reason = 1000,"Exact product ID"
+            elif exact_barcode:
+                score, reason = 950,"Exact barcode"
+            elif product_id in strong_channel_products:
+                score, reason = 900,"Exact marketplace identity"
+            elif partial_barcode:
+                score, reason = 700,"Barcode fragment"
+            elif numeric or len(normalized) < 3:
+                continue
+            elif name == normalized:
+                score, reason = 800,"Exact product name"
+            elif product_brand == normalized:
+                score, reason = 760,"Exact brand"
+            elif normalized in name:
+                score, reason = 600,"Product name"
+            elif normalized in product_description:
+                score, reason = 500,"Description"
+            elif len(query_tokens) >= 3 and query_tokens <= product_tokens:
+                score, reason = 490,"Description"
+            elif normalized in product_brand:
+                score, reason = 450,"Brand"
+            else:
+                continue
+            ranked.append((score,name,product_id,{
+                **product,"barcode":(barcodes.get(product_id) or [""])[0],
+                "available":available.get(product_id,0),"match_reason":reason}))
+        ranked.sort(key=lambda item:(-item[0],item[1],item[2]))
+        return [item[3] for item in ranked[:max(1,min(int(limit),100))]]
     finally:
         connection.close()
 
@@ -69,7 +156,7 @@ def mapping_confirmation_preview(database: str | Path, channel: str, order_id: s
             "SELECT product_id,product_name,COALESCE(brand,'') brand FROM products WHERE product_id=? AND COALESCE(active,1)=1",
             (int(product_id),)).fetchone()
         if product is None:
-            raise ValueError("Selected BrooksHouse product is missing or inactive")
+            raise ValueError("No matching product.")
         inventory = [dict(row) for row in connection.execute(
             """SELECT i.inventory_id,l.location_name,i.container_id,i.quantity_on_hand,i.quantity_reserved
                  FROM inventory i JOIN inventory_locations l USING(location_id)

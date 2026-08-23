@@ -69,7 +69,12 @@ def install_channel_inventory_admin(app: FastAPI) -> None:
     def channel_inventory_mapping_preview(request:Request,channel:str=Form(...),order_id:str=Form(...),
                                           order_line_id:str=Form(...),product_id:int=Form(...),days:int=Form(30)):
         _strict_owner(request)
-        selected = mapping_confirmation_preview(PRODUCTION_DB,channel,order_id,order_line_id,product_id)
+        try:
+            selected = mapping_confirmation_preview(PRODUCTION_DB,channel,order_id,order_line_id,product_id)
+        except (ValueError,RuntimeError) as exc:
+            return templates.TemplateResponse(request=request,name="channel_inventory_review.html",
+                                              context=_review_context(request,"current",days,error=str(exc)),
+                                              status_code=400)
         return templates.TemplateResponse(request=request,name="channel_inventory_review.html",
                                           context=_review_context(request,"current",days,"",selected))
 
