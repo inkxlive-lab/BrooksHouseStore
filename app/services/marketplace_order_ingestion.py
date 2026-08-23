@@ -214,7 +214,9 @@ def deliver_pending_pushes(send: Callable[..., dict[str, int]], database: str | 
         ensure_marketplace_operations_schema(connection)
         alerts = connection.execute(
             """SELECT * FROM marketplace_order_alerts
-               WHERE alert_state='new' AND push_notified_at IS NULL ORDER BY alert_id"""
+               WHERE alert_state='new' AND push_notified_at IS NULL
+                 AND COALESCE(push_error,'')<>'Initial catch-up summary pending'
+               ORDER BY alert_id"""
         ).fetchall()
         for alert in alerts:
             channel = str(alert["channel"]).title()
@@ -241,9 +243,60 @@ def deliver_pending_pushes(send: Callable[..., dict[str, int]], database: str | 
     return delivered_alerts
 
 
+def prepare_initial_catchup_summary(database: str | Path | None = None, *, allow_fixture: bool = False) -> int:
+    with closing(connect(database, allow_fixture=allow_fixture)) as connection:
+        ensure_marketplace_operations_schema(connection)
+        cursor = connection.execute(
+            """UPDATE marketplace_order_alerts
+               SET push_error='Initial catch-up summary pending'
+               WHERE alert_state='new' AND push_notified_at IS NULL"""
+        )
+        connection.commit()
+        return cursor.rowcount
+
+
+def deliver_catchup_summary(send: Callable[..., dict[str, int]], database: str | Path | None = None,
+                            *, allow_fixture: bool = False) -> int:
+    with closing(connect(database, allow_fixture=allow_fixture)) as connection:
+        ensure_marketplace_operations_schema(connection)
+        rows = connection.execute(
+            """SELECT channel,COUNT(*) count FROM marketplace_order_alerts
+               WHERE alert_state='new' AND push_notified_at IS NULL
+                 AND push_error='Initial catch-up summary pending' GROUP BY channel"""
+        ).fetchall()
+        counts = {str(row["channel"]): int(row["count"]) for row in rows}
+        total = sum(counts.values())
+        if not total:
+            return 0
+        result = send(
+            f"{total} marketplace orders need attention",
+            f"{counts.get('walmart', 0)} Walmart, {counts.get('amazon', 0)} Amazon",
+            "/channels/orders?alert_state=new", "marketplace_catchup_summary",
+        )
+        if int(result.get("delivered", 0)) > 0:
+            connection.execute(
+                """UPDATE marketplace_order_alerts SET push_notified_at=?,push_error=NULL
+                   WHERE alert_state='new' AND push_notified_at IS NULL
+                     AND push_error='Initial catch-up summary pending'""", (_now(),)
+            )
+            connection.commit()
+            return total
+        connection.commit()
+        return 0
+
+
+def _has_completed_sync_run() -> bool:
+    with closing(connect()) as connection:
+        ensure_marketplace_operations_schema(connection)
+        return connection.execute(
+            "SELECT 1 FROM marketplace_sync_runs WHERE finished_at IS NOT NULL LIMIT 1"
+        ).fetchone() is not None
+
+
 def run_sync_cycle() -> dict[str, Any]:
     from app.walmart_order_service import sync_orders
     from amazon_order_history_sync import sync_recent_orders
+    initial_activation = not _has_completed_sync_run()
     results = {}
     for channel, callback in (("walmart", lambda: sync_orders(3, detailed=True)),
                               ("amazon", lambda: sync_recent_orders(days=3))):
@@ -252,6 +305,9 @@ def run_sync_cycle() -> dict[str, Any]:
         except Exception as error:
             results[channel] = {"success": False, "error": f"{type(error).__name__}: {error}"}
     from app.services.web_push_notifications import send_notification
+    if initial_activation:
+        prepare_initial_catchup_summary()
+    deliver_catchup_summary(send_notification)
     deliver_pending_pushes(send_notification)
     _WORKER_STATE["last_cycle_at"] = _now()
     return results

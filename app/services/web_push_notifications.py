@@ -228,6 +228,7 @@ def send_notification(
             preference_column = {
                 "walmart_new_order": "notify_new_orders",
                 "amazon_new_order": "notify_new_orders",
+                "marketplace_catchup_summary": "notify_new_orders",
                 "morning_recap": "notify_morning",
                 "evening_recap": "notify_evening",
             }.get(event_type)

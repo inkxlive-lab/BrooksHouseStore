@@ -9,7 +9,8 @@ from unittest.mock import patch
 
 from amazon_order_history_sync import sync_recent_orders
 from app.services.marketplace_order_ingestion import (
-    alert_counts, deliver_pending_pushes, mark_alert_reviewed, sync_health,
+    alert_counts, deliver_catchup_summary, deliver_pending_pushes, mark_alert_reviewed,
+    prepare_initial_catchup_summary, sync_health,
 )
 from app.walmart_order_service import sync_orders
 from app.services.web_push_notifications import ensure_push_tables, send_notification
@@ -139,6 +140,19 @@ class MarketplaceOrderIngestionTests(unittest.TestCase):
         with closing(sqlite3.connect(self.db)) as connection:
             active = connection.execute("SELECT active FROM web_push_subscriptions").fetchone()[0]
         self.assertEqual((result["failed"], active), (1, 0))
+
+    def test_initial_catchup_uses_one_summary_push(self):
+        sync_orders(3, database=self.db, allow_fixture=True,
+                    request_function=lambda *a, **k: walmart_payload())
+        sync_recent_orders(database=self.db, allow_fixture=True,
+                           client=FakeAmazonClient(), marketplace_id="ATV")
+        self.assertEqual(prepare_initial_catchup_summary(self.db, allow_fixture=True), 2)
+        sent = []
+        sender = lambda *args: sent.append(args) or {"delivered": 1, "failed": 0}
+        self.assertEqual(deliver_pending_pushes(sender, self.db, allow_fixture=True), 0)
+        self.assertEqual(deliver_catchup_summary(sender, self.db, allow_fixture=True), 2)
+        self.assertEqual(len(sent), 1)
+        self.assertIn("2 marketplace orders need attention", sent[0][0])
 
 
 if __name__ == "__main__":

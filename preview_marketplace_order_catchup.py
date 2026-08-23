@@ -7,11 +7,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from amazon_order_history_sync import (
-    AmazonClient, extract_orders, first_env, get_fulfilled_by, get_status, load_env,
+    AmazonClient, extract_orders, first_env, get_fulfilled_by, get_items, get_status, load_env,
 )
 from app.database_resolution import configured_sqlite_path, connect_sqlite_read_only
 from app.services.marketplace_order_ingestion import qualify_order
-from app.walmart_order_service import _extract_orders, _order_status, walmart_request
+from app.walmart_order_service import _extract_lines, _extract_orders, _order_status, walmart_request
 
 
 def main() -> int:
@@ -39,16 +39,21 @@ def main() -> int:
         status = _order_status(order)
         rows.append({"channel": "walmart", "order_id": order_id, "created_at": order.get("orderDate"),
                      "status": status, "already_saved": order_id in walmart_saved,
-                     "open_seller_action": qualify_order("walmart", status)})
+                     "open_seller_action": qualify_order("walmart", status),
+                     "line_count": len(_extract_lines(order))})
     for order in amazon:
         order_id = str(order.get("orderId") or order.get("amazonOrderId") or "")
         status, fulfilled_by = get_status(order), get_fulfilled_by(order)
         rows.append({"channel": "amazon", "order_id": order_id, "created_at": order.get("createdTime"),
                      "status": status, "fulfilled_by": fulfilled_by,
                      "already_saved": order_id in amazon_saved,
-                     "open_seller_action": qualify_order("amazon", status, fulfilled_by)})
+                     "open_seller_action": qualify_order("amazon", status, fulfilled_by),
+                     "line_count": len(get_items(order))})
+    pending = [row for row in rows if not row["already_saved"]]
     print(json.dumps({"database": str(configured_sqlite_path()), "read_only": True,
-                      "would_import": [row for row in rows if not row["already_saved"]],
+                      "expected_new_alerts": sum(row["open_seller_action"] for row in pending),
+                      "expected_picking_tasks": sum(row["line_count"] for row in pending if row["open_seller_action"]),
+                      "would_import": pending,
                       "already_saved": [row for row in rows if row["already_saved"]]}, indent=2))
     return 0
 
