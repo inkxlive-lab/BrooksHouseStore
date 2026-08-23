@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import socket
 import sqlite3
@@ -21,6 +22,7 @@ _WORKER_STATE: dict[str, Any] = {
 }
 _WORKER_STOP = threading.Event()
 _WORKER_THREAD: threading.Thread | None = None
+LOGGER = logging.getLogger("brookshouse.marketplace_sync")
 
 
 def _now() -> str:
@@ -320,16 +322,20 @@ def run_sync_cycle() -> dict[str, Any]:
 def worker_loop(stop_event: threading.Event | None = None, interval_seconds: int = SYNC_INTERVAL_SECONDS) -> None:
     stop_event = stop_event or threading.Event()
     _WORKER_STATE.update({"running": True, "started_at": _now()})
+    LOGGER.info("Marketplace sync worker started with %s-second interval", interval_seconds)
     try:
         while not stop_event.is_set():
             try:
-                run_sync_cycle()
+                results = run_sync_cycle()
                 _WORKER_STATE["last_error"] = None
+                LOGGER.info("Marketplace sync cycle completed: %s", results)
             except Exception as error:
                 _WORKER_STATE["last_error"] = f"{type(error).__name__}: {error}"[:1000]
+                LOGGER.exception("Marketplace sync worker cycle failed")
             stop_event.wait(interval_seconds)
     finally:
         _WORKER_STATE["running"] = False
+        LOGGER.info("Marketplace sync worker stopped")
 
 
 def start_worker() -> bool:
