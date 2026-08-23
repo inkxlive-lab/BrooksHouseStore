@@ -344,7 +344,19 @@ async def lifespan(app: FastAPI):
         f"{eligible_count} additional blank stocked prices repaired."
     )
 
-    yield
+    marketplace_worker_started = False
+    if should_run_background_jobs():
+        ensure_push_tables()
+        ensure_vapid_keys()
+        marketplace_worker_started = start_worker()
+        logging.getLogger("uvicorn.error").info(
+            "Marketplace sync worker launch result: %s", marketplace_worker_started,
+        )
+    try:
+        yield
+    finally:
+        if marketplace_worker_started:
+            stop_worker()
 from app.services.amazon_mapping import (
     get_mapping_page_data,
     link_amazon_listing,
@@ -13268,29 +13280,6 @@ def web_push_service_worker():
     response.headers["Service-Worker-Allowed"] = "/"
     response.headers["Cache-Control"] = "no-cache"
     return response
-
-
-@app.on_event("startup")
-def start_web_push_notifications():
-    worker_enabled = should_run_background_jobs()
-    logging.getLogger("uvicorn.error").info(
-        "Marketplace sync startup check: enabled=%s", worker_enabled,
-    )
-    if not worker_enabled:
-        return
-    ensure_push_tables()
-    ensure_vapid_keys()
-    if not getattr(app.state, "marketplace_sync_worker_started", False):
-        app.state.marketplace_sync_worker_started = start_worker()
-        logging.getLogger("uvicorn.error").info(
-            "Marketplace sync worker launch result: %s",
-            app.state.marketplace_sync_worker_started,
-        )
-
-
-@app.on_event("shutdown")
-def stop_marketplace_sync_worker():
-    stop_worker()
 
 
 # ============================================================
