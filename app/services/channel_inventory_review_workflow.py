@@ -8,6 +8,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+from app.database_resolution import connect_sqlite_read_only, resolve_sqlite_path
 from app.services.approved_mapping_application import inventory_fingerprint
 from app.services.channel_inventory_engine import load_source_line
 
@@ -17,14 +18,12 @@ EXPLICIT_REVIEW_CONFIRMATION = "MARK REVIEWED WITHOUT INVENTORY CHANGE"
 
 
 def _connect(database: str | Path, *, read_only: bool = False) -> sqlite3.Connection:
-    path = Path(database).resolve()
-    target = f"file:{path.as_posix()}?mode=ro" if read_only else str(path)
-    connection = sqlite3.connect(target, uri=read_only, timeout=30)
-    connection.row_factory = sqlite3.Row
+    path = resolve_sqlite_path(database)
     if read_only:
-        connection.execute("PRAGMA query_only=ON")
-    else:
-        connection.execute("PRAGMA foreign_keys=ON")
+        return connect_sqlite_read_only(path)
+    connection = sqlite3.connect(str(path),timeout=30)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys=ON")
     return connection
 
 

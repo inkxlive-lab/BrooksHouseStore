@@ -7,6 +7,7 @@ import argparse
 import json
 from pathlib import Path
 
+from app.database_resolution import require_application_database_match
 from app.migrations.channel_inventory_engine_schema import apply_guarded_migration, apply_to_copy, prepare_guarded_migration, preview
 
 
@@ -27,14 +28,16 @@ def main() -> int:
     if args.prepare_guarded:
         if not args.backup or not args.manifest:
             parser.error("--backup and --manifest are required")
-        result = prepare_guarded_migration(args.database,args.backup,cutover_at=args.cutover_at or "",
+        database = require_application_database_match(args.database)
+        result = prepare_guarded_migration(database,args.backup,cutover_at=args.cutover_at or "",
             checkpoints={"shopify":args.shopify_checkpoint or "","amazon":args.amazon_checkpoint or "","walmart":args.walmart_checkpoint or ""})
         args.manifest.write_text(json.dumps(result,indent=2),encoding="utf-8")
         print(json.dumps(result,indent=2))
     elif args.apply_guarded:
         if not args.manifest:
             parser.error("--manifest is required")
-        result = apply_guarded_migration(args.database,json.loads(args.manifest.read_text(encoding="utf-8")),confirmation=args.confirm)
+        database = require_application_database_match(args.database)
+        result = apply_guarded_migration(database,json.loads(args.manifest.read_text(encoding="utf-8")),confirmation=args.confirm)
         print(json.dumps(result.as_dict(), indent=2))
     else:
         result = apply_to_copy(args.database) if args.apply_to_copy else preview(args.database)

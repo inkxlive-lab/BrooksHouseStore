@@ -6,14 +6,14 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+from app.database_resolution import connect_sqlite_read_only, resolve_sqlite_path
 from app.services.channel_inventory_controls import effective_control
 from app.services.channel_inventory_engine import list_source_lines, preview_line
 
 
 def build_dry_run(database: str | Path, cutoff: str) -> dict:
-    path = Path(database).resolve()
-    connection = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
-    connection.row_factory = sqlite3.Row
+    path = resolve_sqlite_path(database)
+    connection = connect_sqlite_read_only(path)
     try:
         before_changes = int(connection.total_changes)
         rows = []

@@ -8,6 +8,8 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
+from app.database_resolution import (connect_sqlite_read_only, database_alignment,
+                                     require_application_database_match, resolve_sqlite_path)
 from app.services.approved_mapping_application import file_sha256, integrity_check, inventory_fingerprint
 from app.services.channel_inventory_engine import (
     DEFAULT_ELIGIBLE_LOCATIONS, PRODUCTION_DB, _location_rows, _policy_deduction_plan,
@@ -22,19 +24,16 @@ ENGINE_TABLES = ("channel_inventory_ledger", "channel_inventory_allocations",
 
 
 def _connect_read_only(database: str | Path) -> sqlite3.Connection:
-    path = Path(database).resolve()
-    connection = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=30)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA query_only=ON")
-    return connection
+    return connect_sqlite_read_only(database)
 
 
 def _table_exists(connection: sqlite3.Connection, table: str) -> bool:
     return connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone() is not None
 
 
-def safety_baseline(database: str | Path) -> dict:
-    path = Path(database).resolve()
+def safety_baseline(database: str | Path, *, require_application_match: bool = False) -> dict:
+    path = (require_application_database_match(database) if require_application_match
+            else resolve_sqlite_path(database))
     connection = _connect_read_only(path)
     try:
         fingerprint = inventory_fingerprint(connection)
@@ -55,7 +54,7 @@ def safety_baseline(database: str | Path) -> dict:
             controls = [dict(row) for row in connection.execute(
                 "SELECT scope,mode,paused,cutover_at,source_checkpoint,reason FROM channel_inventory_engine_control ORDER BY scope")]
         return {"captured_at": datetime.now(timezone.utc).isoformat(), "database": str(path),
-                "is_expected_production_path": path == PRODUCTION_DB, "database_sha256": file_sha256(path),
+                "is_expected_production_path": database_alignment(path)["matches"], "database_sha256": file_sha256(path),
                 "integrity_check": integrity_check(connection), "inventory": fingerprint,
                 "inventory_by_location": locations, "engine_tables_installed": installed,
                 "engine_row_counts": engine_counts, "controls": controls,
@@ -153,9 +152,10 @@ def _shopify_identifier_diagnostic(connection: sqlite3.Connection, cutoff: str) 
     return dict(counts)
 
 
-def run_production_review(database: str | Path, cutoff: str) -> dict:
-    path = Path(database).resolve()
-    before = safety_baseline(path)
+def run_production_review(database: str | Path, cutoff: str, *, require_application_match: bool = False) -> dict:
+    path = (require_application_database_match(database) if require_application_match
+            else resolve_sqlite_path(database))
+    before = safety_baseline(path,require_application_match=require_application_match)
     connection = _connect_read_only(path)
     try:
         lines = []
@@ -214,7 +214,7 @@ def run_production_review(database: str | Path, cutoff: str) -> dict:
     queue = sorted((line for line in lines if line["problem_category"] != "None"),
                    key=lambda line: (line["current_open_candidate"], line["affected_lines_for_sku"],
                                      line["source_timestamp"]), reverse=True)
-    after = safety_baseline(path)
+    after = safety_baseline(path,require_application_match=require_application_match)
     invariant_keys = ("database_sha256", "inventory", "engine_row_counts")
     zero_mutation = all(before[key] == after[key] for key in invariant_keys)
     return {"generated_at": datetime.now(timezone.utc).isoformat(), "cutoff": cutoff,
@@ -230,8 +230,9 @@ def run_production_review(database: str | Path, cutoff: str) -> dict:
             "lines": lines, "prioritized_review_queue": queue}
 
 
-def write_production_review(database: str | Path, cutoff: str, output: str | Path) -> dict:
-    report = run_production_review(database, cutoff)
+def write_production_review(database: str | Path, cutoff: str, output: str | Path, *,
+                            require_application_match: bool = False) -> dict:
+    report = run_production_review(database, cutoff,require_application_match=require_application_match)
     target = Path(output); target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(report, indent=2), encoding="utf-8")
     return report

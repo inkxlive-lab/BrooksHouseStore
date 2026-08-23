@@ -15,6 +15,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable
 
+from app.database_resolution import connect_sqlite_read_only, resolve_sqlite_path
 
 LEDGER_DDL = """
 CREATE TABLE IF NOT EXISTS channel_inventory_ledger (
@@ -90,10 +91,8 @@ class ReconciliationRow:
 
 @contextmanager
 def connect_read_only(database: str | Path):
-    path = Path(database).resolve()
-    connection = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA query_only=ON")
+    path = resolve_sqlite_path(database)
+    connection = connect_sqlite_read_only(path)
     try:
         yield connection
     finally:

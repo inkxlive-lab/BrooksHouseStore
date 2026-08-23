@@ -9,8 +9,10 @@ from urllib.parse import urlencode
 from urllib.request import Request as UrlRequest, urlopen
 from uuid import uuid4
 
+from app.database_resolution import configured_sqlite_path
+
 APP_ROOT = Path(__file__).resolve().parent.parent
-DB_PATH = APP_ROOT / "app" / "data" / "brookshouse_store.db"
+DB_PATH = configured_sqlite_path()
 ENV_PATH = APP_ROOT / ".env"
 
 

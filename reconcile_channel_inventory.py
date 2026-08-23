@@ -9,12 +9,14 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from app.database_resolution import configured_sqlite_path, require_application_database_match
 from app.services.channel_inventory_reconciliation import connect_read_only, reconcile
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--database", default="app/data/brookshouse_store.db")
+    parser.add_argument("--database", type=Path)
+    parser.add_argument("--allow-fixture-database", action="store_true")
     parser.add_argument("--days", type=int, default=30)
     parser.add_argument("--cutoff", help="Optional fixed ISO timestamp for a reproducible reconciliation cohort")
     parser.add_argument("--csv")
@@ -22,8 +24,11 @@ def main() -> int:
     args = parser.parse_args()
     if not 1 <= args.days <= 180:
         parser.error("--days must be between 1 and 180")
+    database = args.database or configured_sqlite_path()
+    if not args.allow_fixture_database:
+        database = require_application_database_match(database)
     cutoff = args.cutoff or (datetime.now(timezone.utc) - timedelta(days=args.days)).isoformat()
-    with connect_read_only(args.database) as connection:
+    with connect_read_only(database) as connection:
         rows = [row.as_dict() for row in reconcile(connection, cutoff)]
     if args.csv:
         target = Path(args.csv)

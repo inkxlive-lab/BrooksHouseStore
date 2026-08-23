@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from app.database_resolution import connect_sqlite_read_only, configured_sqlite_path
 from app.services.channel_inventory_engine import (
     BACK_ROOM, PRODUCTION_DB, STOREFRONT, _deduction_plan,
     _location_rows, _replenishment_candidates,
@@ -36,12 +37,9 @@ class PreviewRow:
         return asdict(self)
 
 
-def connect_read_only(database: str | Path = PRODUCTION_DB) -> sqlite3.Connection:
-    path = Path(database).resolve()
-    connection = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=30)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA query_only=ON")
-    return connection
+def connect_read_only(database: str | Path | None = None, *, require_application_match: bool = False) -> sqlite3.Connection:
+    path = configured_sqlite_path() if database is None else database
+    return connect_sqlite_read_only(path,require_application_match=require_application_match or database is None)
 
 
 def _table_exists(connection: sqlite3.Connection, table: str) -> bool:
@@ -152,8 +150,9 @@ def _classify(connection: sqlite3.Connection, row: sqlite3.Row) -> PreviewRow:
                       reason="No eligible physical location covers the complete line; allocation remains owed, without fabricating on-hand stock.")
 
 
-def build_report(database: str | Path = PRODUCTION_DB, *, cutoff: str) -> dict:
-    connection = connect_read_only(database)
+def build_report(database: str | Path | None = None, *, cutoff: str,
+                 require_application_match: bool = False) -> dict:
+    connection = connect_read_only(database,require_application_match=require_application_match)
     try:
         rows = [_classify(connection, row) for row in _source_rows(connection, cutoff)]
         counts: dict[str, int] = {}

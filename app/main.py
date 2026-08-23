@@ -361,6 +361,7 @@ from app.services.product_channel_status import (
 from app.services.system_check import build_system_check
 from app.services.cloud_health import install_cloud_health
 from app.config import should_run_background_jobs
+from app.database_resolution import configured_sqlite_path
 from app.services.search_helpers import (
     clean_search_term,
     sql_wildcard_pattern,
@@ -474,7 +475,7 @@ def product_to_dictionary(product: Product) -> dict:
             for record in product.inventory_records
         ],
     }
-DB_PATH = Path("app/data/brookshouse_store.db")
+DB_PATH = configured_sqlite_path()
 
 
 def load_walmart_inventory_flags(
@@ -6798,7 +6799,7 @@ def build_marketplace_stats() -> dict:
     from datetime import datetime as _datetime
     from datetime import timedelta as _timedelta
 
-    connection = _sqlite3.connect("app/data/brookshouse_store.db")
+    connection = _sqlite3.connect(DB_PATH)
     connection.row_factory = _sqlite3.Row
 
     def table_exists(name: str) -> bool:

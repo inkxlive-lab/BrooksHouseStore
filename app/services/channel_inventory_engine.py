@@ -14,10 +14,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from app.database_resolution import configured_application_database, resolve_sqlite_path
 from app.services.channel_inventory_mapping import validate_mapping
 
 
-PRODUCTION_DB = (Path(__file__).resolve().parents[1] / "data" / "brookshouse_store.db").resolve()
+_APPLICATION_DATABASE = configured_application_database()
+PRODUCTION_DB = _APPLICATION_DATABASE.sqlite_path
 STOREFRONT = "BrooksHouse Storefront"
 BACK_ROOM = "Store Back Room"
 RESERVED = "Online Orders / Reserved"
@@ -151,8 +153,8 @@ def _event_suffix(value: str) -> str:
 
 
 def assert_copy_database(database: str | Path) -> Path:
-    resolved = Path(database).resolve()
-    if resolved == PRODUCTION_DB or resolved.parent == PRODUCTION_DB.parent:
+    resolved = resolve_sqlite_path(database)
+    if PRODUCTION_DB is not None and (resolved == PRODUCTION_DB or resolved.parent == PRODUCTION_DB.parent):
         raise ProductionWriteRefused(f"Copy-only engine refuses database path: {resolved}")
     if not resolved.exists():
         raise FileNotFoundError(resolved)

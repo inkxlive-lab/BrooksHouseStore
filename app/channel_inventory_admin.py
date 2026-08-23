@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import logging
+from pathlib import Path
 
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from app.services.channel_inventory_preflight import PRODUCTION_DB, build_report
+from app.database_resolution import DatabaseResolutionError, require_application_database_match
+from app.services.channel_inventory_preflight import build_report
 from app.services.channel_inventory_production_review import run_production_review
 from app.services.channel_inventory_review_workflow import (
     EXPLICIT_MAPPING_CONFIRMATION, EXPLICIT_REVIEW_CONFIRMATION, apply_confirmed_mapping,
@@ -18,6 +20,13 @@ from app.services.channel_inventory_review_workflow import (
 
 templates = Jinja2Templates(directory="app/templates")
 logger = logging.getLogger(__name__)
+
+
+def _inventory_database() -> Path:
+    try:
+        return require_application_database_match()
+    except DatabaseResolutionError as exc:
+        raise HTTPException(status_code=503,detail=str(exc)) from exc
 
 
 def _owner(request: Request) -> None:
@@ -35,12 +44,13 @@ def _strict_owner(request: Request):
 
 def _review_context(request: Request, view: str, days: int, query: str = "", selected: dict | None = None,
                     error: str = "", message: str = "") -> dict:
+    database = _inventory_database()
     cutoff = (datetime.now(timezone.utc)-timedelta(days=days)).isoformat()
-    report = run_production_review(PRODUCTION_DB,cutoff)
+    report = run_production_review(database,cutoff,require_application_match=True)
     current = [row for row in report["lines"] if row["current_open_candidate"]]
     historical = [row for row in report["lines"] if not row["current_open_candidate"]]
     lines = historical if view == "historical" else current
-    candidates = search_products(PRODUCTION_DB,query) if query else []
+    candidates = search_products(database,query) if query else []
     return {"request":request,"report":report,"lines":lines,"view":view,"days":days,"query":query,
             "candidates":candidates,"mapping_preview":selected,
             "mapping_confirmation":EXPLICIT_MAPPING_CONFIRMATION,"review_confirmation":EXPLICIT_REVIEW_CONFIRMATION,
@@ -53,7 +63,7 @@ def install_channel_inventory_admin(app: FastAPI) -> None:
         _owner(request)
         hours = hours if hours in {1, 6, 24, 72, 168, 720} else 24
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
-        report = build_report(PRODUCTION_DB, cutoff=cutoff)
+        report = build_report(_inventory_database(), cutoff=cutoff, require_application_match=True)
         return templates.TemplateResponse(request=request, name="channel_inventory_engine_admin.html",
                                           context={"report": report, "hours": hours})
 
@@ -70,7 +80,7 @@ def install_channel_inventory_admin(app: FastAPI) -> None:
                                           order_line_id:str=Form(...),product_id:int=Form(...),days:int=Form(30)):
         _strict_owner(request)
         try:
-            selected = mapping_confirmation_preview(PRODUCTION_DB,channel,order_id,order_line_id,product_id)
+            selected = mapping_confirmation_preview(_inventory_database(),channel,order_id,order_line_id,product_id)
         except (ValueError,RuntimeError) as exc:
             return templates.TemplateResponse(request=request,name="channel_inventory_review.html",
                                               context=_review_context(request,"current",days,error=str(exc)),
@@ -86,8 +96,8 @@ def install_channel_inventory_admin(app: FastAPI) -> None:
         selected = None
         try:
             selected = mapping_confirmation_preview(
-                PRODUCTION_DB,channel,order_id,order_line_id,selected_product_id)
-            apply_confirmed_mapping(PRODUCTION_DB,selected,confirmation=confirmation_phrase)
+                _inventory_database(),channel,order_id,order_line_id,selected_product_id)
+            apply_confirmed_mapping(_inventory_database(),selected,confirmation=confirmation_phrase)
         except (ValueError, RuntimeError) as exc:
             context = _review_context(request,"current",days,selected=selected,error=str(exc))
             return templates.TemplateResponse(request=request,name="channel_inventory_review.html",
@@ -106,5 +116,5 @@ def install_channel_inventory_admin(app: FastAPI) -> None:
                                         order_line_id:str=Form(...),confirmation:str=Form("")):
         user = _strict_owner(request)
         actor = str(getattr(user,"display_name",None) or getattr(user,"user_id","owner_admin"))
-        mark_reviewed(PRODUCTION_DB,channel,order_id,order_line_id,actor,confirmation=confirmation)
+        mark_reviewed(_inventory_database(),channel,order_id,order_line_id,actor,confirmation=confirmation)
         return RedirectResponse("/admin/channel-inventory-review?message=Marked+reviewed",status_code=303)

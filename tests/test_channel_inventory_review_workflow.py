@@ -184,7 +184,7 @@ class ChannelInventoryReviewWorkflowTests(unittest.TestCase):
                            "headers":[],"query_string":b"","server":("test",80),"client":("test",1),"scheme":"http"})
         request.state.auth_user = SimpleNamespace(role="owner_admin")
         preview = mapping_confirmation_preview(self.db,"walmart","W1","101",1040)
-        with patch("app.channel_inventory_admin.PRODUCTION_DB",self.db), \
+        with patch("app.channel_inventory_admin._inventory_database",return_value=self.db), \
              patch("app.channel_inventory_admin.mapping_confirmation_preview",return_value=preview), \
              patch("app.channel_inventory_admin._review_context",return_value={"request":request,"error":"Exact mapping confirmation is required"}), \
              patch("app.channel_inventory_admin.templates.TemplateResponse",
@@ -200,7 +200,7 @@ class ChannelInventoryReviewWorkflowTests(unittest.TestCase):
         request = Request({"type":"http","method":"POST","path":"/admin/channel-inventory-review/mapping-preview",
                            "headers":[],"query_string":b"","server":("test",80),"client":("test",1),"scheme":"http"})
         request.state.auth_user = SimpleNamespace(role="owner_admin")
-        with patch("app.channel_inventory_admin.PRODUCTION_DB",self.db), \
+        with patch("app.channel_inventory_admin._inventory_database",return_value=self.db), \
              patch("app.channel_inventory_admin._review_context",return_value={"request":request,"error":"No matching product."}), \
              patch("app.channel_inventory_admin.templates.TemplateResponse",
                    return_value=HTMLResponse("No matching product.",status_code=400)):
