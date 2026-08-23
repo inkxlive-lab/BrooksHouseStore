@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import logging
 
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -16,6 +17,7 @@ from app.services.channel_inventory_review_workflow import (
 )
 
 templates = Jinja2Templates(directory="app/templates")
+logger = logging.getLogger(__name__)
 
 
 def _owner(request: Request) -> None:
@@ -31,7 +33,8 @@ def _strict_owner(request: Request):
     return user
 
 
-def _review_context(request: Request, view: str, days: int, query: str = "", selected: dict | None = None) -> dict:
+def _review_context(request: Request, view: str, days: int, query: str = "", selected: dict | None = None,
+                    error: str = "", message: str = "") -> dict:
     cutoff = (datetime.now(timezone.utc)-timedelta(days=days)).isoformat()
     report = run_production_review(PRODUCTION_DB,cutoff)
     current = [row for row in report["lines"] if row["current_open_candidate"]]
@@ -40,7 +43,8 @@ def _review_context(request: Request, view: str, days: int, query: str = "", sel
     candidates = search_products(PRODUCTION_DB,query) if query else []
     return {"request":request,"report":report,"lines":lines,"view":view,"days":days,"query":query,
             "candidates":candidates,"mapping_preview":selected,
-            "mapping_confirmation":EXPLICIT_MAPPING_CONFIRMATION,"review_confirmation":EXPLICIT_REVIEW_CONFIRMATION}
+            "mapping_confirmation":EXPLICIT_MAPPING_CONFIRMATION,"review_confirmation":EXPLICIT_REVIEW_CONFIRMATION,
+            "error":error,"message":message}
 
 
 def install_channel_inventory_admin(app: FastAPI) -> None:
@@ -54,12 +58,12 @@ def install_channel_inventory_admin(app: FastAPI) -> None:
                                           context={"report": report, "hours": hours})
 
     @app.get("/admin/channel-inventory-review",response_class=HTMLResponse)
-    def channel_inventory_review(request:Request,view:str="current",days:int=30,q:str=""):
+    def channel_inventory_review(request:Request,view:str="current",days:int=30,q:str="",message:str="",error:str=""):
         _strict_owner(request)
         view = view if view in {"current","historical"} else "current"
         days = days if days in {7,14,30,60,90} else 30
         return templates.TemplateResponse(request=request,name="channel_inventory_review.html",
-                                          context=_review_context(request,view,days,q))
+                                          context=_review_context(request,view,days,q,error=error,message=message))
 
     @app.post("/admin/channel-inventory-review/mapping-preview",response_class=HTMLResponse)
     def channel_inventory_mapping_preview(request:Request,channel:str=Form(...),order_id:str=Form(...),
@@ -71,10 +75,25 @@ def install_channel_inventory_admin(app: FastAPI) -> None:
 
     @app.post("/admin/channel-inventory-review/confirm-mapping")
     def channel_inventory_confirm_mapping(request:Request,channel:str=Form(...),order_id:str=Form(...),
-                                          order_line_id:str=Form(...),product_id:int=Form(...),confirmation:str=Form("")):
+                                          order_line_id:str=Form(...),selected_product_id:int=Form(...),
+                                          confirmation_phrase:str=Form(""),days:int=Form(30)):
         _strict_owner(request)
-        selected = mapping_confirmation_preview(PRODUCTION_DB,channel,order_id,order_line_id,product_id)
-        apply_confirmed_mapping(PRODUCTION_DB,selected,confirmation=confirmation)
+        selected = None
+        try:
+            selected = mapping_confirmation_preview(
+                PRODUCTION_DB,channel,order_id,order_line_id,selected_product_id)
+            apply_confirmed_mapping(PRODUCTION_DB,selected,confirmation=confirmation_phrase)
+        except (ValueError, RuntimeError) as exc:
+            context = _review_context(request,"current",days,selected=selected,error=str(exc))
+            return templates.TemplateResponse(request=request,name="channel_inventory_review.html",
+                                              context=context,status_code=400)
+        except Exception:
+            logger.exception("Marketplace mapping confirmation failed and was rolled back")
+            context = _review_context(
+                request,"current",days,selected=selected,
+                error="Mapping was not changed because the transaction failed. Review the server log and retry.")
+            return templates.TemplateResponse(request=request,name="channel_inventory_review.html",
+                                              context=context,status_code=500)
         return RedirectResponse("/admin/channel-inventory-review?message=Mapping+confirmed",status_code=303)
 
     @app.post("/admin/channel-inventory-review/mark-reviewed")

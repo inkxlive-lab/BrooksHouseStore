@@ -146,10 +146,13 @@ def apply_confirmed_mapping(database: str | Path, preview: dict, *, confirmation
                 else:
                     connection.execute("INSERT INTO walmart_product_links(walmart_listing_id,product_id,match_status) VALUES(?,?,'linked')",
                                        (listing_id,product_id))
-            changed = connection.execute("UPDATE walmart_order_lines SET product_id=? WHERE TRIM(sku)=? COLLATE NOCASE",
-                                         (product_id,source.sku)).rowcount
+            changed = connection.execute(
+                "UPDATE walmart_order_lines SET product_id=? WHERE purchase_order_id=? AND order_line_id=?",
+                (product_id,source.order_id,source.order_line_id)).rowcount
         else:
             raise ValueError("Unsupported channel")
+        if changed != 1:
+            raise RuntimeError("The intended marketplace order line was not updated exactly once")
         after = inventory_fingerprint(connection)
         if before != after:
             raise RuntimeError("Mapping confirmation unexpectedly changed inventory")

@@ -3,8 +3,12 @@ import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
+from starlette.requests import Request
 from jinja2 import Environment, FileSystemLoader
 
 from app.channel_inventory_admin import install_channel_inventory_admin
@@ -27,12 +31,16 @@ class ChannelInventoryReviewWorkflowTests(unittest.TestCase):
             connection.execute("ALTER TABLE operations_work_queue ADD COLUMN completed_at TEXT")
             connection.executemany("INSERT INTO products VALUES(?,?,?,?,?,?)",[
                 (10,"Original Widget",1,1,"OldBrand","Old description"),
-                (11,"Selected Widget",1,1,"Acme","Blue replacement widget")])
-            connection.execute("INSERT INTO product_barcodes VALUES(1,11,'987654321',1)")
+                (11,"Selected Widget",1,1,"Acme","Blue replacement widget"),
+                (1040,"ACE RSBL CLD PK",1,1,"ACE","Reusable cold compress")])
+            connection.executemany("INSERT INTO product_barcodes VALUES(?,?,?,1)",[
+                (1,11,'987654321'),(2,1040,'051131204010')])
             connection.executemany("INSERT INTO inventory_locations VALUES(?,?,?,1)",[(1,"BrooksHouse Storefront","store"),(2,"Store Back Room","storage")])
             connection.executemany("INSERT INTO inventory VALUES(?,?,?,?,?,?,?,?)",[(1,10,1,"F",5,0,0,"x"),(2,11,2,"B",3,0,0,"x")])
             connection.execute("INSERT INTO walmart_orders VALUES('W1','2026-08-20','Created','v1')")
             connection.execute("INSERT INTO walmart_order_lines VALUES(101,'W1',10,1,'SKU-X','Marketplace Widget','Created')")
+            connection.execute("INSERT INTO walmart_orders VALUES('W2','2026-08-20','Created','v1')")
+            connection.execute("INSERT INTO walmart_order_lines VALUES(102,'W2',NULL,1,'SKU-X','Another order','Created')")
             connection.execute("INSERT INTO walmart_listings VALUES(1,'SKU-X')")
             connection.execute("INSERT INTO shopify_sales_orders VALUES('O1','2026-08-20',0,NULL,'unfulfilled')")
             connection.execute("INSERT INTO shopify_sales_lines VALUES('L1','O1',10,1,1,'SHOP','Shop item','v1','matched')")
@@ -47,19 +55,37 @@ class ChannelInventoryReviewWorkflowTests(unittest.TestCase):
                 self.assertEqual(search_products(self.db,term)[0]["product_id"],11)
 
     def test_mapping_requires_preview_and_exact_confirmation_without_inventory_change(self):
-        preview = mapping_confirmation_preview(self.db,"walmart","W1","101",11)
-        with self.assertRaises(ValueError):
-            apply_confirmed_mapping(self.db,preview,confirmation="yes")
+        preview = mapping_confirmation_preview(self.db,"walmart","W1","101",1040)
+        self.assertEqual(preview["selected_product"]["product_id"],1040)
+        for phrase in ("", "yes", "1040"):
+            with self.subTest(phrase=phrase), self.assertRaisesRegex(ValueError,"Exact mapping confirmation"):
+                apply_confirmed_mapping(self.db,preview,confirmation=phrase)
         with closing(sqlite3.connect(self.db)) as connection:
             before = inventory_fingerprint(connection)
+            transaction_before = connection.execute("SELECT COUNT(*),COALESCE(MAX(transaction_id),0) FROM inventory_transactions").fetchone()
         result = apply_confirmed_mapping(self.db,preview,confirmation=EXPLICIT_MAPPING_CONFIRMATION)
         with closing(sqlite3.connect(self.db)) as connection:
             after = inventory_fingerprint(connection)
             line_product = connection.execute("SELECT product_id FROM walmart_order_lines WHERE order_line_id=101").fetchone()[0]
+            unrelated_product = connection.execute("SELECT product_id FROM walmart_order_lines WHERE order_line_id=102").fetchone()[0]
             link = connection.execute("SELECT product_id,match_status FROM walmart_product_links").fetchone()
+            transaction_after = connection.execute("SELECT COUNT(*),COALESCE(MAX(transaction_id),0) FROM inventory_transactions").fetchone()
         self.assertEqual(before,after)
+        self.assertEqual(transaction_before,transaction_after)
         self.assertTrue(result["inventory_unchanged"])
-        self.assertEqual((line_product,link),(11,(11,"linked")))
+        self.assertEqual(result["affected_order_lines"],1)
+        self.assertEqual((line_product,unrelated_product,link),(1040,None,(1040,"linked")))
+
+    def test_mapping_transaction_rolls_back_completely_on_inventory_guard_failure(self):
+        preview = mapping_confirmation_preview(self.db,"walmart","W1","101",1040)
+        with patch("app.services.channel_inventory_review_workflow.inventory_fingerprint",
+                   side_effect=[{"fingerprint":"before"},{"fingerprint":"changed"}]):
+            with self.assertRaisesRegex(RuntimeError,"unexpectedly changed inventory"):
+                apply_confirmed_mapping(self.db,preview,confirmation=EXPLICIT_MAPPING_CONFIRMATION)
+        with closing(sqlite3.connect(self.db)) as connection:
+            self.assertEqual(connection.execute(
+                "SELECT product_id FROM walmart_order_lines WHERE order_line_id=101").fetchone()[0],10)
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM walmart_product_links").fetchone()[0],0)
 
     def test_mark_reviewed_writes_metadata_only(self):
         with self.assertRaises(ValueError):
@@ -81,7 +107,27 @@ class ChannelInventoryReviewWorkflowTests(unittest.TestCase):
         template = Path("app/templates/channel_inventory_review.html").read_text(encoding="utf-8")
         for text in ("Safe / Would Deduct","Mapping Required","Inventory Location Review","Historical / Ignore","/inventory/transfer"):
             self.assertIn(text,template)
+        self.assertIn('name="selected_product_id"',template)
+        self.assertIn('name="confirmation_phrase"',template)
+        self.assertIn('value="" autocomplete="off"',template)
         Environment(loader=FileSystemLoader("app/templates")).get_template("channel_inventory_review.html")
+
+    def test_incorrect_confirmation_returns_friendly_ui_error_instead_of_500(self):
+        app = FastAPI(); install_channel_inventory_admin(app)
+        endpoint = next(route.endpoint for route in app.routes
+                        if route.path == "/admin/channel-inventory-review/confirm-mapping")
+        request = Request({"type":"http","method":"POST","path":"/admin/channel-inventory-review/confirm-mapping",
+                           "headers":[],"query_string":b"","server":("test",80),"client":("test",1),"scheme":"http"})
+        request.state.auth_user = SimpleNamespace(role="owner_admin")
+        preview = mapping_confirmation_preview(self.db,"walmart","W1","101",1040)
+        with patch("app.channel_inventory_admin.PRODUCTION_DB",self.db), \
+             patch("app.channel_inventory_admin.mapping_confirmation_preview",return_value=preview), \
+             patch("app.channel_inventory_admin._review_context",return_value={"request":request,"error":"Exact mapping confirmation is required"}), \
+             patch("app.channel_inventory_admin.templates.TemplateResponse",
+                   return_value=HTMLResponse("Mapping was not changed. Exact mapping confirmation is required",status_code=400)):
+            response = endpoint(request,"walmart","W1","101",1040,"1040",30)
+        self.assertEqual(response.status_code,400)
+        self.assertIn(b"Mapping was not changed",response.body)
 
 
 if __name__ == "__main__":
