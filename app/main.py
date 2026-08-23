@@ -2,6 +2,7 @@ from app.integrations.product_lookup import lookup_upc_online
 from datetime import datetime
 import re
 import json
+import logging
 import traceback
 from contextlib import asynccontextmanager
 import csv
@@ -13271,12 +13272,20 @@ def web_push_service_worker():
 
 @app.on_event("startup")
 def start_web_push_notifications():
-    if not should_run_background_jobs():
+    worker_enabled = should_run_background_jobs()
+    logging.getLogger("uvicorn.error").info(
+        "Marketplace sync startup check: enabled=%s", worker_enabled,
+    )
+    if not worker_enabled:
         return
     ensure_push_tables()
     ensure_vapid_keys()
     if not getattr(app.state, "marketplace_sync_worker_started", False):
         app.state.marketplace_sync_worker_started = start_worker()
+        logging.getLogger("uvicorn.error").info(
+            "Marketplace sync worker launch result: %s",
+            app.state.marketplace_sync_worker_started,
+        )
 
 
 @app.on_event("shutdown")
