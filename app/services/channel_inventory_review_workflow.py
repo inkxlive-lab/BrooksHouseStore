@@ -83,6 +83,84 @@ def mapping_confirmation_preview(database: str | Path, channel: str, order_id: s
         connection.close()
 
 
+def _normalized_identity(value: object) -> str:
+    return " ".join(str(value or "").split()).casefold()
+
+
+def _walmart_raw_lines(raw_json: str) -> list[dict]:
+    try:
+        order = json.loads(raw_json or "{}")
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("Retained Walmart source evidence is not valid JSON") from exc
+    lines = ((order.get("orderLines") or {}).get("orderLine") or []) if isinstance(order, dict) else []
+    if isinstance(lines, dict):
+        lines = [lines]
+    return [line for line in lines if isinstance(line, dict)]
+
+
+def _resolve_walmart_listing_identity(connection: sqlite3.Connection, source) -> int:
+    listings = connection.execute(
+        "SELECT walmart_listing_id FROM walmart_listings WHERE TRIM(seller_sku)=? COLLATE NOCASE",
+        (source.sku,)).fetchall()
+    if len(listings) > 1:
+        raise RuntimeError("Walmart listing identity is ambiguous")
+    if len(listings) == 1:
+        return int(listings[0][0])
+
+    order_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(walmart_orders)")}
+    line_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(walmart_order_lines)")}
+    required_order = {"raw_json"}
+    required_line = {"line_number", "sku", "upc", "item_name"}
+    if not required_order <= order_columns or not required_line <= line_columns:
+        raise RuntimeError("Walmart listing identity is missing and retained source evidence is unavailable")
+
+    stored = connection.execute(
+        """SELECT wol.line_number,wol.sku,wol.upc,wol.item_name,wo.raw_json
+             FROM walmart_order_lines wol JOIN walmart_orders wo USING(purchase_order_id)
+            WHERE wol.purchase_order_id=? AND wol.order_line_id=?""",
+        (source.order_id,source.order_line_id)).fetchone()
+    if stored is None:
+        raise RuntimeError("Walmart order line source evidence is missing")
+    raw_matches = [line for line in _walmart_raw_lines(stored["raw_json"])
+                   if str(line.get("lineNumber") or "").strip() == str(stored["line_number"] or "").strip()]
+    if len(raw_matches) != 1:
+        raise RuntimeError("Retained Walmart source line identity is missing or ambiguous")
+    raw_item = raw_matches[0].get("item") or {}
+    raw_sku = str(raw_item.get("sku") or "").strip()
+    raw_title = str(raw_item.get("productName") or raw_item.get("itemName") or "").strip()
+    raw_upc = str(raw_item.get("upc") or "").strip()
+    if (_normalized_identity(raw_sku) != _normalized_identity(stored["sku"]) or
+            not raw_title or _normalized_identity(raw_title) != _normalized_identity(stored["item_name"])):
+        raise RuntimeError("Retained Walmart source evidence conflicts with the normalized order line")
+    if raw_upc and stored["upc"] and _normalized_identity(raw_upc) != _normalized_identity(stored["upc"]):
+        raise RuntimeError("Retained Walmart UPC conflicts with the normalized order line")
+
+    history = connection.execute(
+        "SELECT item_name,upc FROM walmart_order_lines WHERE TRIM(sku)=? COLLATE NOCASE",
+        (source.sku,)).fetchall()
+    titles = {_normalized_identity(row["item_name"]) for row in history if _normalized_identity(row["item_name"])}
+    upcs = {_normalized_identity(row["upc"]) for row in history if _normalized_identity(row["upc"])}
+    if len(titles) != 1 or len(upcs) > 1:
+        raise RuntimeError("Historical Walmart order evidence makes this seller SKU ambiguous")
+    if raw_upc:
+        upcs.add(_normalized_identity(raw_upc))
+        if len(upcs) > 1:
+            raise RuntimeError("Historical Walmart UPC evidence makes this seller SKU ambiguous")
+
+    now = datetime.now(timezone.utc).isoformat()
+    columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(walmart_listings)")}
+    fields, values = ["seller_sku"], [raw_sku]
+    if "item_name" in columns:
+        fields.append("item_name"); values.append(raw_title)
+    if "created_at" in columns:
+        fields.append("created_at"); values.append(now)
+    if "updated_at" in columns:
+        fields.append("updated_at"); values.append(now)
+    cursor = connection.execute(
+        f"INSERT INTO walmart_listings ({','.join(fields)}) VALUES ({','.join('?' for _ in fields)})", values)
+    return int(cursor.lastrowid)
+
+
 def apply_confirmed_mapping(database: str | Path, preview: dict, *, confirmation: str) -> dict:
     if confirmation != EXPLICIT_MAPPING_CONFIRMATION:
         raise ValueError("Exact mapping confirmation is required")
@@ -124,11 +202,7 @@ def apply_confirmed_mapping(database: str | Path, preview: dict, *, confirmation
                 "UPDATE amazon_order_item_history SET product_id=? WHERE amazon_order_id=? AND order_item_id=?",
                 (product_id,source.order_id,source.order_line_id)).rowcount
         elif source.channel == "walmart":
-            listings = connection.execute(
-                "SELECT walmart_listing_id FROM walmart_listings WHERE TRIM(seller_sku)=? COLLATE NOCASE",(source.sku,)).fetchall()
-            if len(listings) != 1:
-                raise RuntimeError("Walmart listing identity is missing or ambiguous")
-            listing_id = int(listings[0][0])
+            listing_id = _resolve_walmart_listing_identity(connection,source)
             link_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(walmart_product_links)")}
             existing_link = connection.execute(
                 "SELECT walmart_product_link_id FROM walmart_product_links WHERE walmart_listing_id=?",(listing_id,)).fetchone()

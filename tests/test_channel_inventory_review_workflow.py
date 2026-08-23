@@ -1,4 +1,5 @@
 import sqlite3
+import json
 import tempfile
 import unittest
 from contextlib import closing
@@ -29,6 +30,12 @@ class ChannelInventoryReviewWorkflowTests(unittest.TestCase):
             connection.execute("ALTER TABLE products ADD COLUMN brand TEXT")
             connection.execute("ALTER TABLE products ADD COLUMN description TEXT")
             connection.execute("ALTER TABLE operations_work_queue ADD COLUMN completed_at TEXT")
+            connection.execute("ALTER TABLE walmart_orders ADD COLUMN raw_json TEXT")
+            connection.execute("ALTER TABLE walmart_order_lines ADD COLUMN line_number TEXT")
+            connection.execute("ALTER TABLE walmart_order_lines ADD COLUMN upc TEXT")
+            connection.execute("ALTER TABLE walmart_listings ADD COLUMN item_name TEXT")
+            connection.execute("ALTER TABLE walmart_listings ADD COLUMN created_at TEXT")
+            connection.execute("ALTER TABLE walmart_listings ADD COLUMN updated_at TEXT")
             connection.executemany("INSERT INTO products VALUES(?,?,?,?,?,?)",[
                 (10,"Original Widget",1,1,"OldBrand","Old description"),
                 (11,"Selected Widget",1,1,"Acme","Blue replacement widget"),
@@ -37,11 +44,12 @@ class ChannelInventoryReviewWorkflowTests(unittest.TestCase):
                 (1,11,'987654321'),(2,1040,'051131204010')])
             connection.executemany("INSERT INTO inventory_locations VALUES(?,?,?,1)",[(1,"BrooksHouse Storefront","store"),(2,"Store Back Room","storage")])
             connection.executemany("INSERT INTO inventory VALUES(?,?,?,?,?,?,?,?)",[(1,10,1,"F",5,0,0,"x"),(2,11,2,"B",3,0,0,"x")])
-            connection.execute("INSERT INTO walmart_orders VALUES('W1','2026-08-20','Created','v1')")
-            connection.execute("INSERT INTO walmart_order_lines VALUES(101,'W1',10,1,'SKU-X','Marketplace Widget','Created')")
-            connection.execute("INSERT INTO walmart_orders VALUES('W2','2026-08-20','Created','v1')")
-            connection.execute("INSERT INTO walmart_order_lines VALUES(102,'W2',NULL,1,'SKU-X','Another order','Created')")
-            connection.execute("INSERT INTO walmart_listings VALUES(1,'SKU-X')")
+            raw = lambda title: json.dumps({"orderLines":{"orderLine":[{
+                "lineNumber":"1","item":{"sku":"SKU-X","productName":title}}]}})
+            connection.execute("INSERT INTO walmart_orders VALUES('W1','2026-08-20','Created','v1',?)",(raw("Marketplace Widget"),))
+            connection.execute("INSERT INTO walmart_order_lines VALUES(101,'W1',10,1,'SKU-X','Marketplace Widget','Created','1','')")
+            connection.execute("INSERT INTO walmart_orders VALUES('W2','2026-08-20','Created','v1',?)",(raw("Marketplace Widget"),))
+            connection.execute("INSERT INTO walmart_order_lines VALUES(102,'W2',NULL,1,'SKU-X','Marketplace Widget','Created','1','')")
             connection.execute("INSERT INTO shopify_sales_orders VALUES('O1','2026-08-20',0,NULL,'unfulfilled')")
             connection.execute("INSERT INTO shopify_sales_lines VALUES('L1','O1',10,1,1,'SHOP','Shop item','v1','matched')")
             connection.commit()
@@ -85,6 +93,25 @@ class ChannelInventoryReviewWorkflowTests(unittest.TestCase):
         with closing(sqlite3.connect(self.db)) as connection:
             self.assertEqual(connection.execute(
                 "SELECT product_id FROM walmart_order_lines WHERE order_line_id=101").fetchone()[0],10)
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM walmart_product_links").fetchone()[0],0)
+
+    def test_missing_listing_bootstraps_only_from_consistent_retained_walmart_evidence(self):
+        preview = mapping_confirmation_preview(self.db,"walmart","W1","101",1040)
+        result = apply_confirmed_mapping(self.db,preview,confirmation=EXPLICIT_MAPPING_CONFIRMATION)
+        with closing(sqlite3.connect(self.db)) as connection:
+            listing = connection.execute(
+                "SELECT seller_sku,item_name FROM walmart_listings").fetchone()
+        self.assertEqual((result["affected_order_lines"],listing),(1,("SKU-X","Marketplace Widget")))
+
+    def test_missing_listing_refuses_conflicting_historical_sku_identity(self):
+        with closing(sqlite3.connect(self.db)) as connection:
+            connection.execute("UPDATE walmart_order_lines SET item_name='Different product' WHERE order_line_id=102")
+            connection.commit()
+        preview = mapping_confirmation_preview(self.db,"walmart","W1","101",1040)
+        with self.assertRaisesRegex(RuntimeError,"seller SKU ambiguous"):
+            apply_confirmed_mapping(self.db,preview,confirmation=EXPLICIT_MAPPING_CONFIRMATION)
+        with closing(sqlite3.connect(self.db)) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM walmart_listings").fetchone()[0],0)
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM walmart_product_links").fetchone()[0],0)
 
     def test_mark_reviewed_writes_metadata_only(self):
