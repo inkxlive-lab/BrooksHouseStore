@@ -361,11 +361,18 @@ def _normalize_barcode(value: Any) -> str:
     return "".join(char for char in str(value or "").strip() if char.isdigit())
 
 
+def _line_identifiers(line: dict[str, Any]) -> tuple[str, str]:
+    """Use one source of truth for both matching and stored future identifiers."""
+    variant = line.get("variant") or {}
+    sku = str(variant.get("sku") or line.get("sku") or "").strip()
+    barcode = _normalize_barcode(variant.get("barcode") or line.get("barcode"))
+    return sku, barcode
+
+
 def _match_product(connection: sqlite3.Connection, line: dict[str, Any]) -> tuple[int | None, str, str, str]:
     variant = line.get("variant") or {}
     variant_id = str(variant.get("id") or "").strip()
-    sku = str(variant.get("sku") or line.get("sku") or "").strip()
-    barcode = _normalize_barcode(variant.get("barcode"))
+    sku, barcode = _line_identifiers(line)
 
     listing = None
     if variant_id:
@@ -514,6 +521,7 @@ def _save_orders(orders: list[dict[str, Any]]) -> dict[str, int]:
                 net, _ = _money(line.get("discountedTotalSet"))
                 variant = line.get("variant") or {}
                 product = line.get("product") or {}
+                stored_sku, stored_barcode = _line_identifiers(line)
                 connection.execute(
                     """
                     INSERT INTO shopify_sales_lines VALUES (
@@ -529,7 +537,7 @@ def _save_orders(orders: list[dict[str, Any]]) -> dict[str, int]:
                         match_method=excluded.match_method, updated_at=excluded.updated_at
                     """,
                     (line_id, order_id, product.get("id"), variant.get("id"), product_id,
-                     variant.get("sku") or line.get("sku"), barcode, line.get("title"),
+                     stored_sku, stored_barcode or barcode, line.get("title"),
                      line.get("variantTitle"), int(line.get("quantity") or 0),
                      int(line.get("currentQuantity") or 0), price, discount, net,
                      match_status, match_method, 0, now, now),

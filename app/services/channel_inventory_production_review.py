@@ -96,7 +96,7 @@ def _inventory_summary(connection: sqlite3.Connection, product_id: int | None) -
     if product_id is None:
         return [], []
     rows = [dict(row) for row in connection.execute(
-        """SELECT i.inventory_id,l.location_name,l.location_type,l.active,i.quantity_on_hand,i.quantity_reserved,
+        """SELECT i.inventory_id,l.location_name,l.location_type,l.active,i.container_id,i.quantity_on_hand,i.quantity_reserved,
                   MAX(i.quantity_on_hand-COALESCE(i.quantity_reserved,0),0) available
              FROM inventory i JOIN inventory_locations l USING(location_id)
             WHERE i.product_id=? ORDER BY l.location_name,i.inventory_id""", (product_id,))]
@@ -124,6 +124,35 @@ def _problem_category(mapping_status: str, mapping_reason: str, lifecycle_review
     return "None"
 
 
+def _shopify_identifier_diagnostic(connection: sqlite3.Connection, cutoff: str) -> dict:
+    counts = Counter()
+    order_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(shopify_sales_orders)")}
+    if "raw_json" not in order_columns:
+        return {"diagnostic_unavailable": "shopify_sales_orders.raw_json is not present"}
+    for order in connection.execute(
+        "SELECT shopify_order_id,raw_json FROM shopify_sales_orders WHERE datetime(processed_at)>=datetime(?)",(cutoff,)):
+        try:
+            payload = json.loads(str(order["raw_json"] or "{}"))
+        except json.JSONDecodeError:
+            counts["invalid_raw_json_orders"] += 1; continue
+        stored = {str(row["shopify_line_id"]):row for row in connection.execute(
+            "SELECT shopify_line_id,sku,barcode FROM shopify_sales_lines WHERE shopify_order_id=?",(order["shopify_order_id"],))}
+        for line in ((payload.get("lineItems") or {}).get("nodes") or []):
+            counts["payload_lines"] += 1
+            variant = line.get("variant") or {}
+            payload_sku = str(variant.get("sku") or line.get("sku") or "").strip()
+            payload_barcode = str(variant.get("barcode") or line.get("barcode") or "").strip()
+            if payload_sku: counts["payload_sku_present"] += 1
+            if payload_barcode: counts["payload_barcode_present"] += 1
+            row = stored.get(str(line.get("id") or ""))
+            if row and str(row["sku"] or "").strip(): counts["stored_sku_present"] += 1
+            if row and str(row["barcode"] or "").strip(): counts["stored_barcode_present"] += 1
+            if payload_sku and row and not str(row["sku"] or "").strip(): counts["sku_storage_mismatch"] += 1
+            if payload_barcode and row and not str(row["barcode"] or "").strip(): counts["barcode_storage_mismatch"] += 1
+            if not payload_sku and not payload_barcode: counts["source_missing_both"] += 1
+    return dict(counts)
+
+
 def run_production_review(database: str | Path, cutoff: str) -> dict:
     path = Path(database).resolve()
     before = safety_baseline(path)
@@ -133,6 +162,7 @@ def run_production_review(database: str | Path, cutoff: str) -> dict:
         for channel, order_id, line_id in list_source_lines(connection, cutoff):
             source = load_source_line(connection, channel, order_id, line_id)
             details = _source_details(connection, channel, order_id, line_id)
+            product = connection.execute("SELECT product_name FROM products WHERE product_id=?",(source.product_id,)).fetchone() if source.product_id else None
             mapping = validate_mapping(connection, channel, source.product_id, source.sku, source.asin, source.mapping_status)
             normalized = normalize_channel_event(channel, "new_order", quantity=source.quantity, status=details["state"])
             eligible, other = _inventory_summary(connection, source.product_id)
@@ -151,23 +181,29 @@ def run_production_review(database: str | Path, cutoff: str) -> dict:
             selected_ids = {item[0] for item in deductions}
             lines.append({"channel": channel, "order_id": order_id, "order_line_id": line_id,
                           "marketplace_sku": source.sku, "marketplace_barcode_gtin_asin": details["marketplace_identifier"],
+                          "marketplace_title": source.title,
                           "product_id": source.product_id, "mapping_validation_status": mapping.status,
+                          "product_name": str(product[0] or "") if product else "",
                           "mapping_safe": mapping.safe, "requested_quantity": source.quantity,
                           "eligible_inventory": eligible_available,
                           "eligible_locations": [{"location": row["location_name"], "inventory_id": row["inventory_id"],
+                                                  "container_id": row["container_id"],
                                                   "available": row["available"]} for row in eligible],
                           "allocation_policy": "single_location_only", "would_deduct_quantity": would_deduct,
                           "would_become_owed_quantity": owed, "unsafe_review_quantity": review_quantity,
                           "review_reason": mapping.reason if not mapping.safe else normalized.reason,
                           "problem_category": category,
                           "selected_inventory_rows": [{"inventory_id": row["inventory_id"], "location": row["location_name"],
+                                                       "container_id": row["container_id"],
                                                        "quantity": dict(deductions)[row["inventory_id"]]}
                                                       for row in eligible if row["inventory_id"] in selected_ids],
                           "nonapproved_inventory": [{"inventory_id": row["inventory_id"], "location": row["location_name"],
+                                                     "container_id": row["container_id"],
                                                      "available": row["available"]} for row in other],
                           "source_state": details["state"], "source_timestamp": details["source_timestamp"],
                           "current_open_candidate": not normalized.requires_review,
                           "mutation_permitted": False})
+        shopify_diagnostic = _shopify_identifier_diagnostic(connection,cutoff)
     finally:
         connection.close()
     sku_frequency = Counter((line["channel"], line["marketplace_sku"]) for line in lines if line["marketplace_sku"])
@@ -190,6 +226,7 @@ def run_production_review(database: str | Path, cutoff: str) -> dict:
             "owed_quantity": sum(x["would_become_owed_quantity"] for x in lines),
             "unsafe_review_quantity": sum(x["unsafe_review_quantity"] for x in lines),
             "problem_counts_by_channel": {channel: dict(counts) for channel, counts in category_counts.items()},
+            "shopify_identifier_diagnostic": shopify_diagnostic,
             "lines": lines, "prioritized_review_queue": queue}
 
 
