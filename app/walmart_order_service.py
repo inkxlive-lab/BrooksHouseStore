@@ -9,7 +9,11 @@ from urllib.parse import urlencode
 from urllib.request import Request as UrlRequest, urlopen
 from uuid import uuid4
 
-from app.database_resolution import configured_sqlite_path
+from app.database_resolution import configured_sqlite_path, require_application_database_match
+from app.services.marketplace_order_ingestion import (
+    begin_sync_run, create_picking_task, ensure_marketplace_operations_schema,
+    finish_sync_run, qualify_order, register_order_alert,
+)
 
 APP_ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = configured_sqlite_path()
@@ -86,8 +90,15 @@ def _open_json(request):
         raise RuntimeError(f"Could not connect to Walmart: {error.reason}") from error
 
 
-def ensure_order_tables():
-    connection = sqlite3.connect(DB_PATH, timeout=30)
+def _database_path(database=None, *, allow_fixture=False):
+    if database is None:
+        return require_application_database_match()
+    path = Path(database).expanduser().resolve()
+    return path if allow_fixture else require_application_database_match(path)
+
+
+def ensure_order_tables(database=None, *, allow_fixture=False):
+    connection = sqlite3.connect(_database_path(database, allow_fixture=allow_fixture), timeout=30)
     try:
         connection.executescript(
             """
@@ -296,8 +307,10 @@ def remove_walmart_product_mapping(order_line_id):
         connection.close()
 
 
-def sync_orders(days_back=3):
-    ensure_order_tables()
+def sync_orders(days_back=3, *, database=None, allow_fixture=False, detailed=False,
+                request_function=None):
+    target = _database_path(database, allow_fixture=allow_fixture)
+    ensure_order_tables(target, allow_fixture=allow_fixture)
     try:
         days_back = max(1, min(30, int(days_back)))
     except (TypeError, ValueError):
@@ -306,18 +319,28 @@ def sync_orders(days_back=3):
         datetime.now().astimezone()
         - timedelta(days=days_back - 1)
     ).replace(hour=0, minute=0, second=0, microsecond=0)
-    data = walmart_request(
-        "GET", "/v3/orders", params={"createdStartDate": midnight.isoformat(), "limit": 200}
-    )
-    orders = _extract_orders(data)
-    connection = sqlite3.connect(DB_PATH, timeout=30)
+    connection = sqlite3.connect(target, timeout=30)
     connection.row_factory = sqlite3.Row
-    now = datetime.now().astimezone().isoformat()
+    ensure_marketplace_operations_schema(connection)
+    run_id = begin_sync_run(connection, "walmart")
     try:
+        requester = request_function or walmart_request
+        data = requester(
+            "GET", "/v3/orders", params={"createdStartDate": midnight.isoformat(), "limit": 200}
+        )
+        orders = _extract_orders(data)
+        existing_ids = {str(row[0]) for row in connection.execute(
+            "SELECT purchase_order_id FROM walmart_orders"
+        ).fetchall()}
+        now = datetime.now().astimezone().isoformat()
+        new_count = updated_count = line_count = 0
         for order in orders:
             po = str(order.get("purchaseOrderId") or "").strip()
             if not po:
                 continue
+            is_new = po not in existing_ids
+            new_count += int(is_new)
+            updated_count += int(not is_new)
             shipping = order.get("shippingInfo") or {}
             status_value = _order_status(order)
             order_total, currency = _order_money(order)
@@ -362,6 +385,7 @@ def sync_orders(days_back=3):
                 ),
             )
             for line in _extract_lines(order):
+                line_count += 1
                 connection.execute(
                     """
                     INSERT INTO walmart_order_lines (
@@ -376,8 +400,26 @@ def sync_orders(days_back=3):
                     """,
                     (po, *line),
                 )
+                if qualify_order("walmart", status_value):
+                    create_picking_task(
+                        connection, channel="walmart", order_id=po, line_id=str(line[0]),
+                        sku=str(line[1] or ""), quantity=int(line[4] or 0), product_id=None,
+                    )
+            if is_new and qualify_order("walmart", status_value):
+                register_order_alert(connection, "walmart", po, status_value)
         connection.commit()
-        return len(orders)
+        finish_sync_run(connection, run_id, success=True, orders_discovered=len(orders),
+                        new_orders_inserted=new_count, orders_updated=updated_count,
+                        lines_processed=line_count)
+        result = {"success": True, "orders_discovered": len(orders),
+                  "new_orders_inserted": new_count, "orders_updated": updated_count,
+                  "lines_processed": line_count}
+        return result if detailed else len(orders)
+    except Exception as error:
+        connection.rollback()
+        finish_sync_run(connection, run_id, success=False,
+                        error_message=f"{type(error).__name__}: {error}")
+        raise
     finally:
         connection.close()
 
@@ -388,10 +430,11 @@ def sync_today_orders():
 
 
 def _extract_orders(data):
+    nested_orders = data.get("orders") if isinstance(data, dict) else None
     candidates = [
         data.get("list", {}).get("elements", {}).get("order") if isinstance(data, dict) else None,
-        data.get("orders", {}).get("order") if isinstance(data, dict) else None,
-        data.get("orders") if isinstance(data, dict) else None,
+        nested_orders.get("order") if isinstance(nested_orders, dict) else None,
+        nested_orders,
     ]
     for candidate in candidates:
         if isinstance(candidate, list):

@@ -2,17 +2,16 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import datetime
-from pathlib import Path
 
 from app.walmart_order_service import load_order_desk
+from app.database_resolution import configured_sqlite_path, require_application_database_match
 
 
-APP_DIR = Path(__file__).resolve().parent
-DB_PATH = APP_DIR / "data" / "brookshouse_store.db"
+DB_PATH = configured_sqlite_path()
 
 
 def _connect() -> sqlite3.Connection:
-    connection = sqlite3.connect(DB_PATH, timeout=30)
+    connection = sqlite3.connect(require_application_database_match(DB_PATH), timeout=30)
     connection.row_factory = sqlite3.Row
     return connection
 
@@ -145,6 +144,18 @@ def load_marketplace_orders():
         order["channel_order_url"] = "/channels/walmart/orders/" + str(order["purchase_order_id"])
         orders.append(order)
     orders.extend(_amazon_orders())
+
+    with _connect() as connection:
+        if _table_exists(connection, "marketplace_order_alerts"):
+            alerts = {
+                (str(row["channel"]), str(row["marketplace_order_id"])): dict(row)
+                for row in connection.execute("SELECT * FROM marketplace_order_alerts").fetchall()
+            }
+            for order in orders:
+                alert = alerts.get((str(order["channel_key"]), str(order["purchase_order_id"])))
+                order["alert_id"] = alert.get("alert_id") if alert else None
+                order["alert_state"] = alert.get("alert_state") if alert else ""
+                order["is_unacknowledged"] = bool(alert and not alert.get("acknowledged_at"))
 
     def sort_key(item):
         parsed = item.get("order_datetime") or _parse_datetime(item.get("order_date"))

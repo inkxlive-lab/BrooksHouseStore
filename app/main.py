@@ -362,6 +362,9 @@ from app.services.system_check import build_system_check
 from app.services.cloud_health import install_cloud_health
 from app.config import should_run_background_jobs
 from app.database_resolution import configured_sqlite_path
+from app.services.marketplace_order_ingestion import (
+    alert_counts, mark_alert_reviewed, start_worker, sync_health,
+)
 from app.services.search_helpers import (
     clean_search_term,
     sql_wildcard_pattern,
@@ -7688,6 +7691,8 @@ def inventory_dashboard(
         .limit(25)
     ).unique().all()
 
+    marketplace_alert_counts = alert_counts()
+    marketplace_sync_health = sync_health()
     return templates.TemplateResponse(
         request=request,
         name="dashboard.html",
@@ -7701,6 +7706,8 @@ def inventory_dashboard(
             "out_of_stock_products": out_of_stock_products,
             "recent_transactions": recent_transactions,
             "low_stock_limit": low_stock_limit,
+            "marketplace_alert_counts": marketplace_alert_counts,
+            "marketplace_sync_health": marketplace_sync_health,
         },
     )
 
@@ -12810,8 +12817,10 @@ from app.marketplace_order_service import (
 
 
 @app.get("/channels/orders", response_class=HTMLResponse)
-def marketplace_order_hub(request: Request):
+def marketplace_order_hub(request: Request, alert_state: str = ""):
     orders = load_marketplace_orders()
+    if alert_state == "new":
+        orders = [order for order in orders if order.get("is_unacknowledged")]
     return templates.TemplateResponse(
         request=request,
         name="marketplace_orders.html",
@@ -12825,6 +12834,14 @@ def marketplace_order_hub(request: Request):
             },
         },
     )
+
+
+@app.post("/channels/orders/alerts/{alert_id}/reviewed")
+def marketplace_alert_reviewed(request: Request, alert_id: int):
+    user = getattr(request.state, "auth_user", None)
+    actor = str(getattr(user, "display_name", None) or getattr(user, "username", None) or "BrooksHouse user")
+    mark_alert_reviewed(alert_id, actor)
+    return RedirectResponse(url="/channels/orders?alert_state=new", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @app.get(
@@ -13252,57 +13269,14 @@ def web_push_service_worker():
     return response
 
 
-def _walmart_order_ids() -> set[str]:
-    ensure_order_tables()
-    connection = sqlite3.connect(WALMART_ORDER_DB_PATH, timeout=30)
-    try:
-        return {
-            str(row[0])
-            for row in connection.execute(
-                "SELECT purchase_order_id FROM walmart_orders"
-            ).fetchall()
-        }
-    finally:
-        connection.close()
-
-
-def _automatic_order_notification_loop():
-    # Wait for FastAPI to finish startup before the first Walmart check.
-    sleep(20)
-    while True:
-        try:
-            before = _walmart_order_ids()
-            sync_orders(3)
-            new_orders = sorted(_walmart_order_ids() - before)
-            if new_orders:
-                if len(new_orders) == 1:
-                    body = f"New Walmart order {new_orders[0]} is ready for review and picking."
-                else:
-                    body = f"{len(new_orders)} new Walmart orders are ready for review and picking."
-                send_notification(
-                    "New Walmart order" if len(new_orders) == 1 else "New Walmart orders",
-                    body,
-                    "/channels/walmart/orders",
-                    "walmart_new_order",
-                )
-        except Exception as error:
-            print(f"BrooksHouse notification check skipped: {error}")
-        sleep(300)
-
-
 @app.on_event("startup")
 def start_web_push_notifications():
     if not should_run_background_jobs():
         return
     ensure_push_tables()
     ensure_vapid_keys()
-    if not getattr(app.state, "web_push_monitor_started", False):
-        app.state.web_push_monitor_started = True
-        Thread(
-            target=_automatic_order_notification_loop,
-            name="brookshouse-web-push",
-            daemon=True,
-        ).start()
+    if not getattr(app.state, "marketplace_sync_worker_started", False):
+        app.state.marketplace_sync_worker_started = start_worker()
 
 
 # ============================================================

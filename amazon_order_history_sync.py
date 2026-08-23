@@ -22,6 +22,12 @@ from typing import Any
 
 import requests
 
+from app.database_resolution import configured_sqlite_path, require_application_database_match
+from app.services.marketplace_order_ingestion import (
+    begin_sync_run, create_picking_task, ensure_marketplace_operations_schema,
+    finish_sync_run, qualify_order, register_order_alert,
+)
+
 TOKEN_URL = "https://api.amazon.com/auth/o2/token"
 ORDERS_URL = "https://sellingpartnerapi-na.amazon.com/orders/2026-01-01/orders"
 
@@ -580,11 +586,87 @@ def upsert_order(
     return len(items), linked_items, float(order_total or 0.0)
 
 
+def sync_recent_orders(*, days: int = 3, database: str | Path | None = None,
+                       allow_fixture: bool = False, client: AmazonClient | None = None,
+                       marketplace_id: str | None = None) -> dict[str, Any]:
+    """Import recent merchant orders without changing marketplace or inventory state."""
+    load_env(Path(".env"))
+    target = (Path(database).expanduser().resolve() if database is not None else configured_sqlite_path())
+    if not allow_fixture:
+        target = require_application_database_match(target)
+    connection = sqlite3.connect(target, timeout=30)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA busy_timeout=30000")
+    create_tables(connection)
+    ensure_marketplace_operations_schema(connection)
+    run_id = begin_sync_run(connection, "amazon")
+    try:
+        marketplace_id = marketplace_id or first_env("AMAZON_MARKETPLACE_ID", "SP_API_MARKETPLACE_ID")
+        client = client or AmazonClient(
+            first_env("AMAZON_LWA_CLIENT_ID", "SP_API_CLIENT_ID"),
+            first_env("AMAZON_LWA_CLIENT_SECRET", "SP_API_CLIENT_SECRET"),
+            first_env("AMAZON_REFRESH_TOKEN", "SP_API_REFRESH_TOKEN"),
+        )
+        if not marketplace_id:
+            raise RuntimeError("Amazon marketplace is not configured")
+        existing = {str(row[0]) for row in connection.execute(
+            "SELECT amazon_order_id FROM amazon_order_history"
+        ).fetchall()}
+        token = None
+        discovered = new_count = updated_count = line_count = 0
+        while True:
+            payload = client.search_orders(
+                marketplace_id=marketplace_id,
+                created_after=(utc_now() - timedelta(days=max(1, min(30, int(days))))).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                pagination_token=token,
+            )
+            orders, token = extract_orders(payload)
+            discovered += len(orders)
+            for order in orders:
+                order_id = str(order.get("orderId") or order.get("amazonOrderId") or "").strip()
+                if not order_id:
+                    continue
+                is_new = order_id not in existing
+                new_count += int(is_new)
+                updated_count += int(not is_new)
+                status = get_status(order)
+                fulfilled_by = get_fulfilled_by(order)
+                items = get_items(order)
+                upsert_order(connection, order)
+                line_count += len(items)
+                if qualify_order("amazon", status, fulfilled_by):
+                    for item in items:
+                        line_id = str(item.get("orderItemId") or item.get("orderItemID") or "").strip()
+                        if line_id:
+                            create_picking_task(
+                                connection, channel="amazon", order_id=order_id, line_id=line_id,
+                                sku=item_sku(item), quantity=item_quantity(item), product_id=None,
+                            )
+                    if is_new:
+                        register_order_alert(connection, "amazon", order_id, status)
+            connection.commit()
+            if not token:
+                break
+        finish_sync_run(connection, run_id, success=True, orders_discovered=discovered,
+                        new_orders_inserted=new_count, orders_updated=updated_count,
+                        lines_processed=line_count)
+        return {"success": True, "orders_discovered": discovered,
+                "new_orders_inserted": new_count, "orders_updated": updated_count,
+                "lines_processed": line_count}
+    except Exception as error:
+        connection.rollback()
+        finish_sync_run(connection, run_id, success=False,
+                        error_message=f"{type(error).__name__}: {error}")
+        raise
+    finally:
+        connection.close()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--database",
-        default="app/data/brookshouse_store.db",
+        default=str(configured_sqlite_path()),
     )
     parser.add_argument(
         "--env",

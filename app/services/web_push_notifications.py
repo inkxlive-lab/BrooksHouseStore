@@ -10,19 +10,28 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from app.database_resolution import configured_sqlite_path, require_application_database_match
+
 
 APP_DIRECTORY = Path(__file__).resolve().parents[1]
 DATA_DIRECTORY = APP_DIRECTORY / "data"
-DB_PATH = DATA_DIRECTORY / "brookshouse_store.db"
+DB_PATH = configured_sqlite_path()
 VAPID_PATH = DATA_DIRECTORY / "web_push_vapid.json"
 VAPID_PRIVATE_KEY_PATH = DATA_DIRECTORY / "web_push_private.pem"
 _SEND_LOCK = threading.Lock()
 CENTRAL_TIME = ZoneInfo("America/Chicago")
 
 
-def ensure_push_tables() -> None:
+def _database_path(database=None, *, allow_fixture=False):
+    if database is None:
+        return require_application_database_match(DB_PATH)
+    path = Path(database).expanduser().resolve()
+    return path if allow_fixture else require_application_database_match(path)
+
+
+def ensure_push_tables(database=None, *, allow_fixture=False) -> None:
     DATA_DIRECTORY.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(DB_PATH, timeout=30)
+    connection = sqlite3.connect(_database_path(database, allow_fixture=allow_fixture), timeout=30)
     try:
         connection.executescript(
             """
@@ -200,12 +209,15 @@ def send_notification(
     body: str,
     target_url: str = "/channels/orders",
     event_type: str = "general",
+    *,
+    database=None,
+    allow_fixture: bool = False,
 ) -> dict[str, int]:
     from pywebpush import WebPushException, webpush
 
-    ensure_push_tables()
+    ensure_push_tables(database, allow_fixture=allow_fixture)
     vapid = ensure_vapid_keys()
-    connection = sqlite3.connect(DB_PATH, timeout=30)
+    connection = sqlite3.connect(_database_path(database, allow_fixture=allow_fixture), timeout=30)
     connection.row_factory = sqlite3.Row
     delivered = 0
     failed = 0
@@ -215,6 +227,7 @@ def send_notification(
         try:
             preference_column = {
                 "walmart_new_order": "notify_new_orders",
+                "amazon_new_order": "notify_new_orders",
                 "morning_recap": "notify_morning",
                 "evening_recap": "notify_evening",
             }.get(event_type)

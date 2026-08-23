@@ -343,11 +343,13 @@
         </section>
 
         <section class="metric-grid" aria-label="Inventory overview">
+            {% if access_role == 'owner_admin' %}<a class="metric-card" href="/channels/orders?alert_state=new" style="text-decoration:none;color:inherit;{% if marketplace_alert_counts.total %}border:4px solid #b3262e;background:#fff0f1{% endif %}"><span class="metric-emoji">&#128276;</span><span>NEW MARKETPLACE ORDERS</span><strong>{{ marketplace_alert_counts.total }}</strong><small>Walmart {{ marketplace_alert_counts.walmart }} &middot; Amazon {{ marketplace_alert_counts.amazon }}</small></a>{% endif %}
             <article class="metric-card"><span class="metric-emoji">&#128230;</span><span>Active products</span><strong>{{ "{:,}".format(total_products) }}</strong><small>Products tracked</small></article>
             <article class="metric-card"><span class="metric-emoji">&#128202;</span><span>Total units</span><strong>{{ "{:,}".format(total_units) }}</strong><small>Across all locations</small></article>
             <article class="metric-card"><span class="metric-emoji">&#128176;</span><span>Storefront retail</span><strong id="top-storefront-retail-value">$0.00</strong><small>Current selling value</small></article>
             <article class="metric-card"><span class="metric-emoji">&#128680;</span><span>Needs attention</span><strong>{{ (low_stock_products | length) + (out_of_stock_products | length) }}</strong><small>{{ low_stock_products | length }} low &middot; {{ out_of_stock_products | length }} out</small></article>
         </section>
+        {% if marketplace_sync_health.stale %}<section class="clean-panel" style="border:4px solid #b3262e;background:#fff0f1;margin-bottom:18px"><h2 style="color:#9d252b">MARKETPLACE SYNC STALE</h2><p>Silence may mean orders are not syncing. <a href="/admin/system-check">Open Admin System Check</a>.</p></section>{% endif %}
 
         <section class="work-grid">
             <div>

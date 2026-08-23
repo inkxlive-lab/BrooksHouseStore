@@ -3,9 +3,12 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+from app.database_resolution import configured_sqlite_path, require_application_database_match
+from app.services.marketplace_order_ingestion import sync_health
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DB_PATH = PROJECT_ROOT / "app" / "data" / "brookshouse_store.db"
+DB_PATH = configured_sqlite_path()
 
 
 def _age_label(seconds):
@@ -52,7 +55,7 @@ def build_system_check():
                              str(DB_PATH), "/dashboard", "Return to Dashboard"))
         return _finish(checks, generated_at)
 
-    connection = sqlite3.connect(DB_PATH, timeout=10)
+    connection = sqlite3.connect(require_application_database_match(DB_PATH), timeout=10)
     connection.row_factory = sqlite3.Row
     try:
         integrity = connection.execute("PRAGMA quick_check").fetchone()[0]
@@ -146,6 +149,28 @@ def build_system_check():
                              f"{stuck_reserved} Walmart units currently tracked as reserved",
                              "Review old reservations against marketplace order status." if stuck_reserved else "No Walmart reservations need review.",
                              "/channels/walmart/orders", "Review Walmart Orders", stuck_reserved))
+
+        health = sync_health()
+        for channel in ("walmart", "amazon"):
+            row = health["channels"][channel]
+            last = row["last_success"]
+            failure = row["last_failure"]
+            detail = (
+                f"Last success: {last['finished_at'] if last else 'never'} · "
+                f"Age: {row['age_minutes'] if row['age_minutes'] is not None else 'unknown'} minutes · "
+                f"Orders found: {last['orders_discovered'] if last else 0} · "
+                f"Last error: {(failure['error_message'] if failure else 'none')}"
+            )
+            checks.append(_check(f"{channel}_sync", f"{channel.title()} order sync",
+                                 "red" if row["stale"] else "green",
+                                 "MARKETPLACE SYNC STALE" if row["stale"] else "Sync current",
+                                 detail, "/channels/orders", "Marketplace Orders"))
+        active_push = _scalar(connection, "SELECT COUNT(*) FROM web_push_subscriptions WHERE active=1") \
+            if _table_exists(connection, "web_push_subscriptions") else 0
+        checks.append(_check("push_health", "Marketplace push subscriptions",
+                             "green" if active_push else "red", f"{active_push} active device(s)",
+                             "Re-register the owner phone if no active subscription remains.",
+                             "/tools/notifications", "Manage Notifications", active_push))
 
         checks.append(_check("receive", "Receive Inventory", "green",
                              "Barcode packaging helper installed",
