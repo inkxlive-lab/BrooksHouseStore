@@ -17,9 +17,11 @@ from fastapi import APIRouter, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
+from app.database_resolution import configured_sqlite_path, require_application_database_match
+
 
 APP_ROOT = Path(__file__).resolve().parent
-DB_PATH = APP_ROOT / "data" / "brookshouse_store.db"
+DB_PATH = configured_sqlite_path()
 PROFILE_PHOTO_DIRECTORY = APP_ROOT / "data" / "team-profile-photos"
 ENV_PATH = APP_ROOT.parent / ".env"
 templates = Jinja2Templates(directory=str(APP_ROOT / "templates"))
@@ -65,7 +67,8 @@ _load_env()
 
 
 def _connect() -> sqlite3.Connection:
-    connection = sqlite3.connect(DB_PATH, timeout=30)
+    database = require_application_database_match(DB_PATH)
+    connection = sqlite3.connect(database, timeout=30)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA busy_timeout = 30000")
     connection.execute("PRAGMA foreign_keys = ON")
@@ -170,6 +173,10 @@ def verify_password(password: str, stored: str) -> bool:
         return hmac.compare_digest(actual, wanted)
     except Exception:
         return False
+
+
+def normalize_username(username: str) -> str:
+    return str(username or "").strip().lower()[:100]
 
 
 def _token_hash(token: str) -> str:
@@ -323,7 +330,7 @@ def login_page(request: Request):
 
 @router.post("/login")
 def login(request: Request, username: str = Form(...), password: str = Form(...)):
-    clean = username.strip().lower()[:100]
+    clean = normalize_username(username)
     now = _now()
     with _connect() as connection:
         row = connection.execute("SELECT * FROM app_users WHERE username = ?", (clean,)).fetchone()
@@ -580,7 +587,7 @@ def create_user(request: Request, username: str = Form(...), display_name: str =
         password_hash = hash_password(password)
         with _connect() as connection:
             connection.execute("INSERT INTO app_users(username, display_name, role, password_hash) VALUES (?, ?, ?, ?)",
-                               (username.strip().lower()[:100], display_name.strip()[:100], role, password_hash))
+                               (normalize_username(username), display_name.strip()[:100], role, password_hash))
             _audit(connection, request, "user_created", user=request.state.auth_user,
                    details=f"Created {username.strip()} as {role}")
     except (ValueError, sqlite3.IntegrityError) as error:
