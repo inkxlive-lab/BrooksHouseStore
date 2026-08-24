@@ -306,7 +306,7 @@ _JOB_THREADS_LOCK = threading.Lock()
 
 
 def _fresh_channels(health: dict, channels: list[str]) -> tuple[bool, list[str]]:
-    window = max(1, int(os.getenv("MARKETPLACE_REPORT_FRESH_MINUTES", "15")))
+    window = max(1, int(os.getenv("MARKETPLACE_REPORT_FRESH_MINUTES", "60")))
     stale = []
     now = datetime.now(timezone.utc)
     for channel in channels:

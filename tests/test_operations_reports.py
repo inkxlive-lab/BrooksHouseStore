@@ -166,6 +166,14 @@ class OperationsReportsTests(unittest.TestCase):
         self.assertIsNotNone(job["result_report_run_id"])
         sync.assert_not_called()
 
+    def test_default_freshness_window_accepts_reconciled_data_under_one_hour(self):
+        from app.operations_reports import _fresh_channels
+        recent = (datetime.now(timezone.utc) - timedelta(minutes=45)).isoformat()
+        health = {"channels": {name: {"last_success": {"finished_at": recent}} for name in ("walmart", "amazon")}}
+        fresh, stale = _fresh_channels(health, ["walmart", "amazon"])
+        self.assertTrue(fresh)
+        self.assertEqual(stale, [])
+
     @patch("app.operations_reports._bounded_call", side_effect=FutureTimeout())
     @patch("app.operations_reports.sync_health")
     def test_generation_timeout_records_friendly_failed_state(self, health, _bounded):
