@@ -21,21 +21,21 @@
   <article class="line">
    {% if line.image_url %}<img src="{{ line.image_url }}" alt="{{ line.item_name }}">{% else %}<div class="placeholder">No image</div>{% endif %}
    <div class="item"><h3>☐ {{ line.item_name }}</h3><p>SKU: {{ line.sku or "—" }} · UPC: {{ line.upc or "—" }}</p><p>Quantity: <strong>{{ line.quantity }}</strong> · <span class="progress">Pulled {{ line.pulled_quantity }}/{{ line.quantity }}</span></p></div>
-   <form class="pull" method="post" action="/channels/walmart/orders/lines/{{ line.order_line_id }}/pull">
+   {% if order.is_actionable %}<form class="pull" method="post" action="/channels/walmart/orders/lines/{{ line.order_line_id }}/pull">
     <select name="inventory_id" required><option value="">Choose exact site / location / tote</option>{% for stock in line.inventory_options %}<option value="{{ stock.inventory_id }}">{{ stock.site_name }} → {{ stock.location_name }} / {{ stock.container_id or "Loose inventory" }} — {{ stock.available_quantity }} available</option>{% endfor %}</select>
     <input name="scanned_barcode" placeholder="Scan product barcode" inputmode="numeric" autocomplete="off" required>
     <button class="action">✓ Confirm One Pulled</button>
     {% if line.allocations %}<small><strong>Pulled from:</strong>{% for source in line.allocations %} {{ source.location_name }} / {{ source.container_id or "Loose" }} ({{ source.pulled_quantity }}){% if not loop.last %};{% endif %}{% endfor %}</small>{% endif %}
     {% if not line.inventory_options %}<small>⚠️ No BrooksHouse inventory match was found. Review the SKU/UPC before pulling.</small>{% endif %}
-   </form>
+   </form>{% else %}<strong>Fulfillment controls disabled for this closed or stale order.</strong>{% endif %}
   </article>
  {% endfor %}
  </div>
- <footer class="order-actions">
+ <footer class="order-actions">{% if order.is_actionable %}
   {% if order.local_status == 'new' %}<form method="post" action="/channels/walmart/orders/{{ order.purchase_order_id }}/acknowledge"><button class="action ack">Acknowledge Order</button></form>{% endif %}
   {% if order.all_pulled and order.local_status not in ['packed','shipped'] %}<form method="post" action="/channels/walmart/orders/{{ order.purchase_order_id }}/pack"><button class="action pack">📦 Confirm Packed</button></form>{% endif %}
   {% if order.local_status == 'packed' %}<form class="ship" method="post" action="/channels/walmart/orders/{{ order.purchase_order_id }}/ship" onsubmit="return confirm('Send shipment confirmation to Walmart and deduct the selected BrooksHouse inventory?')"><input name="carrier" placeholder="Carrier (UPS, FedEx, USPS)" required><input name="tracking_number" placeholder="Tracking number" required><button class="action">🚚 Confirm Shipment</button></form>{% endif %}
-  {% if order.local_status == 'shipped' %}<strong>✅ Shipped via {{ order.carrier }} · {{ order.tracking_number }}</strong>{% endif %}
+   {% if order.local_status == 'shipped' %}<strong>✅ Shipped via {{ order.carrier }} · {{ order.tracking_number }}</strong>{% endif %}{% else %}<strong>This marketplace order is closed or requires fresh channel verification. Acknowledge, pick, pack, stage and ship controls are disabled.</strong>{% endif %}
  </footer>
 </section>
 {% endfor %}

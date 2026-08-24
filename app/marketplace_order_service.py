@@ -1,17 +1,25 @@
 from __future__ import annotations
 
+import os
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from app.walmart_order_service import load_order_desk
 from app.database_resolution import configured_sqlite_path, require_application_database_match
 
 
 DB_PATH = configured_sqlite_path()
+TERMINAL_STATUSES = {"shipped", "cancelled", "canceled", "refunded", "closed", "completed"}
+STALE_ORDER_HOURS = max(1, int(os.getenv("MARKETPLACE_ACTIONABLE_VERIFY_HOURS", "6")))
+CENTRAL = ZoneInfo("America/Chicago")
 
 
-def _connect() -> sqlite3.Connection:
-    connection = sqlite3.connect(require_application_database_match(DB_PATH), timeout=30)
+def _connect(database=None, *, allow_fixture=False) -> sqlite3.Connection:
+    target = database or DB_PATH
+    if not allow_fixture:
+        target = require_application_database_match(target)
+    connection = sqlite3.connect(target, timeout=30)
     connection.row_factory = sqlite3.Row
     return connection
 
@@ -21,7 +29,15 @@ def _parse_datetime(value):
     if not text:
         return None
     try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+        number = float(text)
+        if abs(number) >= 100_000_000_000:
+            number /= 1000.0
+        return datetime.fromtimestamp(number, timezone.utc)
+    except (ValueError, TypeError, OverflowError, OSError):
+        pass
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
     except ValueError:
         return None
 
@@ -30,19 +46,34 @@ def _display_datetime(value):
     parsed = _parse_datetime(value)
     if parsed is None:
         return str(value or "Unknown")
-    return parsed.astimezone().strftime("%a %m/%d/%Y\n%I:%M %p")
+    return parsed.astimezone(CENTRAL).strftime("%a %m/%d/%Y\n%I:%M %p CT")
 
 
 def _age(value):
     parsed = _parse_datetime(value)
     if parsed is None:
         return ""
-    now = datetime.now().astimezone()
-    parsed = parsed.astimezone()
+    now = datetime.now(CENTRAL)
+    parsed = parsed.astimezone(CENTRAL)
     seconds = max(0, int((now - parsed).total_seconds()))
     days, remainder = divmod(seconds, 86400)
     hours = remainder // 3600
     return f"{days}d {hours}h old"
+
+
+def _safe_timestamp(value, default=float("inf")):
+    parsed = value if isinstance(value, datetime) else _parse_datetime(value)
+    if parsed is None:
+        return default
+    try:
+        return parsed.timestamp()
+    except (OSError, OverflowError, ValueError):
+        return default
+
+
+def _is_past(value) -> bool:
+    timestamp = _safe_timestamp(value)
+    return timestamp != float("inf") and timestamp < datetime.now().astimezone().timestamp()
 
 
 def _table_exists(connection, name):
@@ -51,16 +82,17 @@ def _table_exists(connection, name):
     ).fetchone() is not None
 
 
-def _amazon_orders():
+def _amazon_orders(database=None, *, allow_fixture=False):
     orders = []
-    with _connect() as connection:
+    with _connect(database, allow_fixture=allow_fixture) as connection:
         if not (_table_exists(connection, "amazon_order_history") and
                 _table_exists(connection, "amazon_order_item_history")):
             return orders
         header_rows = connection.execute(
             """
             SELECT amazon_order_id, created_time, fulfillment_status,
-                   order_total, currency_code, item_count, unit_count
+                   order_total, currency_code, item_count, unit_count,
+                   local_status, last_verified_at, channel_closed_at, terminal_reason, ship_by_date
             FROM amazon_order_history
             ORDER BY created_time DESC
             """
@@ -94,7 +126,19 @@ def _amazon_orders():
                     ).fetchone()
                     if barcode_row:
                         barcode = barcode_row[0]
-                    site_names.add("BrooksHouse match")
+                inventory_options = []
+                if line["product_id"] is not None:
+                    inventory_options = [dict(row) for row in connection.execute(
+                        """SELECT i.inventory_id,i.quantity_on_hand,i.quantity_reserved,i.container_id,
+                                  l.location_name,l.location_type
+                           FROM inventory i JOIN inventory_locations l ON l.location_id=i.location_id
+                           WHERE i.product_id=? AND i.quantity_on_hand>0
+                           ORDER BY l.location_name,i.container_id""", (line["product_id"],)
+                    ).fetchall()]
+                    for option in inventory_options:
+                        option["available_quantity"] = max(0, int(option.get("quantity_on_hand") or 0) - int(option.get("quantity_reserved") or 0))
+                        option["site_name"] = option.get("location_name") or "Unknown site"
+                        site_names.add(option["site_name"])
                 lines.append({
                     "line_number": line["order_item_id"],
                     "sku": line["seller_sku"],
@@ -103,13 +147,20 @@ def _amazon_orders():
                     "quantity": int(line["quantity_ordered"] or 0),
                     "line_total": float(line["item_total"] or 0),
                     "product_id": line["product_id"],
+                    "confirmed_product_id": line["product_id"],
+                    "mapping_status": "mapped" if line["product_id"] is not None else "unmatched",
+                    "candidate_inventory_found": False,
+                    "inventory_options": inventory_options,
+                    "pulled_quantity": 0,
+                    "image_url": None,
                 })
             raw_status = str(header["fulfillment_status"] or "unshipped").strip().lower()
-            local_status = {
+            derived_local_status = {
                 "shipped": "shipped", "cancelled": "cancelled",
                 "canceled": "cancelled", "unshipped": "new",
                 "partiallyshipped": "pulling", "partially_shipped": "pulling",
             }.get(raw_status.replace(" ", ""), raw_status or "new")
+            local_status = str(header["local_status"] or derived_local_status)
             created = header["created_time"]
             orders.append({
                 "channel": "Amazon",
@@ -117,6 +168,8 @@ def _amazon_orders():
                 "purchase_order_id": header["amazon_order_id"],
                 "customer_order_id": header["amazon_order_id"],
                 "order_date": created or "",
+                "ship_by_date": header["ship_by_date"] or "",
+                "ship_by_display": _display_datetime(header["ship_by_date"]),
                 "order_datetime": _parse_datetime(created),
                 "order_date_display": _display_datetime(created),
                 "order_age": _age(created),
@@ -127,25 +180,32 @@ def _amazon_orders():
                 "currency": header["currency_code"] or "USD",
                 "local_status": local_status,
                 "marketplace_status": raw_status,
+                "last_verified_at": header["last_verified_at"],
+                "channel_closed_at": header["channel_closed_at"],
+                "terminal_reason": header["terminal_reason"],
                 "lines": lines,
                 "site_names": sorted(site_names),
+                "stage_picked": local_status in {"picked", "packed", "staged", "shipment_submitted", "shipped"},
+                "stage_packed": local_status in {"packed", "staged", "shipment_submitted", "shipped"},
+                "stage_staged": local_status in {"staged", "shipment_submitted", "shipped"},
+                "stage_shipped": local_status == "shipped",
                 "channel_order_url": "/reports/channel-performance/amazon-order/" + str(header["amazon_order_id"]),
             })
     return orders
 
 
-def load_marketplace_orders():
+def load_marketplace_orders(database=None, *, allow_fixture=False):
     """Return one shared shape for connected fulfillment channels."""
     orders = []
-    for walmart_order in load_order_desk():
+    for walmart_order in load_order_desk(database, allow_fixture=allow_fixture):
         order = dict(walmart_order)
         order["channel"] = "Walmart"
         order["channel_key"] = "walmart"
         order["channel_order_url"] = "/channels/walmart/orders/" + str(order["purchase_order_id"])
         orders.append(order)
-    orders.extend(_amazon_orders())
+    orders.extend(_amazon_orders(database, allow_fixture=allow_fixture))
 
-    with _connect() as connection:
+    with _connect(database, allow_fixture=allow_fixture) as connection:
         if _table_exists(connection, "marketplace_order_alerts"):
             alerts = {
                 (str(row["channel"]), str(row["marketplace_order_id"])): dict(row)
@@ -163,6 +223,28 @@ def load_marketplace_orders():
         return (timestamp, str(item.get("channel") or ""), str(item.get("purchase_order_id") or ""))
 
     orders.sort(key=sort_key, reverse=True)
+    for sequence, order in enumerate(orders, start=1):
+        order["marketplace_sequence"] = sequence
+        local = str(order.get("local_status") or "new").casefold()
+        market = str(order.get("marketplace_status") or order.get("walmart_status") or "").casefold()
+        market_token = market.replace("_", "").replace(" ", "")
+        order["is_terminal"] = local in TERMINAL_STATUSES or market_token in {
+            "shipped", "cancelled", "canceled", "refunded", "closed", "completed", "complete", "delivered"
+        }
+        verified = _parse_datetime(order.get("last_verified_at") or order.get("synced_at"))
+        order["verification_stale"] = bool(
+            not order["is_terminal"] and (
+                verified is None or datetime.now().astimezone() - verified.astimezone() > timedelta(hours=STALE_ORDER_HOURS)
+            )
+        )
+        order["is_actionable"] = not order["is_terminal"] and not order["verification_stale"]
+        ship_by = _parse_datetime(order.get("ship_by_date"))
+        order["is_overdue"] = _is_past(ship_by)
+    orders.sort(key=lambda item: (
+        0 if item.get("is_overdue") else 1,
+        _safe_timestamp(item.get("ship_by_date")),
+        _safe_timestamp(item.get("order_date")),
+    ))
     for sequence, order in enumerate(orders, start=1):
         order["marketplace_sequence"] = sequence
     return orders

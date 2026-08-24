@@ -79,8 +79,144 @@ def ensure_marketplace_operations_schema(connection: sqlite3.Connection) -> None
         );
         CREATE INDEX IF NOT EXISTS ix_marketplace_order_alerts_state
             ON marketplace_order_alerts(alert_state, channel, first_seen_at DESC);
+        CREATE TABLE IF NOT EXISTS marketplace_status_audit (
+            audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            channel TEXT NOT NULL,
+            marketplace_order_id TEXT NOT NULL,
+            old_marketplace_status TEXT,
+            new_marketplace_status TEXT,
+            old_local_status TEXT,
+            new_local_status TEXT,
+            channel_response TEXT,
+            sync_run_id INTEGER,
+            synchronized_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS ix_marketplace_status_audit_order
+            ON marketplace_status_audit(channel, marketplace_order_id, synchronized_at DESC);
+        CREATE TABLE IF NOT EXISTS operations_report_runs (
+            report_run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            report_type TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            created_by TEXT,
+            filters_json TEXT NOT NULL,
+            freshness_json TEXT NOT NULL,
+            warnings_json TEXT NOT NULL,
+            totals_json TEXT NOT NULL,
+            snapshot_json TEXT NOT NULL,
+            snapshot_sha256 TEXT NOT NULL UNIQUE
+        );
+        CREATE INDEX IF NOT EXISTS ix_operations_report_runs_created
+            ON operations_report_runs(created_at DESC);
         """
     )
+    for table, columns in {
+        "walmart_orders": {"channel_closed_at": "TEXT", "last_verified_at": "TEXT", "terminal_reason": "TEXT"},
+        "amazon_order_history": {"local_status": "TEXT NOT NULL DEFAULT 'new'", "channel_closed_at": "TEXT", "last_verified_at": "TEXT", "terminal_reason": "TEXT", "raw_json": "TEXT", "ship_by_date": "TEXT"},
+    }.items():
+        if connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
+            existing = {row[1] for row in connection.execute(f'PRAGMA table_info("{table}")')}
+            for name, definition in columns.items():
+                if name not in existing:
+                    connection.execute(f'ALTER TABLE "{table}" ADD COLUMN "{name}" {definition}')
+
+
+def normalized_channel_status(status: str) -> str:
+    return str(status or "").strip().casefold().replace("_", "").replace(" ", "")
+
+
+def terminal_local_status(status: str) -> str | None:
+    values = [normalized_channel_status(part) for part in str(status or "").split(",") if part.strip()]
+    if not values:
+        return None
+    def terminal_kind(value: str) -> str | None:
+        if value in {"cancelled", "canceled", "cancel", "voided"}:
+            return "cancelled"
+        if value in {"refunded", "refund"}:
+            return "refunded"
+        if value in {"shipped", "completed", "complete", "delivered"}:
+            return "shipped"
+        if value in {"closed", "rejected", "unfulfillable"}:
+            return "closed"
+        return None
+    kinds = [terminal_kind(value) for value in values]
+    if any(kind is None for kind in kinds):
+        return None
+    if "cancelled" in kinds:
+        return "cancelled"
+    if "refunded" in kinds:
+        return "refunded"
+    if "shipped" in kinds:
+        return "shipped"
+    return "closed"
+
+
+def reconcile_order_status(connection: sqlite3.Connection, *, channel: str, order_id: str,
+                           marketplace_status: str, channel_response: Any,
+                           sync_run_id: int | None = None) -> dict[str, Any]:
+    """Apply authoritative channel lifecycle state without overwriting open internal stages."""
+    channel = channel.casefold()
+    now = _now()
+    if channel == "walmart":
+        table, key, market_column = "walmart_orders", "purchase_order_id", "walmart_status"
+    elif channel == "amazon":
+        table, key, market_column = "amazon_order_history", "amazon_order_id", "fulfillment_status"
+    else:
+        raise ValueError(f"Unsupported marketplace channel: {channel}")
+    row = connection.execute(f'SELECT {market_column},local_status FROM {table} WHERE {key}=?', (str(order_id),)).fetchone()
+    if row is None:
+        return {"changed": False, "terminal": False, "reason": "not_found"}
+    old_market, old_local = str(row[0] or ""), str(row[1] or "new")
+    terminal = terminal_local_status(marketplace_status)
+    new_local = terminal or old_local
+    connection.execute(
+        f'''UPDATE {table} SET {market_column}=?,local_status=?,last_verified_at=?,
+               channel_closed_at=CASE WHEN ? IS NOT NULL THEN COALESCE(channel_closed_at,?) ELSE channel_closed_at END,
+               terminal_reason=CASE WHEN ? IS NOT NULL THEN ? ELSE terminal_reason END WHERE {key}=?''',
+        (marketplace_status, new_local, now, terminal, now, terminal, marketplace_status, str(order_id)),
+    )
+    changed = old_market != str(marketplace_status or "") or old_local != new_local
+    if changed:
+        response_text = json.dumps(channel_response, default=str, separators=(",", ":"))
+        connection.execute(
+            """INSERT INTO marketplace_status_audit
+               (channel,marketplace_order_id,old_marketplace_status,new_marketplace_status,
+                old_local_status,new_local_status,channel_response,sync_run_id,synchronized_at)
+               VALUES(?,?,?,?,?,?,?,?,?)""",
+            (channel, str(order_id), old_market, marketplace_status, old_local, new_local,
+             response_text, sync_run_id, now),
+        )
+    if terminal:
+        if connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='operations_work_queue'").fetchone():
+            connection.execute(
+                """UPDATE operations_work_queue SET status='cancelled',updated_at=?
+                   WHERE source_channel=? AND (source_reference=? OR source_reference LIKE ?)
+                     AND status NOT IN ('completed','cancelled','closed')""",
+                (now, channel, str(order_id), f"{order_id}|%"),
+            )
+        connection.execute("UPDATE marketplace_order_alerts SET alert_state='closed' WHERE channel=? AND marketplace_order_id=?", (channel, str(order_id)))
+    return {"changed": changed, "terminal": bool(terminal), "local_status": new_local, "old_local_status": old_local}
+
+
+def release_cancelled_allocations(database: str | Path, channel: str, order_id: str) -> list[dict]:
+    """Release only through the existing idempotent allocation/ledger engine."""
+    results: list[dict] = []
+    connection = sqlite3.connect(database, timeout=30)
+    try:
+        if not connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='channel_inventory_allocations'").fetchone():
+            return results
+        line_column = "order_line_id"
+        rows = connection.execute(
+            "SELECT order_line_id FROM channel_inventory_allocations WHERE channel_name=? AND order_id=? AND status NOT IN ('cancelled','restocked')",
+            (channel.casefold(), str(order_id)),
+        ).fetchall()
+    finally:
+        connection.close()
+    if not rows:
+        return results
+    from app.services.channel_inventory_engine import cancel_before_fulfillment_to_copy
+    for row in rows:
+        results.append(cancel_before_fulfillment_to_copy(database, channel, str(order_id), str(row[0])))
+    return results
 
 
 def _sanitized_target() -> str:
@@ -299,15 +435,22 @@ def _has_completed_sync_run() -> bool:
         ).fetchone() is not None
 
 
-def run_sync_cycle() -> dict[str, Any]:
+def run_sync_cycle(channels: list[str] | tuple[str, ...] | None = None) -> dict[str, Any]:
     from app.walmart_order_service import sync_orders
     from amazon_order_history_sync import sync_recent_orders
     initial_activation = not _has_completed_sync_run()
+    requested = {str(channel).casefold() for channel in (channels or ("walmart", "amazon"))}
+    unsupported = requested - {"walmart", "amazon"}
+    if unsupported:
+        raise ValueError(f"Unsupported marketplace channels: {sorted(unsupported)}")
+    callbacks = {"walmart": lambda: sync_orders(3, detailed=True),
+                 "amazon": lambda: sync_recent_orders(days=3)}
     results = {}
-    for channel, callback in (("walmart", lambda: sync_orders(3, detailed=True)),
-                              ("amazon", lambda: sync_recent_orders(days=3))):
+    for channel in ("walmart", "amazon"):
+        if channel not in requested:
+            continue
         try:
-            results[channel] = callback()
+            results[channel] = callbacks[channel]()
         except Exception as error:
             results[channel] = {"success": False, "error": f"{type(error).__name__}: {error}"}
     from app.services.web_push_notifications import send_notification

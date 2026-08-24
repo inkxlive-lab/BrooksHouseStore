@@ -377,6 +377,7 @@ from app.config import should_run_background_jobs
 from app.database_resolution import configured_sqlite_path
 from app.services.marketplace_order_ingestion import (
     alert_counts, mark_alert_reviewed, start_worker, stop_worker, sync_health,
+    terminal_local_status,
 )
 from app.services.search_helpers import (
     clean_search_term,
@@ -12614,15 +12615,28 @@ from app.walmart_order_service import (
     shipment_payload,
     sync_orders,
     sync_today_orders,
+    is_acknowledgment_reconciliation_signal,
     walmart_request,
 )
+
+
+def _assert_walmart_actionable(connection, purchase_order_id: str):
+    row = connection.execute(
+        "SELECT local_status,walmart_status FROM walmart_orders WHERE purchase_order_id=?",
+        (purchase_order_id,),
+    ).fetchone()
+    if row is None:
+        raise ValueError("Walmart order was not found locally.")
+    if str(row[0] or "").casefold() in {"shipped", "cancelled", "refunded", "closed", "completed"} or terminal_local_status(row[1]):
+        raise ValueError("This order is closed at Walmart. Fulfillment controls are disabled; view it in Order History.")
+    return row
 
 
 @app.get("/channels/walmart/orders", response_class=HTMLResponse)
 def walmart_order_desk_page(
     request: Request,
     history_days: str = "30",
-    order_status: str = "all",
+    order_status: str = "open",
     inventory_status: str = "all",
     physical_site: str = "all",
     search: str = "",
@@ -12772,7 +12786,7 @@ def walmart_master_pull_list(request: Request):
         request=request,
         name="walmart_pull_guide.html",
         context={
-            "orders": load_order_desk(),
+            "orders": [order for order in load_order_desk() if order.get("is_actionable")],
             "message": request.query_params.get("message"),
             "error": request.query_params.get("error"),
         },
@@ -12829,10 +12843,16 @@ from app.marketplace_order_service import (
 )
 
 
+@app.get("/channels/orders/history", response_class=HTMLResponse)
 @app.get("/channels/orders", response_class=HTMLResponse)
 def marketplace_order_hub(request: Request, alert_state: str = ""):
     orders = load_marketplace_orders()
-    if alert_state == "new":
+    history_view = request.url.path.endswith("/history")
+    if history_view:
+        orders = [order for order in orders if order.get("is_terminal")]
+    else:
+        orders = [order for order in orders if order.get("is_actionable")]
+    if alert_state == "new" and not history_view:
         orders = [order for order in orders if order.get("is_unacknowledged")]
     return templates.TemplateResponse(
         request=request,
@@ -12840,6 +12860,8 @@ def marketplace_order_hub(request: Request, alert_state: str = ""):
         context={
             "orders": orders,
             "summary": marketplace_summary(orders),
+            "history_view": history_view,
+            "sync_health": sync_health(),
             "channel_connections": {
                 "walmart": "connected",
                 "amazon": "awaiting_api",
@@ -12866,7 +12888,7 @@ def marketplace_master_pull_list(request: Request):
         request=request,
         name="marketplace_pull_guide.html",
         context={
-            "orders": load_marketplace_orders(),
+            "orders": [order for order in load_marketplace_orders() if order.get("is_actionable")],
         },
     )
 
@@ -12896,6 +12918,11 @@ def walmart_acknowledge_order(purchase_order_id: str):
     from urllib.parse import quote_plus
     import sqlite3 as _sqlite3
     try:
+        check = _sqlite3.connect(WALMART_ORDER_DB_PATH, timeout=30)
+        try:
+            _assert_walmart_actionable(check, purchase_order_id)
+        finally:
+            check.close()
         walmart_request("POST", f"/v3/orders/{purchase_order_id}/acknowledge")
         connection = _sqlite3.connect(WALMART_ORDER_DB_PATH, timeout=30)
         connection.execute(
@@ -12908,7 +12935,15 @@ def walmart_acknowledge_order(purchase_order_id: str):
             f"Order {purchase_order_id} acknowledged."
         )
     except Exception as error:
-        url = "/channels/walmart/orders?error=" + quote_plus(str(error))
+        message = str(error)
+        if is_acknowledgment_reconciliation_signal(error):
+            try:
+                sync_orders(1, detailed=True)
+                url = "/channels/walmart/orders?message=" + quote_plus("Walmart reports this order is already shipped or cancelled. Its current status was reconciled and fulfillment controls were closed.")
+            except Exception:
+                url = "/channels/walmart/orders?error=" + quote_plus("Walmart reports this order is already closed, but the follow-up status refresh failed. Please run channel refresh before acting on it.")
+        else:
+            url = "/channels/walmart/orders?error=" + quote_plus(message)
     return RedirectResponse(url=url, status_code=status.HTTP_303_SEE_OTHER)
 
 
@@ -12930,6 +12965,7 @@ def walmart_update_fulfillment_stage(
         ).fetchone()
         if order is None:
             raise ValueError("Walmart order was not found.")
+        _assert_walmart_actionable(connection, purchase_order_id)
         remaining = connection.execute(
             """
             SELECT COUNT(*) FROM walmart_order_lines
@@ -13004,6 +13040,7 @@ def walmart_pull_order_line(
         ).fetchone()
         if line is None or inventory is None:
             raise ValueError("The order line or selected inventory record was not found.")
+        _assert_walmart_actionable(connection, line["purchase_order_id"])
         product_barcodes = connection.execute(
             "SELECT barcode FROM product_barcodes WHERE product_id=?",
             (inventory["product_id"],),
@@ -13065,6 +13102,7 @@ def walmart_pack_order(purchase_order_id: str):
     import sqlite3 as _sqlite3
     connection = _sqlite3.connect(WALMART_ORDER_DB_PATH, timeout=30)
     try:
+        _assert_walmart_actionable(connection, purchase_order_id)
         remaining = connection.execute(
             "SELECT COUNT(*) FROM walmart_order_lines WHERE purchase_order_id=? AND pulled_quantity < quantity",
             (purchase_order_id,),
@@ -13114,6 +13152,7 @@ def walmart_ship_order(
         ).fetchall()
         if order is None or not lines:
             raise ValueError("Walmart order was not found locally.")
+        _assert_walmart_actionable(connection, purchase_order_id)
         if order["local_status"] not in {"packed", "staged"}:
             raise ValueError("Order must be packed before shipment confirmation.")
         allocations_by_line = {}
@@ -13445,6 +13484,10 @@ install_offline_mode(app, templates)
 # BROOKSHOUSE INVENTORY ACTIVITY / TRANSACTION HISTORY
 from app.services.inventory_activity import install_inventory_activity
 install_inventory_activity(app, templates)
+
+# IMMUTABLE CROSS-CHANNEL OPERATIONS REPORTS
+from app.operations_reports import install_operations_reports
+install_operations_reports(app, templates)
 
 # === BROOKSHOUSE LOCATION MASTER PHASE 1B START ===
 

@@ -14,8 +14,12 @@ Default lookback: 365 days.
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import random
 import sqlite3
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -25,11 +29,18 @@ import requests
 from app.database_resolution import configured_sqlite_path, require_application_database_match
 from app.services.marketplace_order_ingestion import (
     begin_sync_run, create_picking_task, ensure_marketplace_operations_schema,
-    finish_sync_run, qualify_order, register_order_alert,
+    finish_sync_run, qualify_order, reconcile_order_status, register_order_alert,
+    release_cancelled_allocations, terminal_local_status,
 )
 
 TOKEN_URL = "https://api.amazon.com/auth/o2/token"
 ORDERS_URL = "https://sellingpartnerapi-na.amazon.com/orders/2026-01-01/orders"
+_AMAZON_CIRCUIT_LOCK = threading.Lock()
+_AMAZON_CIRCUIT = {"failures": 0, "open_until": 0.0}
+
+
+class AmazonRateLimitError(RuntimeError):
+    pass
 
 
 def load_env(path: Path) -> None:
@@ -79,6 +90,45 @@ class AmazonClient:
         self.session = requests.Session()
         self.access_token: str | None = None
         self.expires_at = utc_now()
+        self._order_cache: dict[str, dict[str, Any]] = {}
+        self._last_request_at = 0.0
+        self.min_request_interval = max(0.0, float(os.getenv("AMAZON_REQUEST_MIN_INTERVAL_SECONDS", "0.35")))
+        self.max_retries = max(0, min(6, int(os.getenv("AMAZON_HTTP_MAX_RETRIES", "3"))))
+        self.circuit_failures = max(1, int(os.getenv("AMAZON_CIRCUIT_FAILURES", "3")))
+        self.circuit_cooldown = max(30.0, float(os.getenv("AMAZON_CIRCUIT_COOLDOWN_SECONDS", "300")))
+
+    def _request(self, method: str, url: str, **kwargs):
+        with _AMAZON_CIRCUIT_LOCK:
+            if time.monotonic() < float(_AMAZON_CIRCUIT["open_until"]):
+                raise AmazonRateLimitError("Amazon circuit breaker is open; using local freshness policy")
+        for attempt in range(self.max_retries + 1):
+            delay = self.min_request_interval - (time.monotonic() - self._last_request_at)
+            if delay > 0:
+                time.sleep(delay)
+            request_method = getattr(self.session, "request", None)
+            response = (request_method(method, url, **kwargs) if request_method
+                        else getattr(self.session, method.casefold())(url, **kwargs))
+            self._last_request_at = time.monotonic()
+            if response.status_code not in {429, 500, 502, 503, 504}:
+                with _AMAZON_CIRCUIT_LOCK:
+                    _AMAZON_CIRCUIT.update({"failures": 0, "open_until": 0.0})
+                return response
+            if attempt >= self.max_retries:
+                with _AMAZON_CIRCUIT_LOCK:
+                    _AMAZON_CIRCUIT["failures"] += 1
+                    if _AMAZON_CIRCUIT["failures"] >= self.circuit_failures:
+                        _AMAZON_CIRCUIT["open_until"] = time.monotonic() + self.circuit_cooldown
+                if response.status_code == 429:
+                    raise AmazonRateLimitError(f"Amazon HTTP 429 after {attempt + 1} bounded attempts")
+                response.raise_for_status()
+            retry_after = response.headers.get("Retry-After")
+            try:
+                wait = max(0.0, float(retry_after)) if retry_after else 0.0
+            except (TypeError, ValueError):
+                wait = 0.0
+            if not wait:
+                wait = min(30.0, (2 ** attempt) + random.uniform(0.0, 0.5))
+            time.sleep(wait)
 
     def authenticate(self) -> None:
         response = self.session.post(
@@ -124,8 +174,8 @@ class AmazonClient:
         if pagination_token:
             params["paginationToken"] = pagination_token
 
-        response = self.session.get(
-            ORDERS_URL,
+        response = self._request(
+            "GET", ORDERS_URL,
             params=params,
             headers={
                 "Accept": "application/json",
@@ -138,8 +188,8 @@ class AmazonClient:
             self.access_token = None
             self.ensure_token()
 
-            response = self.session.get(
-                ORDERS_URL,
+            response = self._request(
+                "GET", ORDERS_URL,
                 params=params,
                 headers={
                     "Accept": "application/json",
@@ -150,6 +200,25 @@ class AmazonClient:
 
         response.raise_for_status()
         return response.json()
+
+    def get_order(self, order_id: str) -> dict[str, Any]:
+        if order_id in self._order_cache:
+            return self._order_cache[order_id]
+        self.ensure_token()
+        response = self._request(
+            "GET", f"{ORDERS_URL}/{order_id}",
+            params={"includedData": "PROCEEDS,FULFILLMENT"},
+            headers={"Accept": "application/json", "x-amz-access-token": str(self.access_token)},
+            timeout=60,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if isinstance(payload.get("payload"), dict):
+            payload = payload["payload"]
+        elif isinstance(payload.get("order"), dict):
+            payload = payload["order"]
+        self._order_cache[order_id] = payload
+        return payload
 
 
 def extract_orders(
@@ -366,6 +435,8 @@ def create_tables(conn: sqlite3.Connection) -> None:
             currency_code TEXT,
             item_count INTEGER NOT NULL DEFAULT 0,
             unit_count INTEGER NOT NULL DEFAULT 0,
+            ship_by_date TEXT,
+            raw_json TEXT,
             synced_at TEXT NOT NULL
         );
 
@@ -468,6 +539,7 @@ def upsert_order(
     status = get_status(order)
     fulfilled_by = get_fulfilled_by(order)
     timestamp = now_text()
+    ship_by_date = str(order.get("latestShipDate") or order.get("earliestShipDate") or order.get("shipByDate") or "").strip()
 
     unit_count = sum(
         item_quantity(item)
@@ -488,9 +560,11 @@ def upsert_order(
             currency_code,
             item_count,
             unit_count,
+            ship_by_date,
+            raw_json,
             synced_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(amazon_order_id)
         DO UPDATE SET
             created_time = excluded.created_time,
@@ -503,6 +577,8 @@ def upsert_order(
             currency_code = excluded.currency_code,
             item_count = excluded.item_count,
             unit_count = excluded.unit_count,
+            ship_by_date = excluded.ship_by_date,
+            raw_json = excluded.raw_json,
             synced_at = excluded.synced_at
         """,
         (
@@ -517,6 +593,8 @@ def upsert_order(
             currency_code,
             len(items),
             unit_count,
+            ship_by_date,
+            json.dumps(order, default=str, separators=(",", ":")),
             timestamp,
         ),
     )
@@ -612,8 +690,15 @@ def sync_recent_orders(*, days: int = 3, database: str | Path | None = None,
         existing = {str(row[0]) for row in connection.execute(
             "SELECT amazon_order_id FROM amazon_order_history"
         ).fetchall()}
+        actionable_ids = [str(row["amazon_order_id"]) for row in connection.execute(
+            """SELECT amazon_order_id,local_status,fulfillment_status FROM amazon_order_history
+               WHERE lower(COALESCE(local_status,'new')) NOT IN
+                 ('shipped','cancelled','refunded','closed','completed')"""
+        ).fetchall() if not terminal_local_status(row["fulfillment_status"])]
         token = None
         discovered = new_count = updated_count = line_count = 0
+        cancelled_ids: set[str] = set()
+        refreshed_ids: set[str] = set()
         while True:
             payload = client.search_orders(
                 marketplace_id=marketplace_id,
@@ -626,6 +711,7 @@ def sync_recent_orders(*, days: int = 3, database: str | Path | None = None,
                 order_id = str(order.get("orderId") or order.get("amazonOrderId") or "").strip()
                 if not order_id:
                     continue
+                refreshed_ids.add(order_id)
                 is_new = order_id not in existing
                 new_count += int(is_new)
                 updated_count += int(not is_new)
@@ -633,8 +719,14 @@ def sync_recent_orders(*, days: int = 3, database: str | Path | None = None,
                 fulfilled_by = get_fulfilled_by(order)
                 items = get_items(order)
                 upsert_order(connection, order)
+                reconciliation = reconcile_order_status(
+                    connection, channel="amazon", order_id=order_id,
+                    marketplace_status=status, channel_response=order, sync_run_id=run_id,
+                )
+                if reconciliation.get("local_status") in {"cancelled", "refunded"}:
+                    cancelled_ids.add(order_id)
                 line_count += len(items)
-                if qualify_order("amazon", status, fulfilled_by):
+                if qualify_order("amazon", status, fulfilled_by) and not terminal_local_status(status):
                     for item in items:
                         line_id = str(item.get("orderItemId") or item.get("orderItemID") or "").strip()
                         if line_id:
@@ -647,6 +739,24 @@ def sync_recent_orders(*, days: int = 3, database: str | Path | None = None,
             connection.commit()
             if not token:
                 break
+        # The created-after import cannot see old orders. Verify every local order
+        # still considered actionable using the single-order endpoint.
+        for order_id in (value for value in actionable_ids if value not in refreshed_ids) if hasattr(client, "get_order") else []:
+            current = client.get_order(order_id)
+            if not isinstance(current, dict):
+                continue
+            upsert_order(connection, current)
+            status = get_status(current)
+            reconciliation = reconcile_order_status(
+                connection, channel="amazon", order_id=order_id,
+                marketplace_status=status, channel_response=current, sync_run_id=run_id,
+            )
+            if reconciliation.get("local_status") in {"cancelled", "refunded"}:
+                cancelled_ids.add(order_id)
+            updated_count += 1
+        connection.commit()
+        for cancelled_id in sorted(cancelled_ids):
+            release_cancelled_allocations(target, "amazon", cancelled_id)
         finish_sync_run(connection, run_id, success=True, orders_discovered=discovered,
                         new_orders_inserted=new_count, orders_updated=updated_count,
                         lines_processed=line_count)

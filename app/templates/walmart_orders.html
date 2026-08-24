@@ -19,7 +19,7 @@
    {% for site_name, site in order.site_plan.items() %}<div class="site"><strong>{{ site_name }}</strong> — {{ site.available_units }} available units<ul>{% for label, amount in site.locations.items() %}<li>{{ label }}: {{ amount }}</li>{% endfor %}</ul></div>{% else %}<p class="missing">No matching BrooksHouse inventory found.</p>{% endfor %}
   </section>
  </div>
- <footer class="actions"><a class="btn" href="/channels/walmart/orders/{{ order.purchase_order_id }}">Open Pull Checklist</a>{% if order.local_status == 'new' %}<form method="post" action="/channels/walmart/orders/{{ order.purchase_order_id }}/acknowledge"><button class="btn ack">Acknowledge Order</button></form>{% endif %}</footer>
+ <footer class="actions">{% if order.is_actionable %}<a class="btn" href="/channels/walmart/orders/{{ order.purchase_order_id }}">Open Pull Checklist</a>{% if order.local_status == 'new' %}<form method="post" action="/channels/walmart/orders/{{ order.purchase_order_id }}/acknowledge"><button class="btn ack">Acknowledge Order</button></form>{% endif %}{% else %}<strong>Closed or awaiting channel verification — fulfillment controls disabled.</strong>{% endif %}</footer>
 </article>
 {% endfor %}{% else %}<div class="empty"><h2>No orders match these filters</h2><p>Clear the filters or sync a wider Walmart order range.</p></div>{% endif %}
 </main></body></html>

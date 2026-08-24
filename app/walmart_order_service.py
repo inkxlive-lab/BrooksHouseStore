@@ -1,5 +1,6 @@
 import base64
 import json
+import logging
 import os
 import sqlite3
 from datetime import datetime, timedelta
@@ -8,16 +9,25 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request as UrlRequest, urlopen
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from app.database_resolution import configured_sqlite_path, require_application_database_match
 from app.services.marketplace_order_ingestion import (
     begin_sync_run, create_picking_task, ensure_marketplace_operations_schema,
-    finish_sync_run, qualify_order, register_order_alert,
+    finish_sync_run, qualify_order, reconcile_order_status, register_order_alert,
+    release_cancelled_allocations, terminal_local_status,
 )
 
 APP_ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = configured_sqlite_path()
 ENV_PATH = APP_ROOT / ".env"
+LOGGER = logging.getLogger("brookshouse.walmart_orders")
+CENTRAL = ZoneInfo("America/Chicago")
+
+
+def is_acknowledgment_reconciliation_signal(error: Exception | str) -> bool:
+    message = str(error).casefold()
+    return "acknowledgment is not required" in message and ("shipped" in message or "cancelled" in message or "canceled" in message)
 
 
 def load_local_env():
@@ -329,11 +339,31 @@ def sync_orders(days_back=3, *, database=None, allow_fixture=False, detailed=Fal
             "GET", "/v3/orders", params={"createdStartDate": midnight.isoformat(), "limit": 200}
         )
         orders = _extract_orders(data)
+        # Creation-window imports miss old orders whose channel lifecycle changed.
+        # Re-fetch every locally actionable order by ID on every cycle.
+        actionable_ids = [str(row[0]) for row in connection.execute(
+            """SELECT purchase_order_id FROM walmart_orders
+               WHERE lower(COALESCE(local_status,'new')) NOT IN
+                 ('shipped','cancelled','refunded','closed','completed')"""
+        ).fetchall()]
+        by_id = {str(order.get("purchaseOrderId") or "").strip(): order for order in orders}
+        for purchase_order_id in actionable_ids:
+            try:
+                current = requester("GET", f"/v3/orders/{purchase_order_id}")
+                candidates = _extract_orders(current)
+                if not candidates and isinstance(current, dict):
+                    candidates = [current.get("order") or current]
+                if candidates and isinstance(candidates[0], dict):
+                    by_id[purchase_order_id] = candidates[0]
+            except Exception as verify_error:
+                LOGGER.warning("Walmart stale-order verification failed for %s: %s", purchase_order_id, verify_error)
+        orders = [order for order in by_id.values() if isinstance(order, dict)]
         existing_ids = {str(row[0]) for row in connection.execute(
             "SELECT purchase_order_id FROM walmart_orders"
         ).fetchall()}
         now = datetime.now().astimezone().isoformat()
         new_count = updated_count = line_count = 0
+        cancelled_ids = set()
         for order in orders:
             po = str(order.get("purchaseOrderId") or "").strip()
             if not po:
@@ -384,6 +414,12 @@ def sync_orders(days_back=3, *, database=None, allow_fixture=False, detailed=Fal
                     now,
                 ),
             )
+            reconciliation = reconcile_order_status(
+                connection, channel="walmart", order_id=po,
+                marketplace_status=status_value, channel_response=order, sync_run_id=run_id,
+            )
+            if reconciliation.get("local_status") in {"cancelled", "refunded"}:
+                cancelled_ids.add(po)
             for line in _extract_lines(order):
                 line_count += 1
                 connection.execute(
@@ -400,7 +436,7 @@ def sync_orders(days_back=3, *, database=None, allow_fixture=False, detailed=Fal
                     """,
                     (po, *line),
                 )
-                if qualify_order("walmart", status_value):
+                if qualify_order("walmart", status_value) and not terminal_local_status(status_value):
                     create_picking_task(
                         connection, channel="walmart", order_id=po, line_id=str(line[0]),
                         sku=str(line[1] or ""), quantity=int(line[4] or 0), product_id=None,
@@ -408,6 +444,8 @@ def sync_orders(days_back=3, *, database=None, allow_fixture=False, detailed=Fal
             if is_new and qualify_order("walmart", status_value):
                 register_order_alert(connection, "walmart", po, status_value)
         connection.commit()
+        for cancelled_id in sorted(cancelled_ids):
+            release_cancelled_allocations(target, "walmart", cancelled_id)
         finish_sync_run(connection, run_id, success=True, orders_discovered=len(orders),
                         new_orders_inserted=new_count, orders_updated=updated_count,
                         lines_processed=line_count)
@@ -560,9 +598,10 @@ def shipment_payload(lines, carrier, tracking_number):
     }
 
 
-def load_order_desk():
-    ensure_order_tables()
-    connection = sqlite3.connect(DB_PATH, timeout=30)
+def load_order_desk(database=None, *, allow_fixture=False):
+    target = _database_path(database, allow_fixture=allow_fixture)
+    ensure_order_tables(target, allow_fixture=allow_fixture)
+    connection = sqlite3.connect(target, timeout=30)
     connection.row_factory = sqlite3.Row
     try:
         order_rows = connection.execute(
@@ -605,6 +644,7 @@ def load_order_desk():
                     product_ids.append(int(mapped["product_id"]))
                     line["mapped_product_id"] = int(mapped["product_id"])
                     line["mapped_product_name"] = mapped["product_name"]
+                    line["confirmed_product_id"] = int(mapped["product_id"])
                 if normalized:
                     placeholders = ",".join("?" for _ in normalized)
                     product_ids.extend(
@@ -679,6 +719,9 @@ def load_order_desk():
                     ).fetchone()
                     image_url = image_row[0] if image_row else None
                 line["inventory_options"] = options
+                line["mapping_status"] = "mapped" if line.get("confirmed_product_id") else "unmatched"
+                line["candidate_product_ids"] = product_ids if not line.get("confirmed_product_id") else []
+                line["candidate_inventory_found"] = bool(options and not line.get("confirmed_product_id"))
                 line["image_url"] = image_url
                 line["allocations"] = [
                     dict(row)
@@ -768,10 +811,18 @@ def load_order_desk():
             order["order_date_display"] = format_walmart_datetime(order.get("order_date"))
             order["ship_by_display"] = format_walmart_datetime(order.get("ship_by_date"))
             order["order_age"] = format_order_age(order["order_datetime"])
+            local = str(order.get("local_status") or "new").casefold()
+            order["is_terminal"] = local in {"shipped", "cancelled", "refunded", "closed", "completed"} or bool(terminal_local_status(order.get("walmart_status")))
+            verified = parse_walmart_datetime(order.get("last_verified_at") or order.get("synced_at"))
+            verify_hours = max(1, int(os.getenv("MARKETPLACE_ACTIONABLE_VERIFY_HOURS", "6")))
+            order["verification_stale"] = bool(not order["is_terminal"] and (verified is None or datetime.now().astimezone() - verified.astimezone() > timedelta(hours=verify_hours)))
+            order["is_actionable"] = not order["is_terminal"] and not order["verification_stale"]
+            order["is_overdue"] = bool(order["ship_by_datetime"] and order["ship_by_datetime"].astimezone() < datetime.now().astimezone())
             orders.append(order)
         orders.sort(
-            key=lambda item: item.get("order_datetime")
-            or datetime.max.astimezone()
+            key=lambda item: (0 if item.get("is_overdue") else 1,
+                              item.get("ship_by_datetime") or datetime.max.astimezone(),
+                              item.get("order_datetime") or datetime.max.astimezone())
         )
         for sequence, order in enumerate(orders, start=1):
             order["fifo_sequence"] = sequence
@@ -844,8 +895,11 @@ def parse_walmart_datetime(value):
             number = int(text)
             if number > 10_000_000_000:
                 number = number / 1000
-            return datetime.fromtimestamp(number).astimezone()
-        return datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone()
+            return datetime.fromtimestamp(number, CENTRAL)
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=ZoneInfo("UTC"))
+        return parsed.astimezone(CENTRAL)
     except (ValueError, OverflowError, OSError):
         return None
 
