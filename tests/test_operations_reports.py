@@ -2,14 +2,19 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from concurrent.futures import TimeoutError as FutureTimeout
 from contextlib import closing
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+from jinja2 import Environment, FileSystemLoader
+
 from amazon_order_history_sync import AmazonClient, AmazonRateLimitError, _AMAZON_CIRCUIT
-from app.operations_reports import create_report_snapshot, load_snapshot, parse_marketplace_datetime
-from app.services.marketplace_order_ingestion import ensure_marketplace_operations_schema, reconcile_order_status, run_sync_cycle
+from app.operations_reports import (_run_report_job, create_report_snapshot, enqueue_report_job, load_report_job,
+                                   load_snapshot, parse_marketplace_datetime, recover_stale_report_jobs)
+from app.services.marketplace_order_ingestion import (acquire_operation_lock, ensure_marketplace_operations_schema,
+                                                      reconcile_order_status, release_operation_lock, run_sync_cycle)
 from app.walmart_order_service import is_acknowledgment_reconciliation_signal
 
 
@@ -61,6 +66,11 @@ class OperationsReportsTests(unittest.TestCase):
         self.assertEqual(parse_marketplace_datetime("2026-08-24T15:00:00Z"), expected)
         self.assertIsNone(parse_marketplace_datetime("malformed"))
 
+    def test_operations_report_templates_parse(self):
+        environment = Environment(loader=FileSystemLoader("app/templates"))
+        for name in ("operations_reports.html", "operations_report_job.html", "operations_report_snapshot.html"):
+            environment.get_template(name)
+
     def test_due_today_uses_entire_central_day_and_excludes_tomorrow_and_terminal(self):
         # 05:00 UTC is midnight Central during daylight time; 04:59:59 next day is 11:59:59 PM Central.
         seconds = int(datetime(2026, 8, 24, 5, 0, tzinfo=timezone.utc).timestamp())
@@ -111,6 +121,63 @@ class OperationsReportsTests(unittest.TestCase):
             after = connection.execute("SELECT snapshot_json,snapshot_sha256 FROM operations_report_runs").fetchone()
         self.assertEqual(before, after)
 
+    def job_filters(self):
+        return {"channel": "all", "ship_start": "", "ship_end": "", "physical_site": "all",
+                "stage": "all", "include_staged": True, "exclude_channels": [], "allow_stale_channels": []}
+
+    def test_concurrent_submissions_return_one_database_backed_job(self):
+        first, created_first = enqueue_report_job(report_type="active", mode="current", filters=self.job_filters(),
+                                                  actor="tester", database=self.db, allow_fixture=True, start=False)
+        second, created_second = enqueue_report_job(report_type="master_pull", mode="refresh", filters=self.job_filters(),
+                                                    actor="tester", database=self.db, allow_fixture=True, start=False)
+        self.assertTrue(created_first)
+        self.assertFalse(created_second)
+        self.assertEqual(first, second)
+
+    @patch("app.operations_reports.start_report_job")
+    def test_enqueue_starts_background_job_for_single_worker_responsiveness(self, start_job):
+        job_id, created = enqueue_report_job(report_type="active", mode="current", filters=self.job_filters(),
+                                             actor="tester", database=self.db, allow_fixture=True)
+        self.assertTrue(created)
+        start_job.assert_called_once_with(job_id, database=self.db, allow_fixture=True)
+
+    def test_stale_incomplete_job_is_recovered_as_failed(self):
+        job_id, _ = enqueue_report_job(report_type="active", mode="current", filters=self.job_filters(),
+                                       actor="tester", database=self.db, allow_fixture=True, start=False)
+        old = (datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat()
+        with closing(sqlite3.connect(self.db)) as connection:
+            connection.execute("UPDATE operations_report_jobs SET state='refreshing',updated_at=? WHERE report_job_id=?", (old, job_id))
+            connection.commit()
+        with patch.dict("os.environ", {"OPERATIONS_REPORT_JOB_STALE_SECONDS": "60"}):
+            self.assertEqual(recover_stale_report_jobs(self.db, allow_fixture=True), 1)
+        self.assertEqual(load_report_job(job_id, self.db, allow_fixture=True)["state"], "failed")
+
+    @patch("app.operations_reports.run_sync_cycle")
+    @patch("app.operations_reports.load_marketplace_orders", return_value=[order()])
+    @patch("app.operations_reports.sync_health")
+    def test_fresh_data_generation_never_refreshes_channels(self, health, _orders, sync):
+        health.return_value = {"channels": {name: {"last_success": {"finished_at": datetime.now(timezone.utc).isoformat()}}
+                                            for name in ("walmart", "amazon")}}
+        job_id, _ = enqueue_report_job(report_type="active", mode="current", filters=self.job_filters(),
+                                       actor="tester", database=self.db, allow_fixture=True, start=False)
+        _run_report_job(job_id, database=self.db, allow_fixture=True)
+        job = load_report_job(job_id, self.db, allow_fixture=True)
+        self.assertEqual(job["state"], "complete")
+        self.assertIsNotNone(job["result_report_run_id"])
+        sync.assert_not_called()
+
+    @patch("app.operations_reports._bounded_call", side_effect=FutureTimeout())
+    @patch("app.operations_reports.sync_health")
+    def test_generation_timeout_records_friendly_failed_state(self, health, _bounded):
+        health.return_value = {"channels": {name: {"last_success": {"finished_at": datetime.now(timezone.utc).isoformat()}}
+                                            for name in ("walmart", "amazon")}}
+        job_id, _ = enqueue_report_job(report_type="active", mode="current", filters=self.job_filters(),
+                                       actor="tester", database=self.db, allow_fixture=True, start=False)
+        _run_report_job(job_id, database=self.db, allow_fixture=True)
+        job = load_report_job(job_id, self.db, allow_fixture=True)
+        self.assertEqual(job["state"], "failed")
+        self.assertIn("timeout", job["error_message"].casefold())
+
     def test_walmart_and_amazon_terminal_reconciliation_is_idempotent(self):
         with closing(sqlite3.connect(self.db)) as connection:
             connection.execute("INSERT INTO walmart_orders VALUES('W1','Created','new',NULL,NULL,NULL)")
@@ -129,8 +196,19 @@ class OperationsReportsTests(unittest.TestCase):
     @patch("app.walmart_order_service.sync_orders", return_value={"success": True})
     @patch("amazon_order_history_sync.sync_recent_orders", return_value={"success": True})
     def test_channel_specific_sync_never_calls_unselected_channel(self, amazon_sync, walmart_sync, *_):
-        result = run_sync_cycle(channels=["walmart"])
+        result = run_sync_cycle(channels=["walmart"], database=self.db, allow_fixture=True)
         walmart_sync.assert_called_once(); amazon_sync.assert_not_called(); self.assertEqual(set(result), {"walmart"})
+
+    @patch("app.walmart_order_service.sync_orders")
+    @patch("amazon_order_history_sync.sync_recent_orders")
+    def test_database_refresh_lock_prevents_duplicate_marketplace_calls(self, amazon_sync, walmart_sync):
+        self.assertTrue(acquire_operation_lock("marketplace_refresh", "first", database=self.db, allow_fixture=True))
+        try:
+            result = run_sync_cycle(channels=["walmart", "amazon"], database=self.db, allow_fixture=True)
+            self.assertTrue(all(item.get("busy") for item in result.values()))
+            walmart_sync.assert_not_called(); amazon_sync.assert_not_called()
+        finally:
+            release_operation_lock("marketplace_refresh", "first", database=self.db, allow_fixture=True)
 
     def test_acknowledgment_400_is_reconciliation_signal(self):
         message = "Acknowledgment is not required. Purchase order lines are already in shipped or cancelled state."

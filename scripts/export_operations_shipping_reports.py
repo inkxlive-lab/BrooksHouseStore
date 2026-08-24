@@ -7,8 +7,8 @@ from pathlib import Path
 from app.operations_reports import load_snapshot
 
 
-def _write(report_run_id: int, destination: Path, *, pull: bool) -> None:
-    _, snapshot = load_snapshot(report_run_id)
+def _write(report_run_id: int, destination: Path, *, pull: bool, database: Path | None = None) -> None:
+    _, snapshot = load_snapshot(report_run_id, database, allow_fixture=database is not None)
     with destination.open("w", newline="", encoding="utf-8-sig") as handle:
         writer = csv.writer(handle)
         if not pull:
@@ -42,12 +42,14 @@ def main() -> int:
     parser.add_argument("--due-run", type=int, required=True)
     parser.add_argument("--pull-run", type=int, required=True)
     parser.add_argument("--directory", type=Path, required=True)
+    parser.add_argument("--database", type=Path)
     args = parser.parse_args()
     args.directory.mkdir(parents=True, exist_ok=True)
-    due = args.directory / f"walmart-orders-due-today-run-{args.due_run}.csv"
-    pull = args.directory / f"walmart-master-pull-run-{args.pull_run}.csv"
-    _write(args.due_run, due, pull=False)
-    _write(args.pull_run, pull, pull=True)
+    due = args.directory / f"marketplace-orders-due-today-run-{args.due_run}.csv"
+    pull = args.directory / f"marketplace-master-pull-run-{args.pull_run}.csv"
+    database = args.database.resolve() if args.database else None
+    _write(args.due_run, due, pull=False, database=database)
+    _write(args.pull_run, pull, pull=True, database=database)
     print(f"due_today={due}")
     print(f"master_pull={pull}")
     return 0

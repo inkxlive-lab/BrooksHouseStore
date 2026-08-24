@@ -6,7 +6,10 @@ import io
 import json
 import os
 import sqlite3
+import threading
 import time
+import uuid
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -29,13 +32,15 @@ TERMINAL = {"shipped", "cancelled", "canceled", "refunded", "closed", "completed
 
 
 @contextmanager
-def _connect(database=None, *, allow_fixture=False):
+def _connect(database=None, *, allow_fixture=False, ensure_schema=False):
     target = Path(database).resolve() if database else configured_sqlite_path()
     if not allow_fixture:
         target = require_application_database_match(target)
     connection = sqlite3.connect(target, timeout=30)
     connection.row_factory = sqlite3.Row
-    ensure_marketplace_operations_schema(connection)
+    connection.execute("PRAGMA busy_timeout=30000")
+    if ensure_schema:
+        ensure_marketplace_operations_schema(connection)
     try:
         yield connection
     finally:
@@ -295,6 +300,166 @@ def _recent_success_usable(health: dict, channel: str) -> tuple[bool, str | None
     return usable, friendly_central(success["finished_at"])
 
 
+ACTIVE_JOB_STATES = {"queued", "refreshing", "generating"}
+_JOB_THREADS: dict[int, threading.Thread] = {}
+_JOB_THREADS_LOCK = threading.Lock()
+
+
+def _fresh_channels(health: dict, channels: list[str]) -> tuple[bool, list[str]]:
+    window = max(1, int(os.getenv("MARKETPLACE_REPORT_FRESH_MINUTES", "15")))
+    stale = []
+    now = datetime.now(timezone.utc)
+    for channel in channels:
+        success = health.get("channels", {}).get(channel, {}).get("last_success")
+        parsed = parse_marketplace_datetime(success.get("finished_at")) if success else None
+        if not parsed or (now - parsed).total_seconds() > window * 60:
+            stale.append(channel)
+    return not stale, stale
+
+
+def recover_stale_report_jobs(database=None, *, allow_fixture=False, now: datetime | None = None) -> int:
+    now = now or datetime.now(timezone.utc)
+    timeout = max(30, int(os.getenv("OPERATIONS_REPORT_JOB_STALE_SECONDS", "600")))
+    cutoff = (now.timestamp() - timeout)
+    recovered = 0
+    with _connect(database, allow_fixture=allow_fixture) as connection:
+        rows = connection.execute(
+            "SELECT report_job_id,updated_at FROM operations_report_jobs WHERE state IN ('queued','refreshing','generating')"
+        ).fetchall()
+        for row in rows:
+            updated = parse_marketplace_datetime(row["updated_at"])
+            if not updated or updated.timestamp() <= cutoff:
+                connection.execute(
+                    "UPDATE operations_report_jobs SET state='failed',finished_at=?,updated_at=?,"
+                    "progress_message='Recovered stale/incomplete report job',error_message='The prior report job stopped or exceeded its safe time limit.' "
+                    "WHERE report_job_id=? AND state IN ('queued','refreshing','generating')",
+                    (now.isoformat(), now.isoformat(), row["report_job_id"]),
+                )
+                recovered += 1
+        connection.commit()
+    return recovered
+
+
+def enqueue_report_job(*, report_type: str, mode: str, filters: dict, actor: str,
+                       database=None, allow_fixture=False, start: bool = True) -> tuple[int, bool]:
+    if report_type not in REPORT_TYPES or mode not in {"current", "refresh"}:
+        raise ValueError("Invalid report request")
+    recover_stale_report_jobs(database, allow_fixture=allow_fixture)
+    now = datetime.now(timezone.utc).isoformat()
+    with _connect(database, allow_fixture=allow_fixture) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        active = connection.execute(
+            "SELECT report_job_id FROM operations_report_jobs WHERE state IN ('queued','refreshing','generating') "
+            "ORDER BY report_job_id LIMIT 1"
+        ).fetchone()
+        if active:
+            connection.rollback()
+            return int(active["report_job_id"]), False
+        cursor = connection.execute(
+            "INSERT INTO operations_report_jobs(report_type,mode,state,requested_at,updated_at,requested_by,filters_json,progress_message) "
+            "VALUES(?,?,?,?,?,?,?,?)",
+            (report_type, mode, "queued", now, now, actor[:100], _json(filters), "Queued for report generation"),
+        )
+        job_id = int(cursor.lastrowid)
+        connection.commit()
+    if start:
+        start_report_job(job_id, database=database, allow_fixture=allow_fixture)
+    return job_id, True
+
+
+def load_report_job(job_id: int, database=None, *, allow_fixture=False) -> dict:
+    with _connect(database, allow_fixture=allow_fixture) as connection:
+        row = connection.execute("SELECT * FROM operations_report_jobs WHERE report_job_id=?", (job_id,)).fetchone()
+        if row is None:
+            raise KeyError(job_id)
+        return dict(row)
+
+
+def _update_job(job_id: int, state: str, message: str, *, database=None, allow_fixture=False,
+                result_run_id: int | None = None, error: str | None = None, finished: bool = False) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    with _connect(database, allow_fixture=allow_fixture) as connection:
+        connection.execute(
+            "UPDATE operations_report_jobs SET state=?,updated_at=?,progress_message=?,result_report_run_id=?,"
+            "error_message=?,started_at=COALESCE(started_at,?),finished_at=CASE WHEN ? THEN ? ELSE finished_at END "
+            "WHERE report_job_id=?",
+            (state, now, message[:500], result_run_id, (error or "")[:1000] or None, now, int(finished), now, job_id),
+        )
+        connection.commit()
+
+
+def _bounded_call(callback, timeout_seconds: int):
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="operations-report-bounded")
+    future = executor.submit(callback)
+    try:
+        return future.result(timeout=max(1, timeout_seconds))
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+
+def _run_report_job(job_id: int, *, database=None, allow_fixture=False) -> None:
+    try:
+        job = load_report_job(job_id, database, allow_fixture=allow_fixture)
+        filters = json.loads(job["filters_json"])
+        requested = [filters["channel"]] if filters.get("channel") in {"walmart", "amazon"} else ["walmart", "amazon"]
+        health = sync_health(database, allow_fixture=allow_fixture)
+        refresh = {}
+        warnings: list[str] = []
+        if job["mode"] == "current":
+            fresh, stale = _fresh_channels(health, requested)
+            if not fresh:
+                raise RuntimeError(f"Current reconciled data is stale for: {', '.join(stale)}. Use the explicit Refresh channels action.")
+        else:
+            _update_job(job_id, "refreshing", "Refreshing selected channels and reconciling statuses", database=database, allow_fixture=allow_fixture)
+            started, clock = datetime.now(timezone.utc), time.monotonic()
+            try:
+                results = _bounded_call(lambda: run_sync_cycle(channels=requested, database=database,
+                                                                allow_fixture=allow_fixture),
+                                        int(os.getenv("OPERATIONS_REPORT_REFRESH_TIMEOUT_SECONDS", "180")))
+            except FutureTimeout as error:
+                raise RuntimeError("Marketplace refresh exceeded the safe server timeout. It was not queued again; check status before retrying.") from error
+            completed = datetime.now(timezone.utc)
+            if any(result.get("busy") for result in results.values()):
+                raise RuntimeError("Another marketplace refresh is already running. This duplicate request was not queued.")
+            health = sync_health(database, allow_fixture=allow_fixture)
+            refresh = {"started_at_utc": started.isoformat(), "started_at_central": friendly_central(started),
+                       "completed_at_utc": completed.isoformat(), "completed_at_central": friendly_central(completed),
+                       "duration_seconds": round(time.monotonic() - clock, 3), "channels_requested": requested, "results": results}
+            for name in requested:
+                if not results.get(name, {}).get("success"):
+                    warnings.append(f"{name.title()} refresh failed: {results.get(name, {}).get('error', 'unknown error')}")
+        _update_job(job_id, "generating", "Validating totals and creating immutable snapshot", database=database, allow_fixture=allow_fixture)
+        run_id = _bounded_call(
+            lambda: create_report_snapshot(report_type=job["report_type"], filters=filters, freshness=health,
+                                           warnings=warnings, actor=job["requested_by"] or "BrooksHouse user",
+                                           refresh_metadata=refresh, database=database, allow_fixture=allow_fixture),
+            int(os.getenv("OPERATIONS_REPORT_GENERATE_TIMEOUT_SECONDS", "60")),
+        )
+        _update_job(job_id, "complete", "Report snapshot is ready", database=database, allow_fixture=allow_fixture,
+                    result_run_id=run_id, finished=True)
+    except FutureTimeout:
+        _update_job(job_id, "failed", "Report generation timed out", database=database, allow_fixture=allow_fixture,
+                    error="Report generation exceeded the safe server timeout.", finished=True)
+    except Exception as error:
+        _update_job(job_id, "failed", "Report generation failed", database=database, allow_fixture=allow_fixture,
+                    error=f"{type(error).__name__}: {error}", finished=True)
+    finally:
+        with _JOB_THREADS_LOCK:
+            _JOB_THREADS.pop(job_id, None)
+
+
+def start_report_job(job_id: int, *, database=None, allow_fixture=False) -> bool:
+    with _JOB_THREADS_LOCK:
+        existing = _JOB_THREADS.get(job_id)
+        if existing and existing.is_alive():
+            return False
+        thread = threading.Thread(target=_run_report_job, kwargs={"job_id": job_id, "database": database,
+                                  "allow_fixture": allow_fixture}, name=f"operations-report-{job_id}", daemon=True)
+        _JOB_THREADS[job_id] = thread
+        thread.start()
+        return True
+
+
 def _csv_response(rows: list[list[Any]], filename: str) -> Response:
     output = io.StringIO(newline=""); csv.writer(output).writerows(rows)
     return Response(output.getvalue(), media_type="text/csv; charset=utf-8",
@@ -302,42 +467,65 @@ def _csv_response(rows: list[list[Any]], filename: str) -> Response:
 
 
 def install_operations_reports(app, templates) -> None:
+    with _connect(ensure_schema=True) as connection:
+        connection.commit()
+    recover_stale_report_jobs()
+
     @app.get("/operations/reports", response_class=HTMLResponse)
     def operations_reports_page(request: Request):
+        recover_stale_report_jobs()
         health = sync_health()
         with _connect() as connection:
             history = [dict(row) for row in connection.execute("SELECT report_run_id,report_type,created_at,created_by,warnings_json,totals_json FROM operations_report_runs ORDER BY report_run_id DESC LIMIT 25")]
+            jobs = [dict(row) for row in connection.execute(
+                "SELECT * FROM operations_report_jobs ORDER BY report_job_id DESC LIMIT 15"
+            )]
         for row in history:
             row["warnings"] = json.loads(row.get("warnings_json") or "[]"); row["totals"] = json.loads(row.get("totals_json") or "{}")
         return templates.TemplateResponse(request=request, name="operations_reports.html", context={"report_types": REPORT_TYPES,
-            "health": health, "history": history, "message": request.query_params.get("message"), "error": request.query_params.get("error")})
+            "health": health, "history": history, "jobs": jobs, "message": request.query_params.get("message"), "error": request.query_params.get("error")})
 
     @app.post("/operations/reports/generate")
     def operations_reports_generate(request: Request, report_type: str = Form("master_pull"), channel: str = Form("all"),
             ship_start: str = Form(""), ship_end: str = Form(""), physical_site: str = Form("all"),
             stage: str = Form("all"), include_staged: str | None = Form(None)):
-        requested = [channel] if channel in {"walmart", "amazon"} else ["walmart", "amazon"]
-        started, started_clock = datetime.now(timezone.utc), time.monotonic()
-        results = run_sync_cycle(channels=requested); completed = datetime.now(timezone.utc); health = sync_health()
-        excluded, stale_allowed, warnings = [], [], []
-        for name in requested:
-            result = results.get(name, {"success": False, "error": "No refresh result"})
-            if result.get("success"): continue
-            usable, stale_as_of = _recent_success_usable(health, name)
-            if usable:
-                stale_allowed.append(name); warnings.append(f"{name.title()} refresh failed. STALE AS OF {stale_as_of}; recent local data was used. Error: {result.get('error','unknown error')}")
-            else:
-                excluded.append(name); warnings.append(f"{name.title()} refresh failed and no recent safe snapshot exists; that channel was excluded. Error: {result.get('error','unknown error')}")
-        filters = {"channel": channel, "ship_start": ship_start, "ship_end": ship_end, "physical_site": physical_site,
-                   "stage": stage, "include_staged": include_staged == "yes", "exclude_channels": excluded,
-                   "allow_stale_channels": stale_allowed}
-        user = getattr(request.state, "auth_user", None); actor = str(getattr(user, "display_name", None) or getattr(user, "username", None) or "BrooksHouse user")
-        refresh = {"started_at_utc": started.isoformat(), "started_at_central": friendly_central(started),
-                   "completed_at_utc": completed.isoformat(), "completed_at_central": friendly_central(completed),
-                   "duration_seconds": round(time.monotonic() - started_clock, 3), "channels_requested": requested, "results": results}
-        run_id = create_report_snapshot(report_type=report_type, filters=filters, freshness=health, warnings=warnings,
-                                        actor=actor, refresh_metadata=refresh)
-        return RedirectResponse(f"/operations/reports/{run_id}", status_code=303)
+        return _submit_report_job(request, report_type, channel, ship_start, ship_end, physical_site,
+                                  stage, include_staged, mode="current")
+
+    @app.post("/operations/reports/refresh-generate")
+    def operations_reports_refresh_generate(request: Request, report_type: str = Form("master_pull"), channel: str = Form("all"),
+            ship_start: str = Form(""), ship_end: str = Form(""), physical_site: str = Form("all"),
+            stage: str = Form("all"), include_staged: str | None = Form(None)):
+        user = getattr(request.state, "auth_user", None)
+        if not user or getattr(user, "role", "") != "owner_admin":
+            return RedirectResponse("/operations/reports?error=" + quote_plus("Only an owner administrator can explicitly refresh marketplaces."), status_code=303)
+        return _submit_report_job(request, report_type, channel, ship_start, ship_end, physical_site,
+                                  stage, include_staged, mode="refresh")
+
+    def _submit_report_job(request: Request, report_type: str, channel: str, ship_start: str, ship_end: str,
+                           physical_site: str, stage: str, include_staged: str | None, *, mode: str):
+        filters = {"channel": channel, "ship_start": ship_start, "ship_end": ship_end,
+                   "physical_site": physical_site, "stage": stage, "include_staged": include_staged == "yes",
+                   "exclude_channels": [], "allow_stale_channels": []}
+        user = getattr(request.state, "auth_user", None)
+        actor = str(getattr(user, "display_name", None) or getattr(user, "username", None) or "BrooksHouse user")
+        job_id, created = enqueue_report_job(report_type=report_type, mode=mode, filters=filters, actor=actor)
+        suffix = "" if created else "?message=" + quote_plus("Another report or refresh is already running; showing its status instead of queuing a duplicate.")
+        return RedirectResponse(f"/operations/reports/jobs/{job_id}{suffix}", status_code=303)
+
+    @app.get("/operations/reports/jobs/{job_id}", response_class=HTMLResponse)
+    def operations_report_job_status(job_id: int, request: Request):
+        recover_stale_report_jobs()
+        job = load_report_job(job_id)
+        return templates.TemplateResponse(request=request, name="operations_report_job.html",
+                                          context={"job": job, "message": request.query_params.get("message")})
+
+    @app.get("/operations/reports/jobs/{job_id}/status")
+    def operations_report_job_status_json(job_id: int):
+        recover_stale_report_jobs()
+        job = load_report_job(job_id)
+        return {key: job.get(key) for key in ("report_job_id", "state", "progress_message", "result_report_run_id",
+                                              "error_message", "updated_at", "finished_at")}
 
     @app.get("/operations/reports/{report_run_id}", response_class=HTMLResponse)
     def operations_report_preview(report_run_id: int, request: Request):

@@ -66,11 +66,11 @@ def _load_env() -> None:
 _load_env()
 
 
-def _connect() -> sqlite3.Connection:
+def _connect(timeout_seconds: float = 30) -> sqlite3.Connection:
     database = require_application_database_match(DB_PATH)
-    connection = sqlite3.connect(database, timeout=30)
+    connection = sqlite3.connect(database, timeout=timeout_seconds)
     connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA busy_timeout = 30000")
+    connection.execute(f"PRAGMA busy_timeout = {max(100, int(timeout_seconds * 1000))}")
     connection.execute("PRAGMA foreign_keys = ON")
     return connection
 
@@ -216,7 +216,7 @@ def _current_user(request: Request) -> Optional[AuthUser]:
     if not token:
         return None
     now = _now()
-    with _connect() as connection:
+    with _connect(timeout_seconds=1) as connection:
         row = connection.execute(
             """SELECT s.session_id, s.last_seen_at, s.expires_at, s.revoked_at,
                       u.user_id, u.username, u.display_name, u.role, u.active,
@@ -228,11 +228,20 @@ def _current_user(request: Request) -> Optional[AuthUser]:
         if not row or row["revoked_at"] or not row["active"]:
             return None
         if _parse(row["expires_at"]) <= now or _parse(row["last_seen_at"]) + timedelta(minutes=IDLE_MINUTES) <= now:
-            connection.execute("UPDATE app_user_sessions SET revoked_at = ? WHERE session_id = ?",
-                               (_iso(now), row["session_id"]))
+            try:
+                connection.execute("UPDATE app_user_sessions SET revoked_at = ? WHERE session_id = ?",
+                                   (_iso(now), row["session_id"]))
+            except sqlite3.OperationalError as error:
+                if "locked" not in str(error).casefold():
+                    raise
             return None
-        connection.execute("UPDATE app_user_sessions SET last_seen_at = ? WHERE session_id = ?",
-                           (_iso(now), row["session_id"]))
+        if _parse(row["last_seen_at"]) + timedelta(seconds=60) <= now:
+            try:
+                connection.execute("UPDATE app_user_sessions SET last_seen_at = ? WHERE session_id = ?",
+                                   (_iso(now), row["session_id"]))
+            except sqlite3.OperationalError as error:
+                if "locked" not in str(error).casefold():
+                    raise
         return AuthUser(row["user_id"], row["username"], row["display_name"], row["role"],
                         row["session_id"], row["profile_image_name"])
 

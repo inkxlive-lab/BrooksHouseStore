@@ -4,7 +4,7 @@ import argparse
 import sqlite3
 from pathlib import Path
 
-REQUIRED_TABLES = {"marketplace_status_audit", "operations_report_runs"}
+REQUIRED_TABLES = {"marketplace_status_audit", "operations_report_runs", "operations_report_jobs", "marketplace_operation_locks"}
 REQUIRED_COLUMNS = {
     "walmart_orders": {"channel_closed_at", "last_verified_at", "terminal_reason"},
     "amazon_order_history": {"local_status", "channel_closed_at", "last_verified_at", "terminal_reason", "raw_json", "ship_by_date"},
@@ -47,6 +47,19 @@ def ensure_marketplace_operations_schema(connection: sqlite3.Connection) -> None
         );
         CREATE INDEX IF NOT EXISTS ix_operations_report_runs_created
             ON operations_report_runs(created_at DESC);
+        CREATE TABLE IF NOT EXISTS operations_report_jobs (
+            report_job_id INTEGER PRIMARY KEY AUTOINCREMENT, report_type TEXT NOT NULL,
+            mode TEXT NOT NULL, state TEXT NOT NULL, requested_at TEXT NOT NULL,
+            started_at TEXT, updated_at TEXT NOT NULL, finished_at TEXT, requested_by TEXT,
+            filters_json TEXT NOT NULL, progress_message TEXT, result_report_run_id INTEGER,
+            error_message TEXT
+        );
+        CREATE INDEX IF NOT EXISTS ix_operations_report_jobs_state
+            ON operations_report_jobs(state, updated_at DESC);
+        CREATE TABLE IF NOT EXISTS marketplace_operation_locks (
+            lock_name TEXT PRIMARY KEY, owner_token TEXT NOT NULL, acquired_at TEXT NOT NULL,
+            heartbeat_at TEXT NOT NULL, expires_at TEXT NOT NULL, details TEXT
+        );
     """)
     for table, columns in {
         "walmart_orders": {"channel_closed_at": "TEXT", "last_verified_at": "TEXT", "terminal_reason": "TEXT"},

@@ -6,6 +6,7 @@ import os
 import socket
 import sqlite3
 import threading
+import uuid
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -107,6 +108,31 @@ def ensure_marketplace_operations_schema(connection: sqlite3.Connection) -> None
         );
         CREATE INDEX IF NOT EXISTS ix_operations_report_runs_created
             ON operations_report_runs(created_at DESC);
+        CREATE TABLE IF NOT EXISTS operations_report_jobs (
+            report_job_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            report_type TEXT NOT NULL,
+            mode TEXT NOT NULL,
+            state TEXT NOT NULL,
+            requested_at TEXT NOT NULL,
+            started_at TEXT,
+            updated_at TEXT NOT NULL,
+            finished_at TEXT,
+            requested_by TEXT,
+            filters_json TEXT NOT NULL,
+            progress_message TEXT,
+            result_report_run_id INTEGER,
+            error_message TEXT
+        );
+        CREATE INDEX IF NOT EXISTS ix_operations_report_jobs_state
+            ON operations_report_jobs(state, updated_at DESC);
+        CREATE TABLE IF NOT EXISTS marketplace_operation_locks (
+            lock_name TEXT PRIMARY KEY,
+            owner_token TEXT NOT NULL,
+            acquired_at TEXT NOT NULL,
+            heartbeat_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            details TEXT
+        );
         """
     )
     for table, columns in {
@@ -381,7 +407,7 @@ def deliver_pending_pushes(send: Callable[..., dict[str, int]], database: str | 
                     "UPDATE marketplace_order_alerts SET push_error=? WHERE alert_id=?",
                     (f"{type(error).__name__}: {error}"[:500], alert["alert_id"]),
                 )
-        connection.commit()
+            connection.commit()
     return delivered_alerts
 
 
@@ -427,39 +453,80 @@ def deliver_catchup_summary(send: Callable[..., dict[str, int]], database: str |
         return 0
 
 
-def _has_completed_sync_run() -> bool:
-    with closing(connect()) as connection:
+def _has_completed_sync_run(database: str | Path | None = None, *, allow_fixture: bool = False) -> bool:
+    with closing(connect(database, allow_fixture=allow_fixture)) as connection:
         ensure_marketplace_operations_schema(connection)
         return connection.execute(
             "SELECT 1 FROM marketplace_sync_runs WHERE finished_at IS NOT NULL LIMIT 1"
         ).fetchone() is not None
 
 
-def run_sync_cycle(channels: list[str] | tuple[str, ...] | None = None) -> dict[str, Any]:
+def acquire_operation_lock(lock_name: str, owner_token: str, *, ttl_seconds: int = 900,
+                           database: str | Path | None = None, allow_fixture: bool = False,
+                           details: str = "") -> bool:
+    now = datetime.now(timezone.utc)
+    expires = now + timedelta(seconds=max(30, int(ttl_seconds)))
+    with closing(connect(database, allow_fixture=allow_fixture)) as connection:
+        ensure_marketplace_operations_schema(connection)
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute("DELETE FROM marketplace_operation_locks WHERE expires_at <= ?", (now.isoformat(),))
+        row = connection.execute("SELECT owner_token FROM marketplace_operation_locks WHERE lock_name=?", (lock_name,)).fetchone()
+        if row and row["owner_token"] != owner_token:
+            connection.rollback()
+            return False
+        connection.execute(
+            "INSERT INTO marketplace_operation_locks(lock_name,owner_token,acquired_at,heartbeat_at,expires_at,details) "
+            "VALUES(?,?,?,?,?,?) ON CONFLICT(lock_name) DO UPDATE SET owner_token=excluded.owner_token,"
+            "heartbeat_at=excluded.heartbeat_at,expires_at=excluded.expires_at,details=excluded.details",
+            (lock_name, owner_token, now.isoformat(), now.isoformat(), expires.isoformat(), details[:500]),
+        )
+        connection.commit()
+        return True
+
+
+def release_operation_lock(lock_name: str, owner_token: str, *, database: str | Path | None = None,
+                           allow_fixture: bool = False) -> None:
+    with closing(connect(database, allow_fixture=allow_fixture)) as connection:
+        ensure_marketplace_operations_schema(connection)
+        connection.execute("DELETE FROM marketplace_operation_locks WHERE lock_name=? AND owner_token=?",
+                           (lock_name, owner_token))
+        connection.commit()
+
+
+def run_sync_cycle(channels: list[str] | tuple[str, ...] | None = None, *, database: str | Path | None = None,
+                   allow_fixture: bool = False) -> dict[str, Any]:
     from app.walmart_order_service import sync_orders
     from amazon_order_history_sync import sync_recent_orders
-    initial_activation = not _has_completed_sync_run()
+    initial_activation = not _has_completed_sync_run(database, allow_fixture=allow_fixture)
     requested = {str(channel).casefold() for channel in (channels or ("walmart", "amazon"))}
     unsupported = requested - {"walmart", "amazon"}
     if unsupported:
         raise ValueError(f"Unsupported marketplace channels: {sorted(unsupported)}")
-    callbacks = {"walmart": lambda: sync_orders(3, detailed=True),
-                 "amazon": lambda: sync_recent_orders(days=3)}
-    results = {}
-    for channel in ("walmart", "amazon"):
-        if channel not in requested:
-            continue
-        try:
-            results[channel] = callbacks[channel]()
-        except Exception as error:
-            results[channel] = {"success": False, "error": f"{type(error).__name__}: {error}"}
-    from app.services.web_push_notifications import send_notification
-    if initial_activation:
-        prepare_initial_catchup_summary()
-    deliver_catchup_summary(send_notification)
-    deliver_pending_pushes(send_notification)
-    _WORKER_STATE["last_cycle_at"] = _now()
-    return results
+    owner = f"{socket.gethostname()}:{os.getpid()}:{threading.get_ident()}:{uuid.uuid4().hex}"
+    if not acquire_operation_lock("marketplace_refresh", owner, ttl_seconds=max(300, int(os.getenv("MARKETPLACE_REFRESH_LOCK_SECONDS", "900"))),
+                                  database=database, allow_fixture=allow_fixture, details=",".join(sorted(requested))):
+        return {channel: {"success": False, "busy": True, "error": "Another marketplace refresh is already running"}
+                for channel in sorted(requested)}
+    try:
+        callbacks = {"walmart": lambda: sync_orders(3, database=database, allow_fixture=allow_fixture, detailed=True),
+                     "amazon": lambda: sync_recent_orders(days=3, database=database, allow_fixture=allow_fixture)}
+        results = {}
+        for channel in ("walmart", "amazon"):
+            if channel not in requested:
+                continue
+            try:
+                results[channel] = callbacks[channel]()
+            except Exception as error:
+                results[channel] = {"success": False, "error": f"{type(error).__name__}: {error}"}
+        from app.services.web_push_notifications import send_notification
+        if initial_activation:
+            prepare_initial_catchup_summary(database, allow_fixture=allow_fixture)
+        deliver_catchup_summary(send_notification, database, allow_fixture=allow_fixture)
+        deliver_pending_pushes(send_notification, database, allow_fixture=allow_fixture)
+        _WORKER_STATE["last_cycle_at"] = _now()
+        return results
+    finally:
+        release_operation_lock("marketplace_refresh", owner, database=database, allow_fixture=allow_fixture)
 
 
 def worker_loop(stop_event: threading.Event | None = None, interval_seconds: int = SYNC_INTERVAL_SECONDS) -> None:
