@@ -21,6 +21,7 @@ import sqlite3
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +37,7 @@ from app.services.marketplace_order_ingestion import (
 TOKEN_URL = "https://api.amazon.com/auth/o2/token"
 ORDERS_URL = "https://sellingpartnerapi-na.amazon.com/orders/2026-01-01/orders"
 _AMAZON_CIRCUIT_LOCK = threading.Lock()
+_AMAZON_ATTEMPT_LOCK = threading.Lock()
 _AMAZON_CIRCUIT = {"failures": 0, "open_until": 0.0}
 
 
@@ -97,42 +99,56 @@ class AmazonClient:
         self.circuit_failures = max(1, int(os.getenv("AMAZON_CIRCUIT_FAILURES", "3")))
         self.circuit_cooldown = max(30.0, float(os.getenv("AMAZON_CIRCUIT_COOLDOWN_SECONDS", "300")))
 
+    @staticmethod
+    def _retry_after_seconds(value: str | None) -> float:
+        if not value:
+            return 0.0
+        try:
+            return max(0.0, float(value))
+        except (TypeError, ValueError):
+            try:
+                parsed = parsedate_to_datetime(value)
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                return max(0.0, (parsed - utc_now()).total_seconds())
+            except (TypeError, ValueError, OverflowError):
+                return 0.0
+
     def _request(self, method: str, url: str, **kwargs):
         with _AMAZON_CIRCUIT_LOCK:
             if time.monotonic() < float(_AMAZON_CIRCUIT["open_until"]):
                 raise AmazonRateLimitError("Amazon circuit breaker is open; using local freshness policy")
-        for attempt in range(self.max_retries + 1):
-            delay = self.min_request_interval - (time.monotonic() - self._last_request_at)
-            if delay > 0:
-                time.sleep(delay)
-            request_method = getattr(self.session, "request", None)
-            response = (request_method(method, url, **kwargs) if request_method
-                        else getattr(self.session, method.casefold())(url, **kwargs))
-            self._last_request_at = time.monotonic()
-            if response.status_code not in {429, 500, 502, 503, 504}:
-                with _AMAZON_CIRCUIT_LOCK:
-                    _AMAZON_CIRCUIT.update({"failures": 0, "open_until": 0.0})
-                return response
-            if attempt >= self.max_retries:
-                with _AMAZON_CIRCUIT_LOCK:
-                    _AMAZON_CIRCUIT["failures"] += 1
-                    if _AMAZON_CIRCUIT["failures"] >= self.circuit_failures:
-                        _AMAZON_CIRCUIT["open_until"] = time.monotonic() + self.circuit_cooldown
-                if response.status_code == 429:
-                    raise AmazonRateLimitError(f"Amazon HTTP 429 after {attempt + 1} bounded attempts")
-                response.raise_for_status()
-            retry_after = response.headers.get("Retry-After")
-            try:
-                wait = max(0.0, float(retry_after)) if retry_after else 0.0
-            except (TypeError, ValueError):
-                wait = 0.0
-            if not wait:
-                wait = min(30.0, (2 ** attempt) + random.uniform(0.0, 0.5))
-            time.sleep(wait)
+        # Serialize the complete bounded attempt sequence. This prevents two
+        # threads in the same process from amplifying an Amazon throttle.
+        with _AMAZON_ATTEMPT_LOCK:
+            for attempt in range(self.max_retries + 1):
+                delay = self.min_request_interval - (time.monotonic() - self._last_request_at)
+                if delay > 0:
+                    time.sleep(delay)
+                request_method = getattr(self.session, "request", None)
+                response = (request_method(method, url, **kwargs) if request_method
+                            else getattr(self.session, method.casefold())(url, **kwargs))
+                self._last_request_at = time.monotonic()
+                if response.status_code not in {429, 500, 502, 503, 504}:
+                    with _AMAZON_CIRCUIT_LOCK:
+                        _AMAZON_CIRCUIT.update({"failures": 0, "open_until": 0.0})
+                    return response
+                if attempt >= self.max_retries:
+                    with _AMAZON_CIRCUIT_LOCK:
+                        _AMAZON_CIRCUIT["failures"] += 1
+                        if _AMAZON_CIRCUIT["failures"] >= self.circuit_failures:
+                            _AMAZON_CIRCUIT["open_until"] = time.monotonic() + self.circuit_cooldown
+                    if response.status_code == 429:
+                        raise AmazonRateLimitError(f"Amazon HTTP 429 after {attempt + 1} bounded attempts")
+                    response.raise_for_status()
+                wait = self._retry_after_seconds(response.headers.get("Retry-After"))
+                if not wait:
+                    wait = min(30.0, (2 ** attempt) + random.uniform(0.0, 0.5))
+                time.sleep(wait)
 
     def authenticate(self) -> None:
-        response = self.session.post(
-            TOKEN_URL,
+        response = self._request(
+            "POST", TOKEN_URL,
             data={
                 "grant_type": "refresh_token",
                 "refresh_token": self.refresh_token,
@@ -539,7 +555,16 @@ def upsert_order(
     status = get_status(order)
     fulfilled_by = get_fulfilled_by(order)
     timestamp = now_text()
-    ship_by_date = str(order.get("latestShipDate") or order.get("earliestShipDate") or order.get("shipByDate") or "").strip()
+    fulfillment = order.get("fulfillment") if isinstance(order.get("fulfillment"), dict) else {}
+    ship_by_window = fulfillment.get("shipByWindow") if isinstance(fulfillment.get("shipByWindow"), dict) else {}
+    ship_by_date = str(
+        order.get("latestShipDate")
+        or order.get("earliestShipDate")
+        or order.get("shipByDate")
+        or ship_by_window.get("latestDateTime")
+        or ship_by_window.get("earliestDateTime")
+        or ""
+    ).strip()
 
     unit_count = sum(
         item_quantity(item)
@@ -577,7 +602,7 @@ def upsert_order(
             currency_code = excluded.currency_code,
             item_count = excluded.item_count,
             unit_count = excluded.unit_count,
-            ship_by_date = excluded.ship_by_date,
+            ship_by_date = COALESCE(NULLIF(excluded.ship_by_date, ''), amazon_order_history.ship_by_date),
             raw_json = excluded.raw_json,
             synced_at = excluded.synced_at
         """,

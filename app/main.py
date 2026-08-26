@@ -7707,6 +7707,8 @@ def inventory_dashboard(
 
     marketplace_alert_counts = alert_counts()
     marketplace_sync_health = sync_health()
+    financial_summary = build_financial_summary()
+    location_financial_summary = build_location_financial_summary()
     return templates.TemplateResponse(
         request=request,
         name="dashboard.html",
@@ -7722,6 +7724,8 @@ def inventory_dashboard(
             "low_stock_limit": low_stock_limit,
             "marketplace_alert_counts": marketplace_alert_counts,
             "marketplace_sync_health": marketplace_sync_health,
+            "financial_summary": financial_summary,
+            "location_financial_summary": location_financial_summary,
         },
     )
 
@@ -12978,13 +12982,14 @@ def walmart_update_fulfillment_stage(
         if stage == "picked":
             if remaining:
                 raise ValueError("Every product must be scanned before checking Picked.")
-            connection.execute(
-                """
-                UPDATE walmart_orders SET local_status='picked', picked_at=?
-                WHERE purchase_order_id=?
-                """,
-                (now, purchase_order_id),
-            )
+            if order["local_status"] not in {"picked", "packed", "staged"}:
+                connection.execute(
+                    """
+                    UPDATE walmart_orders SET local_status='picked', picked_at=?
+                    WHERE purchase_order_id=?
+                    """,
+                    (now, purchase_order_id),
+                )
         elif stage == "packed":
             if remaining:
                 raise ValueError("Every product must be picked before checking Packed.")
@@ -12996,15 +13001,16 @@ def walmart_update_fulfillment_stage(
                 (now, purchase_order_id),
             )
         elif stage == "staged":
-            if order["local_status"] not in {"packed", "staged"}:
-                raise ValueError("The order must be packed before it can be staged.")
-            connection.execute(
-                """
-                UPDATE walmart_orders SET local_status='staged', staged_at=?
-                WHERE purchase_order_id=?
-                """,
-                (now, purchase_order_id),
-            )
+            if order["local_status"] not in {"picked", "packed", "staged"}:
+                raise ValueError("The order must be picked before it can be staged.")
+            if order["local_status"] != "staged":
+                connection.execute(
+                    """
+                    UPDATE walmart_orders SET local_status='staged', staged_at=?
+                    WHERE purchase_order_id=?
+                    """,
+                    (now, purchase_order_id),
+                )
         else:
             raise ValueError("Use the shipment screen to confirm carrier and tracking.")
 
@@ -13041,6 +13047,10 @@ def walmart_pull_order_line(
         if line is None or inventory is None:
             raise ValueError("The order line or selected inventory record was not found.")
         _assert_walmart_actionable(connection, line["purchase_order_id"])
+        if line["product_id"] is None:
+            raise ValueError("This order line requires an approved product mapping before it can be picked.")
+        if int(line["product_id"]) != int(inventory["product_id"]):
+            raise ValueError("Selected inventory does not match the approved product mapping for this order line.")
         product_barcodes = connection.execute(
             "SELECT barcode FROM product_barcodes WHERE product_id=?",
             (inventory["product_id"],),
@@ -13080,8 +13090,12 @@ def walmart_pull_order_line(
             (line["purchase_order_id"],),
         ).fetchone()[0]
         connection.execute(
-            "UPDATE walmart_orders SET local_status=? WHERE purchase_order_id=?",
-            ("pulled" if remaining == 0 else "pulling", line["purchase_order_id"]),
+            """UPDATE walmart_orders
+               SET local_status=CASE
+                   WHEN local_status IN ('picked','packed','staged','shipment_submitted','shipped')
+                   THEN local_status ELSE 'pulling' END
+               WHERE purchase_order_id=?""",
+            (line["purchase_order_id"],),
         )
         connection.commit()
         url = f"/channels/walmart/orders/{line['purchase_order_id']}?message=" + quote_plus(

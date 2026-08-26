@@ -161,6 +161,12 @@ def _amazon_orders(database=None, *, allow_fixture=False):
                 "partiallyshipped": "pulling", "partially_shipped": "pulling",
             }.get(raw_status.replace(" ", ""), raw_status or "new")
             local_status = str(header["local_status"] or derived_local_status)
+            mapped = bool(lines) and all(line["mapping_status"] == "mapped" for line in lines)
+            enough_inventory = mapped and all(
+                sum(int(option["available_quantity"]) for option in line["inventory_options"])
+                >= int(line["quantity"] or 0)
+                for line in lines
+            )
             created = header["created_time"]
             orders.append({
                 "channel": "Amazon",
@@ -185,6 +191,7 @@ def _amazon_orders(database=None, *, allow_fixture=False):
                 "terminal_reason": header["terminal_reason"],
                 "lines": lines,
                 "site_names": sorted(site_names),
+                "inventory_state": "ready" if enough_inventory else ("mapping_required" if not mapped else "insufficient"),
                 "stage_picked": local_status in {"picked", "packed", "staged", "shipment_submitted", "shipped"},
                 "stage_packed": local_status in {"packed", "staged", "shipment_submitted", "shipped"},
                 "stage_staged": local_status in {"staged", "shipment_submitted", "shipped"},
@@ -237,7 +244,29 @@ def load_marketplace_orders(database=None, *, allow_fixture=False):
                 verified is None or datetime.now().astimezone() - verified.astimezone() > timedelta(hours=STALE_ORDER_HOURS)
             )
         )
-        order["is_actionable"] = not order["is_terminal"] and not order["verification_stale"]
+        order["is_actionable"] = not order["is_terminal"]
+        mapping_required = any(
+            str(line.get("mapping_status") or "").casefold() != "mapped"
+            or line.get("confirmed_product_id") is None
+            for line in order.get("lines") or []
+        )
+        inventory_state = str(order.get("inventory_state") or "").casefold()
+        # A completed scan is still an active picking session until the
+        # explicit Picked action records picked_at.  Preserve legacy `pulled`
+        # rows as Picking rather than inventing a persisted Picked state.
+        local_stage = "pulling" if local in {"pulling", "pulled"} else local
+        if mapping_required:
+            workflow_state = "mapping_required"
+        elif order["verification_stale"] or inventory_state in {"missing", "insufficient"}:
+            workflow_state = "exception"
+        elif local_stage in {"pulling", "picked", "packed", "staged"}:
+            workflow_state = local_stage
+        else:
+            workflow_state = "ready_to_pick"
+        order["mapping_required"] = mapping_required
+        order["workflow_state"] = workflow_state
+        order["workflow_label"] = workflow_state.replace("_", " ").title()
+        order["is_exception"] = workflow_state == "exception"
         ship_by = _parse_datetime(order.get("ship_by_date"))
         order["is_overdue"] = _is_past(ship_by)
     orders.sort(key=lambda item: (
@@ -258,6 +287,10 @@ def marketplace_summary(orders):
     reportable = [o for o in orders if o not in cancelled]
     channels = sorted({o.get("channel") for o in orders if o.get("channel")})
     channel_counts = {channel: sum(1 for o in orders if o.get("channel") == channel) for channel in channels}
+    workflow_counts = {
+        state: sum(1 for order in orders if order.get("workflow_state") == state)
+        for state in ("ready_to_pick", "pulling", "picked", "staged", "mapping_required", "exception")
+    }
     return {
         "total_orders": len(orders),
         "open_orders": len(open_orders),
@@ -268,4 +301,5 @@ def marketplace_summary(orders):
         "estimated_profit": sum(float(o.get("estimated_profit") or 0) for o in reportable),
         "channels": channels,
         "channel_counts": channel_counts,
+        "workflow_counts": workflow_counts,
     }

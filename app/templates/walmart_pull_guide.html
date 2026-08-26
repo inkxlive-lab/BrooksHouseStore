@@ -19,9 +19,9 @@
  <td data-sort="{{ order.ship_by_date }}">{{ order.ship_by_display }}</td>
  <td data-sort="{{ order.order_total or 0 }}"><span class="money">${{ "%.2f"|format(order.order_total or 0) }}</span><br><span class="muted">Order total</span></td>
  <td><div class="stages">
-  {% if line.pulled_quantity >= line.quantity or order.stage_picked %}<button class="stage done" disabled>✓ Picked</button>{% else %}<a class="stage ship" href="/channels/walmart/orders/{{ order.purchase_order_id }}">☐ Pick</a>{% endif %}
+  {% if order.stage_picked %}<button class="stage done" disabled>✓ Picked</button>{% elif order.all_pulled %}<form method="post" action="/channels/walmart/orders/{{ order.purchase_order_id }}/stage/picked"><button class="stage wait">☐ Confirm Picked</button></form>{% else %}<a class="stage ship" href="/channels/walmart/orders/{{ order.purchase_order_id }}">☐ Pick</a>{% endif %}
   {% if order.stage_packed %}<button class="stage done" disabled>✓ Packed</button>{% else %}<form method="post" action="/channels/walmart/orders/{{ order.purchase_order_id }}/stage/packed"><button class="stage wait">☐ Packed</button></form>{% endif %}
-  {% if order.stage_staged %}<button class="stage done" disabled>✓ Staged</button>{% else %}<form method="post" action="/channels/walmart/orders/{{ order.purchase_order_id }}/stage/staged"><button class="stage wait">☐ Staged</button></form>{% endif %}
+  {% if order.stage_staged %}<button class="stage done" disabled>✓ Staged</button>{% elif order.stage_picked %}<form method="post" action="/channels/walmart/orders/{{ order.purchase_order_id }}/stage/staged"><button class="stage wait">☐ Staged</button></form>{% else %}<button class="stage" disabled>Staged waits for Picked</button>{% endif %}
   {% if order.stage_shipped %}<button class="stage done" disabled>✓ Shipped</button>{% else %}<a class="stage ship" href="/channels/walmart/orders/{{ order.purchase_order_id }}">☐ Ship</a>{% endif %}
  </div></td>
 </tr>

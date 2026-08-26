@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import socket
 import sqlite3
 import threading
@@ -11,18 +12,22 @@ from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
+from zoneinfo import ZoneInfo
 
 from app.database_resolution import configured_application_database, require_application_database_match
 
 
 SYNC_INTERVAL_SECONDS = 300
+STARTUP_DELAY_SECONDS = 60
 STALE_AFTER_MINUTES = 15
 _WORKER_LOCK = threading.Lock()
+_SYNC_CYCLE_LOCK = threading.Lock()
 _WORKER_STATE: dict[str, Any] = {
     "running": False, "started_at": None, "last_cycle_at": None, "last_error": None,
 }
 _WORKER_STOP = threading.Event()
 _WORKER_THREAD: threading.Thread | None = None
+_WORKER_OWNER: str | None = None
 LOGGER = logging.getLogger("brookshouse.marketplace_sync")
 
 
@@ -350,11 +355,16 @@ def mark_alert_reviewed(alert_id: int, actor: str, database: str | Path | None =
 
 
 def sync_health(database: str | Path | None = None, *, allow_fixture: bool = False,
-                stale_after_minutes: int = STALE_AFTER_MINUTES) -> dict[str, Any]:
+                 stale_after_minutes: int = STALE_AFTER_MINUTES) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
+    central = ZoneInfo("America/Chicago")
     result: dict[str, Any] = {"worker": dict(_WORKER_STATE), "channels": {}}
     with closing(connect(database, allow_fixture=allow_fixture)) as connection:
         ensure_marketplace_operations_schema(connection)
+        running = connection.execute(
+            "SELECT 1 FROM marketplace_operation_locks WHERE lock_name='marketplace_refresh' "
+            "AND expires_at > ? LIMIT 1", (now.isoformat(),)
+        ).fetchone() is not None
         for channel in ("walmart", "amazon"):
             success = connection.execute(
                 """SELECT * FROM marketplace_sync_runs WHERE channel=? AND success=1
@@ -365,11 +375,47 @@ def sync_health(database: str | Path | None = None, *, allow_fixture: bool = Fal
             age = None
             if success and success["finished_at"]:
                 age = max(0, int((now - datetime.fromisoformat(success["finished_at"])).total_seconds() // 60))
+            latest = max(
+                (row for row in (success, failure) if row is not None),
+                key=lambda row: int(row["sync_run_id"]),
+                default=None,
+            )
+            stale = age is None or age > stale_after_minutes
+            error = str(failure["error_message"] or "") if failure else ""
+            if running:
+                state = "refresh_running"
+            elif latest is None:
+                state = "never_synchronized"
+            elif not latest["success"]:
+                lowered = error.casefold()
+                state = "authentication_failure" if any(
+                    token in lowered for token in ("401", "403", "auth", "credential", "token")
+                ) else "api_failure"
+            elif stale:
+                state = "stale"
+            else:
+                state = "last_refresh_succeeded"
+
+            def display(value):
+                if not value:
+                    return None
+                parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                return parsed.astimezone(central).strftime("%a %m/%d/%Y %I:%M:%S %p CT")
+
             result["channels"][channel] = {
                 "last_success": dict(success) if success else None,
                 "last_failure": dict(failure) if failure else None,
+                "last_success_display": display(success["finished_at"]) if success else None,
+                "last_success_utc": success["finished_at"] if success else None,
+                "last_failure_display": display(failure["finished_at"]) if failure else None,
                 "age_minutes": age,
-                "stale": age is None or age > stale_after_minutes,
+                "stale": stale,
+                "refresh_running": running,
+                "state": state,
+                "state_label": state.replace("_", " ").title(),
+                "latest_error": error or None,
             }
     result["stale"] = any(row["stale"] for row in result["channels"].values())
     return result
@@ -502,9 +548,21 @@ def run_sync_cycle(channels: list[str] | tuple[str, ...] | None = None, *, datab
     unsupported = requested - {"walmart", "amazon"}
     if unsupported:
         raise ValueError(f"Unsupported marketplace channels: {sorted(unsupported)}")
+    if not _SYNC_CYCLE_LOCK.acquire(blocking=False):
+        return {channel: {"success": False, "busy": True, "error": "A refresh cycle is already active in this process"}
+                for channel in sorted(requested)}
     owner = f"{socket.gethostname()}:{os.getpid()}:{threading.get_ident()}:{uuid.uuid4().hex}"
-    if not acquire_operation_lock("marketplace_refresh", owner, ttl_seconds=max(300, int(os.getenv("MARKETPLACE_REFRESH_LOCK_SECONDS", "900"))),
-                                  database=database, allow_fixture=allow_fixture, details=",".join(sorted(requested))):
+    try:
+        acquired = acquire_operation_lock(
+            "marketplace_refresh", owner,
+            ttl_seconds=max(300, int(os.getenv("MARKETPLACE_REFRESH_LOCK_SECONDS", "900"))),
+            database=database, allow_fixture=allow_fixture, details=",".join(sorted(requested)),
+        )
+    except Exception:
+        _SYNC_CYCLE_LOCK.release()
+        raise
+    if not acquired:
+        _SYNC_CYCLE_LOCK.release()
         return {channel: {"success": False, "busy": True, "error": "Another marketplace refresh is already running"}
                 for channel in sorted(requested)}
     try:
@@ -527,43 +585,121 @@ def run_sync_cycle(channels: list[str] | tuple[str, ...] | None = None, *, datab
         return results
     finally:
         release_operation_lock("marketplace_refresh", owner, database=database, allow_fixture=allow_fixture)
+        _SYNC_CYCLE_LOCK.release()
 
 
-def worker_loop(stop_event: threading.Event | None = None, interval_seconds: int = SYNC_INTERVAL_SECONDS) -> None:
+def _channel_due_times(*, database: str | Path | None = None, allow_fixture: bool = False,
+                       interval_seconds: int = SYNC_INTERVAL_SECONDS,
+                       not_before: datetime | None = None) -> dict[str, datetime]:
+    """Return durable per-channel due times with bounded failure backoff and jitter."""
+    now = datetime.now(timezone.utc)
+    floor = not_before or now
+    due: dict[str, datetime] = {}
+    with closing(connect(database, allow_fixture=allow_fixture)) as connection:
+        ensure_marketplace_operations_schema(connection)
+        for channel in ("walmart", "amazon"):
+            rows = connection.execute(
+                "SELECT success,finished_at FROM marketplace_sync_runs "
+                "WHERE channel=? AND finished_at IS NOT NULL ORDER BY sync_run_id DESC LIMIT 8",
+                (channel,),
+            ).fetchall()
+            if not rows:
+                due[channel] = floor
+                continue
+            latest = datetime.fromisoformat(str(rows[0]["finished_at"]).replace("Z", "+00:00"))
+            if latest.tzinfo is None:
+                latest = latest.replace(tzinfo=timezone.utc)
+            failures = 0
+            for row in rows:
+                if bool(row["success"]):
+                    break
+                failures += 1
+            multiplier = min(64, 2 ** failures) if failures else 1
+            jitter = random.uniform(0.0, min(30.0, interval_seconds * 0.20)) if failures else 0.0
+            scheduled = latest + timedelta(seconds=(interval_seconds * multiplier) + jitter)
+            due[channel] = max(floor, scheduled)
+    return due
+
+
+def worker_loop(stop_event: threading.Event | None = None, interval_seconds: int = SYNC_INTERVAL_SECONDS,
+                *, database: str | Path | None = None, allow_fixture: bool = False,
+                startup_delay_seconds: int = STARTUP_DELAY_SECONDS,
+                worker_owner: str | None = None) -> None:
     stop_event = stop_event or threading.Event()
     _WORKER_STATE.update({"running": True, "started_at": _now()})
-    LOGGER.info("Marketplace sync worker started with %s-second interval", interval_seconds)
+    startup_floor = datetime.now(timezone.utc) + timedelta(seconds=max(1, int(startup_delay_seconds)))
+    singleton_owner = worker_owner or f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex}"
+    LOGGER.info("Marketplace sync worker started with %s-second interval and %s-second startup delay",
+                interval_seconds, startup_delay_seconds)
     try:
         while not stop_event.is_set():
             try:
-                results = run_sync_cycle()
-                _WORKER_STATE["last_error"] = None
-                LOGGER.info("Marketplace sync cycle completed: %s", results)
+                if not acquire_operation_lock(
+                    "marketplace_worker_singleton", singleton_owner, ttl_seconds=120,
+                    database=database, allow_fixture=allow_fixture, details="background marketplace scheduler",
+                ):
+                    _WORKER_STATE["last_error"] = "Another marketplace worker singleton is active"
+                    LOGGER.warning(_WORKER_STATE["last_error"])
+                    return
+                due_times = _channel_due_times(
+                    database=database, allow_fixture=allow_fixture,
+                    interval_seconds=interval_seconds, not_before=startup_floor,
+                )
+                now = datetime.now(timezone.utc)
+                due_channels = [channel for channel, due_at in due_times.items() if due_at <= now]
+                if due_channels:
+                    results = run_sync_cycle(due_channels, database=database, allow_fixture=allow_fixture)
+                    _WORKER_STATE["last_error"] = None
+                    LOGGER.info("Marketplace sync cycle completed for %s: %s", due_channels, results)
+                    startup_floor = now
+                    continue
+                wait_seconds = min(30.0, max(0.1, min(
+                    (due_at - now).total_seconds() for due_at in due_times.values()
+                )))
+                stop_event.wait(wait_seconds)
             except Exception as error:
                 _WORKER_STATE["last_error"] = f"{type(error).__name__}: {error}"[:1000]
                 LOGGER.exception("Marketplace sync worker cycle failed")
-            stop_event.wait(interval_seconds)
+                stop_event.wait(min(30.0, max(1.0, interval_seconds)))
     finally:
+        try:
+            release_operation_lock("marketplace_worker_singleton", singleton_owner,
+                                   database=database, allow_fixture=allow_fixture)
+        except Exception:
+            LOGGER.exception("Marketplace worker singleton lock cleanup failed")
         _WORKER_STATE["running"] = False
         LOGGER.info("Marketplace sync worker stopped")
 
 
-def start_worker() -> bool:
-    global _WORKER_THREAD
+def start_worker(*, database: str | Path | None = None, allow_fixture: bool = False,
+                 interval_seconds: int = SYNC_INTERVAL_SECONDS,
+                 startup_delay_seconds: int = STARTUP_DELAY_SECONDS) -> bool:
+    global _WORKER_THREAD, _WORKER_OWNER
     with _WORKER_LOCK:
-        if _WORKER_STATE["running"]:
+        if _WORKER_STATE["running"] or (_WORKER_THREAD is not None and _WORKER_THREAD.is_alive()):
+            return False
+        owner = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex}"
+        if not acquire_operation_lock(
+            "marketplace_worker_singleton", owner, ttl_seconds=120,
+            database=database, allow_fixture=allow_fixture, details="background marketplace scheduler startup",
+        ):
+            LOGGER.warning("Marketplace worker start refused because another singleton is active")
             return False
         _WORKER_STOP.clear()
         _WORKER_STATE.update({"running": True, "started_at": _now()})
+        _WORKER_OWNER = owner
         _WORKER_THREAD = threading.Thread(
-            target=worker_loop, args=(_WORKER_STOP,), name="brookshouse-marketplace-sync", daemon=True,
+            target=worker_loop, args=(_WORKER_STOP, interval_seconds),
+            kwargs={"database": database, "allow_fixture": allow_fixture,
+                    "startup_delay_seconds": startup_delay_seconds, "worker_owner": owner},
+            name="brookshouse-marketplace-sync", daemon=True,
         )
         _WORKER_THREAD.start()
         return True
 
 
 def stop_worker(timeout: float = 10.0) -> bool:
-    global _WORKER_THREAD
+    global _WORKER_THREAD, _WORKER_OWNER
     with _WORKER_LOCK:
         thread = _WORKER_THREAD
         if thread is None:
@@ -572,5 +708,6 @@ def stop_worker(timeout: float = 10.0) -> bool:
     thread.join(timeout=timeout)
     if not thread.is_alive():
         _WORKER_THREAD = None
+        _WORKER_OWNER = None
         return True
     return False

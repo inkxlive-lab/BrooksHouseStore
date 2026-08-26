@@ -101,6 +101,13 @@
             border-radius: 14px;
             background: #fff;
             box-shadow: var(--bh-shadow);
+            max-height: var(--more-menu-max-height, calc(100dvh - 90px));
+            overflow-y: scroll;
+            overflow-x: hidden;
+            overscroll-behavior: contain;
+            touch-action: pan-y;
+            scrollbar-gutter: stable;
+            z-index: 100;
         }
 
         .more-menu-content a {
@@ -257,7 +264,7 @@
             .clean-header-inner { padding: 11px 13px; }
             .dashboard-shell { padding: 17px 12px 38px; }
             .clean-nav > a { display: none !important; }
-            .more-menu-content { position: fixed; top: 68px; right: 10px; }
+            .more-menu-content { position: fixed; top: 68px; right: 10px; grid-template-columns: 1fr; width:min(330px,calc(100vw - 20px)); }
             .welcome-row { align-items: start; }
             .quick-actions { grid-template-columns: repeat(2, 1fr); gap: 9px; }
             .quick-action { min-height: 94px; padding: 13px; }
@@ -289,8 +296,9 @@
     <a href="/inventory/activity">&#128221; Inventory Activity</a>
     <a href="/offline">&#128268; Offline Center</a>
     <a href="/channels/orders/pull-list">&#128722; Pull List</a>
-    <details class="more-menu"><summary>&#10024; More &#9660;</summary><div class="more-menu-content">
-        <a href="/products">&#128230; Products</a><a href="/inventory/replenishment">&#128260; Replenishment</a>
+    <details class="more-menu"><summary aria-haspopup="menu">&#10024; More &#9660;</summary><div class="more-menu-content" role="menu" tabindex="0">
+        <a href="/products">&#128230; Products</a><a href="/inventory/replenishment">&#128260; Replenishment Queue</a>
+        <a href="/inventory/container-to-shelf">&#128230; Container &rarr; Shelf Transfer</a>
         <a href="/inventory/receive">&#128229; Receive</a><a href="/inventory/transfer">&#128666; Transfer</a>
         <a href="/inventory/adjust">&#128295; Adjust</a><a href="/inventory/tote-audit">&#9989; Tote Audit</a>
         <a href="/inventory/tote-manager">&#129523; Tote Manager</a><a href="/inventory/tote-repair">&#129520; Tote Repair</a><a href="/store-map">&#128506; Store Map</a><a href="/storage-gallery">&#128444; Storage Gallery</a>
@@ -344,10 +352,10 @@
         </section>
 
         <section class="metric-grid" aria-label="Inventory overview">
-            {% if access_role == 'owner_admin' %}<a class="metric-card" href="/channels/orders?alert_state=new" style="text-decoration:none;color:inherit;{% if marketplace_alert_counts.total %}border:4px solid #b3262e;background:#fff0f1{% endif %}"><span class="metric-emoji">&#128276;</span><span>NEW MARKETPLACE ORDERS</span><strong>{{ marketplace_alert_counts.total }}</strong><small>Walmart {{ marketplace_alert_counts.walmart }} &middot; Amazon {{ marketplace_alert_counts.amazon }}</small></a>{% endif %}
+            {% if access_role == 'owner_admin' %}<a class="metric-card" href="/channels/orders?alert_state=new" style="text-decoration:none;color:inherit;{% if marketplace_alert_counts.total %}border:4px solid #b3262e;background:#fff0f1{% endif %}"><span class="metric-emoji">&#128276;</span><span>UNREVIEWED ORDER ALERTS</span><strong>{{ marketplace_alert_counts.total }}</strong><small>Walmart {{ marketplace_alert_counts.walmart }} &middot; Amazon {{ marketplace_alert_counts.amazon }} &middot; review queue</small></a>{% endif %}
             <article class="metric-card"><span class="metric-emoji">&#128230;</span><span>Active products</span><strong>{{ "{:,}".format(total_products) }}</strong><small>Products tracked</small></article>
             <article class="metric-card"><span class="metric-emoji">&#128202;</span><span>Total units</span><strong>{{ "{:,}".format(total_units) }}</strong><small>Across all locations</small></article>
-            <article class="metric-card"><span class="metric-emoji">&#128176;</span><span>Storefront retail</span><strong id="top-storefront-retail-value">$0.00</strong><small>Current selling value</small></article>
+            <article class="metric-card"><span class="metric-emoji">&#128176;</span><span>Storefront retail</span><strong id="top-storefront-retail-value">${{ "%.2f"|format(financial_summary.retail_value) }}</strong><small>Current selling value{% if financial_summary.missing_price_count %}; {{ financial_summary.missing_price_count }} missing prices{% endif %}</small></article>
             <article class="metric-card"><span class="metric-emoji">&#128680;</span><span>Needs attention</span><strong>{{ (low_stock_products | length) + (out_of_stock_products | length) }}</strong><small>{{ low_stock_products | length }} low &middot; {{ out_of_stock_products | length }} out</small></article>
         </section>
         {% if marketplace_sync_health.stale %}<section class="clean-panel" style="border:4px solid #b3262e;background:#fff0f1;margin-bottom:18px"><h2 style="color:#9d252b">MARKETPLACE SYNC STALE</h2><p>Silence may mean orders are not syncing. <a href="/admin/system-check">Open Admin System Check</a>.</p></section>{% endif %}
@@ -398,9 +406,9 @@
                 <article class="clean-panel">
                     <div class="panel-heading"><div><p class="eyebrow-clean">&#128722; Sales channels</p><h3>Marketplace tools</h3></div></div>
                     <div class="channel-stack">
-                        <div class="channel-row"><strong>Walmart</strong><span class="status-ok">Ã¢â€”Â Connected</span><div class="row-links"><a href="/channels/walmart/orders">Orders</a><a href="/channels/walmart/orders/pull-list">Pull</a></div></div>
-                        <div class="channel-row"><strong>Amazon</strong><span class="status-ok">Ã¢â€”Â Connected</span><div class="row-links"><a href="/channels/amazon/orders">Orders</a><a href="/channels/amazon/mapping">Mapping</a></div></div>
-                        <div class="channel-row"><strong>Shopify</strong><span class="status-ok">Ã¢â€”Â Tools ready</span><div class="row-links"><a href="/channels/shopify/sales">Sales</a><a href="/channels/shopify/reconcile">Compare</a><a href="/channels/shopify/approve">Approvals</a></div></div>
+                        <div class="channel-row"><strong>Walmart</strong><span class="status-ok">● {{ marketplace_sync_health.channels.walmart.state_label }}</span><div class="row-links"><a href="/channels/walmart/orders">Orders</a><a href="/channels/walmart/orders/pull-list">Pull</a></div></div>
+                        <div class="channel-row"><strong>Amazon</strong><span class="status-ok">● {{ marketplace_sync_health.channels.amazon.state_label }}</span><div class="row-links"><a href="/channels/amazon/orders">Orders</a><a href="/channels/amazon/mapping">Mapping</a></div></div>
+                        <div class="channel-row"><strong>Shopify</strong><span class="status-ok">● Tools ready</span><div class="row-links"><a href="/channels/shopify/sales">Sales</a><a href="/channels/shopify/reconcile">Compare</a><a href="/channels/shopify/approve">Approvals</a></div></div>
                     </div>
                     <p style="margin:14px 0 0"><a class="text-link" href="/channels/orders">All Marketplace Orders</a> <a class="text-link" href="/channels/stats">Stats</a> <a class="text-link" href="/reports/channel-performance">Performance</a> <a class="text-link" href="/reports/product-matching">Product Matching</a></p>
                 </article>
@@ -422,8 +430,9 @@
                     <thead><tr><th>Location</th><th>Type</th><th>Products</th><th>Units</th><th>Retail value</th><th>Cost value</th></tr></thead>
                     <tbody>
                         {% for row in location_totals %}
-                        <tr data-location-name="{{ row.location_name }}">
-                            <td><strong>{{ row.location_name }}</strong></td><td>{{ row.location_type }}</td><td>{{ row.product_count }}</td><td>{{ row.total_units }}</td><td class="location-retail-value">LoadingÃ¢â‚¬Â¦</td><td class="location-cost-value">${{ "%.2f" | format(row.total_value) }}</td>
+                        {% set value_row = (location_financial_summary.locations|selectattr('location_id','equalto',row.location_id)|list|first) %}
+                        <tr data-location-id="{{ row.location_id }}">
+                            <td><strong>{{ row.location_name }}</strong></td><td>{{ row.location_type }}</td><td>{{ row.product_count }}</td><td>{{ row.total_units }}</td><td class="location-retail-value">{% if value_row %}${{ "%.2f"|format(value_row.retail_value) }}{% if value_row.missing_price_count %}<br><small>{{ value_row.missing_price_count }} missing price(s)</small>{% endif %}{% else %}Unavailable{% endif %}</td><td class="location-cost-value">${{ "%.2f" | format(row.total_value) }}</td>
                         </tr>
                         {% endfor %}
                     </tbody>
@@ -445,8 +454,8 @@
                             <td><a href="/products/{{ transaction.product.product_id }}">{{ transaction.product.product_name }}</a></td>
                             <td>{{ transaction.location.location_name }}</td>
                             <td><strong class="{% if transaction.quantity_change > 0 %}positive-change{% elif transaction.quantity_change < 0 %}negative-change{% endif %}">{% if transaction.quantity_change > 0 %}+{% endif %}{{ transaction.quantity_change }}</strong></td>
-                            <td>{{ transaction.performed_by_name or "Unknown / Legacy" }}{% if transaction.performed_by_user_id %}<br><small>User ID {{ transaction.performed_by_user_id }}{% if transaction.performed_by_role %} Ã‚Â· {{ transaction.performed_by_role | replace("_", " ") | title }}{% endif %}</small>{% endif %}</td>
-                            <td>{{ transaction.reference_number or "Ã¢â‚¬â€" }}</td><td>{{ transaction.notes or "Ã¢â‚¬â€" }}</td>
+                            <td>{{ transaction.performed_by_name or "Unknown / Legacy" }}{% if transaction.performed_by_user_id %}<br><small>User ID {{ transaction.performed_by_user_id }}{% if transaction.performed_by_role %} &middot; {{ transaction.performed_by_role | replace("_", " ") | title }}{% endif %}</small>{% endif %}</td>
+                            <td>{{ transaction.reference_number or "—" }}</td><td>{{ transaction.notes or "—" }}</td>
                         </tr>
                     {% endfor %}
                     </tbody>
@@ -460,8 +469,8 @@
             <div class="detail-content">
                 <div id="financial-dashboard-error" class="alert error" hidden></div>
                 <div class="financial-grid">
-                    <article class="financial-card-clean"><span>Retail value</span><strong id="financial-retail-value">$0.00</strong><small>Quantity Ãƒâ€” selling price</small></article>
-                    <article class="financial-card-clean"><span>Cost value</span><strong id="financial-cost-value">$0.00</strong><small>Quantity Ãƒâ€” average cost</small></article>
+                    <article class="financial-card-clean"><span>Retail value</span><strong id="financial-retail-value">${{ "%.2f"|format(financial_summary.retail_value) }}</strong><small>Quantity × selling price</small></article>
+                    <article class="financial-card-clean"><span>Cost value</span><strong id="financial-cost-value">${{ "%.2f"|format(financial_summary.cost_value) }}</strong><small>Quantity × average cost</small></article>
                     <article class="financial-card-clean"><span>Estimated profit</span><strong id="financial-profit-value">$0.00</strong><small id="financial-margin-value">0% estimated margin</small></article>
                     <article class="financial-card-clean"><span>Average price</span><strong id="financial-average-price">$0.00</strong><small>Priced storefront products</small></article>
                     <article class="financial-card-clean"><span>Missing prices</span><strong id="financial-missing-prices">0</strong><small>Not included in retail value</small></article>
@@ -471,7 +480,7 @@
                 </div>
                 <div class="table-wrap"><table class="clean-table">
                     <thead><tr><th>Top product</th><th>Qty</th><th>Sell price</th><th>Cost</th><th>Retail value</th><th>Est. profit</th></tr></thead>
-                    <tbody id="financial-top-products"><tr><td colspan="6">Loading financial informationÃ¢â‚¬Â¦</td></tr></tbody>
+                    <tbody id="financial-top-products"><tr><td colspan="6">Loading financial information…</td></tr></tbody>
                 </table></div>
             </div>
         </details>
@@ -520,15 +529,30 @@
                 .then(data => {
                     if (data.error) throw new Error(data.error);
                     const normalize = value => String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
-                    const values = new Map((data.locations || []).map(location => [normalize(location.location_name), location]));
+                    const values = new Map((data.locations || []).map(location => [String(location.location_id), location]));
                     document.querySelectorAll("#location-value-table tbody tr").forEach(row => {
-                        const location = values.get(normalize(row.dataset.locationName));
-                        if (!location) return;
-                        row.querySelector(".location-retail-value").textContent = money(location.retail_value);
+                        const location = values.get(row.dataset.locationId);
+                        if (!location) { row.querySelector(".location-retail-value").textContent = "Unavailable"; return; }
+                        row.querySelector(".location-retail-value").innerHTML = money(location.retail_value) + (location.missing_price_count ? `<br><small>${number(location.missing_price_count)} missing price(s)</small>` : "");
                         row.querySelector(".location-cost-value").textContent = money(location.cost_value);
                     });
                 })
-                .catch(error => console.error("Could not load location values:", error));
+                .catch(error => {
+                    console.error("Could not load location values:", error);
+                    document.querySelectorAll(".location-retail-value").forEach(cell => cell.textContent = "Unavailable — check System Check");
+                });
+
+            const moreMenu = document.querySelector(".more-menu");
+            const moreContent = moreMenu?.querySelector(".more-menu-content");
+            const sizeMoreMenu = () => {
+                if (!moreMenu?.open || !moreContent) return;
+                const top = moreContent.getBoundingClientRect().top;
+                moreContent.style.setProperty("--more-menu-max-height", `${Math.max(140, window.innerHeight - top - 12)}px`);
+            };
+            moreMenu?.addEventListener("toggle", () => { if (moreMenu.open) { sizeMoreMenu(); moreContent.focus({preventScroll:true}); } });
+            window.addEventListener("resize", sizeMoreMenu);
+            document.addEventListener("pointerdown", event => { if (moreMenu?.open && !moreMenu.contains(event.target)) moreMenu.open = false; });
+            document.addEventListener("keydown", event => { if (event.key === "Escape" && moreMenu?.open) { moreMenu.open = false; moreMenu.querySelector("summary").focus(); } });
         })();
     </script>
     <script src="/static/pwa.js"></script>

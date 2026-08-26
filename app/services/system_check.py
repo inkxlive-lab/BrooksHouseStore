@@ -4,7 +4,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.database_resolution import configured_sqlite_path, require_application_database_match
+from app.config import BACKGROUND_JOBS_ENABLED, PROCESS_ROLE, should_run_background_jobs
 from app.services.marketplace_order_ingestion import sync_health
+from app.services.dashboard_financials import build_financial_summary, build_location_financial_summary
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -50,10 +52,19 @@ def _check(key, title, status, summary, detail, action_url=None, action_label=No
 def build_system_check():
     checks = []
     generated_at = datetime.now().astimezone()
+    background_jobs_disabled = not should_run_background_jobs()
+    if background_jobs_disabled:
+        checks.append(_check(
+            "background_jobs", "BACKGROUND JOBS DISABLED", "red",
+            "Marketplace refreshes and scheduled notifications are not running",
+            f"BROOKSHOUSE_BACKGROUND_JOBS_ENABLED={BACKGROUND_JOBS_ENABLED} · process role={PROCESS_ROLE}. "
+            "Keep disabled until the worker safety repair is approved and deliberately re-enabled.",
+            "/admin/system-check", "Review System Check",
+        ))
     if not DB_PATH.exists():
         checks.append(_check("database", "Database", "red", "Database file is missing",
                              str(DB_PATH), "/dashboard", "Return to Dashboard"))
-        return _finish(checks, generated_at)
+        return _finish(checks, generated_at, background_jobs_disabled)
 
     connection = sqlite3.connect(require_application_database_match(DB_PATH), timeout=10)
     connection.row_factory = sqlite3.Row
@@ -156,15 +167,29 @@ def build_system_check():
             last = row["last_success"]
             failure = row["last_failure"]
             detail = (
-                f"Last success: {last['finished_at'] if last else 'never'} · "
+                f"State: {row['state_label']} · "
+                f"Last success (Chicago): {row['last_success_display'] or 'never'} · "
+                f"UTC: {row['last_success_utc'] or 'never'} · "
                 f"Age: {row['age_minutes'] if row['age_minutes'] is not None else 'unknown'} minutes · "
                 f"Orders found: {last['orders_discovered'] if last else 0} · "
                 f"Last error: {(failure['error_message'] if failure else 'none')}"
             )
             checks.append(_check(f"{channel}_sync", f"{channel.title()} order sync",
-                                 "red" if row["stale"] else "green",
-                                 "MARKETPLACE SYNC STALE" if row["stale"] else "Sync current",
+                                 "red" if row["state"] in {"api_failure", "authentication_failure", "never_synchronized"} else "yellow" if row["stale"] else "green",
+                                 row["state_label"],
                                  detail, "/channels/orders", "Marketplace Orders"))
+
+        financial = build_financial_summary()
+        location_values = build_location_financial_summary()
+        financial_errors = [value for value in (financial.get("error"), location_values.get("error")) if value]
+        checks.append(_check(
+            "dashboard_retail_values", "Dashboard retail values",
+            "red" if financial_errors else "yellow" if financial.get("missing_price_count") else "green",
+            "Calculation error" if financial_errors else f"${financial.get('retail_value', 0):,.2f} storefront retail value",
+            "; ".join(financial_errors) if financial_errors else
+            f"{financial.get('priced_product_count', 0)} priced products · {financial.get('missing_price_count', 0)} missing prices.",
+            "/dashboard", "Open Dashboard",
+        ))
         active_push = _scalar(connection, "SELECT COUNT(*) FROM web_push_subscriptions WHERE active=1") \
             if _table_exists(connection, "web_push_subscriptions") else 0
         checks.append(_check("push_health", "Marketplace push subscriptions",
@@ -180,11 +205,12 @@ def build_system_check():
         checks.append(_check("system_error", "System-check query", "red", "A health query failed", str(error)))
     finally:
         connection.close()
-    return _finish(checks, generated_at)
+    return _finish(checks, generated_at, background_jobs_disabled)
 
 
-def _finish(checks, generated_at):
+def _finish(checks, generated_at, background_jobs_disabled=False):
     counts = {color: sum(check["status"] == color for check in checks) for color in ("green", "yellow", "red")}
     overall = "red" if counts["red"] else "yellow" if counts["yellow"] else "green"
     return {"checks": checks, "counts": counts, "overall": overall,
+            "background_jobs_disabled": background_jobs_disabled,
             "generated_at": generated_at.strftime("%m/%d/%Y %I:%M:%S %p")}

@@ -1,8 +1,10 @@
 import json
 import sqlite3
 import tempfile
+import threading
+import time
 import unittest
-from concurrent.futures import TimeoutError as FutureTimeout
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from contextlib import closing
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -10,11 +12,15 @@ from unittest.mock import patch
 
 from jinja2 import Environment, FileSystemLoader
 
-from amazon_order_history_sync import AmazonClient, AmazonRateLimitError, _AMAZON_CIRCUIT
+from amazon_order_history_sync import AmazonClient, AmazonRateLimitError, _AMAZON_CIRCUIT, create_tables, upsert_order
 from app.operations_reports import (_run_report_job, create_report_snapshot, enqueue_report_job, load_report_job,
-                                   load_snapshot, parse_marketplace_datetime, recover_stale_report_jobs)
-from app.services.marketplace_order_ingestion import (acquire_operation_lock, ensure_marketplace_operations_schema,
-                                                      reconcile_order_status, release_operation_lock, run_sync_cycle)
+                                   load_snapshot, order_csv_rows, parse_marketplace_datetime, pull_csv_rows,
+                                   recover_stale_report_jobs, report_prefill_url)
+from app.services.operations_report_pdf import render_report_pdf
+from app.services.marketplace_order_ingestion import (_SYNC_CYCLE_LOCK, _channel_due_times, acquire_operation_lock,
+                                                      begin_sync_run, ensure_marketplace_operations_schema,
+                                                      finish_sync_run, reconcile_order_status, release_operation_lock,
+                                                      run_sync_cycle, start_worker, stop_worker, sync_health)
 from app.walmart_order_service import is_acknowledgment_reconciliation_signal
 
 
@@ -26,8 +32,8 @@ def line(product_id=10, *, quantity=3, picked=0, available=2, mapped=True):
                                     "available_quantity": available}] if available is not None else [])}
 
 
-def order(order_id="W1", *, ship_by="2099-01-01T12:00:00Z", stage="new", terminal=False, order_line=None):
-    return {"channel": "Walmart", "channel_key": "walmart", "purchase_order_id": order_id,
+def order(order_id="W1", *, channel="walmart", ship_by="2099-01-01T12:00:00Z", stage="new", terminal=False, order_line=None):
+    return {"channel": channel.title(), "channel_key": channel, "purchase_order_id": order_id,
             "is_actionable": not terminal, "is_terminal": terminal, "verification_stale": False,
             "local_status": stage, "marketplace_status": "Shipped" if terminal else "Created",
             "walmart_status": "Shipped" if terminal else "Created", "unit_count": int((order_line or line())["quantity"]),
@@ -103,6 +109,95 @@ class OperationsReportsTests(unittest.TestCase):
         self.assertEqual(snapshot["pull_rows"], [])
         self.assertEqual(snapshot["totals"]["remaining_units_to_pull"], 0)
 
+    def test_storage_yard_pull_is_a_scoped_master_pull_and_keeps_unmatched(self):
+        yard = order("YARD", order_line=line(quantity=2, available=4))
+        yard["site_names"] = ["Storage Yard"]
+        yard["lines"][0]["inventory_options"][0].update(
+            site_name="Storage Yard", location_name="Trailer 1", container_id="TOTE-9"
+        )
+        storefront = order("STORE", order_line=line(product_id=11, quantity=1, available=4))
+        unmatched = order("UNKNOWN", order_line=line(product_id=None, quantity=1, available=None, mapped=False))
+        snapshot = self.snapshot("storage_yard_pull", [yard, storefront, unmatched])
+        self.assertEqual(snapshot["report_title"], "Storage Yard Fulfillment Pull List")
+        self.assertEqual(snapshot["filters"]["physical_site"], "all")
+        self.assertEqual({row["product"] for row in snapshot["pull_rows"]}, {"Widget"})
+        self.assertEqual(snapshot["totals"]["active_orders"], 2)
+        self.assertEqual(snapshot["totals"]["unmatched_items"], 1)
+
+    def test_report_filters_change_browser_pdf_and_both_csv_datasets(self):
+        orders = [
+            *[order(f"W{index}", channel="walmart") for index in range(1, 5)],
+            *[order(f"A{index}", channel="amazon") for index in range(1, 3)],
+        ]
+        cases = [
+            ({"channel": "all"}, 6, {"W1", "W2", "W3", "W4", "A1", "A2"}),
+            ({"channel": "walmart"}, 4, {"W1", "W2", "W3", "W4"}),
+            ({"channel": "amazon"}, 2, {"A1", "A2"}),
+            ({"channel": "all", "exclude_channels": ["amazon"]}, 4, {"W1", "W2", "W3", "W4"}),
+            ({"channel": "all", "exclude_channels": ["walmart"]}, 2, {"A1", "A2"}),
+        ]
+        original = self.snapshot("active", orders, {"channel": "all", "include_staged": True})
+        original_json = json.dumps(original, sort_keys=True)
+        for supplied, expected_count, expected_ids in cases:
+            filters = {"include_staged": True, "allow_stale_channels": ["walmart", "amazon"], **supplied}
+            snapshot = self.snapshot("active", orders, filters)
+            self.assertEqual(snapshot["totals"]["active_orders"], expected_count)
+            self.assertEqual({row["order_id"] for row in snapshot["order_rows"]}, expected_ids)
+            self.assertEqual({row[1] for row in order_csv_rows(snapshot)[1:]}, expected_ids)
+            contributing = {item["order_id"] for row in snapshot["pull_rows"] for item in row["orders"]}
+            self.assertEqual(contributing, expected_ids)
+            self.assertEqual(len(pull_csv_rows(snapshot)), len(snapshot["pull_rows"]) + 1)
+            self.assertTrue(render_report_pdf({"report_run_id": 1, "created_at": "now", "snapshot_sha256": "x"}, snapshot).startswith(b"%PDF-"))
+        self.assertEqual(json.dumps(original, sort_keys=True), original_json)
+
+    def test_date_stage_include_staged_and_allow_stale_filters(self):
+        fresh = order("FRESH", ship_by="2026-08-25T12:00:00Z", stage="new")
+        stale = order("STALE", channel="amazon", ship_by="2026-08-26T12:00:00Z", stage="picked")
+        stale["verification_stale"] = True
+        staged = order("STAGED", ship_by="2026-08-25T13:00:00Z", stage="staged")
+        dated = self.snapshot("active", [fresh, stale, staged], {
+            "channel": "all", "ship_start": "2026-08-25", "ship_end": "2026-08-25",
+            "include_staged": False, "allow_stale_channels": ["amazon"],
+        })
+        self.assertEqual({row["order_id"] for row in dated["order_rows"]}, {"FRESH"})
+        picked = self.snapshot("active", [fresh, stale, staged], {
+            "channel": "all", "stage": "picked", "include_staged": True,
+            "allow_stale_channels": ["amazon"],
+        })
+        self.assertEqual({row["order_id"] for row in picked["order_rows"]}, {"STALE"})
+        blocked_stale = self.snapshot("active", [fresh, stale], {
+            "channel": "all", "include_staged": True, "allow_stale_channels": [],
+        })
+        self.assertEqual({row["order_id"] for row in blocked_stale["order_rows"]}, {"FRESH"})
+
+    def test_run_new_report_url_round_trips_all_criteria(self):
+        url = report_prefill_url("active", {"channel": "all", "exclude_channels": ["amazon"],
+            "ship_start": "2026-08-25", "ship_end": "2026-08-26", "physical_site": "Storage Yard",
+            "stage": "picked", "include_staged": False, "allow_stale_channels": ["walmart"]})
+        self.assertIn("report_type=active", url)
+        self.assertIn("exclude_channels=amazon", url)
+        self.assertIn("allow_stale_channels=walmart", url)
+        self.assertIn("include_staged=no", url)
+
+    def test_storage_yard_pdf_contains_required_summary_risk_location_and_checkboxes(self):
+        yard = order("YARD-1", order_line=line(quantity=3, available=1, mapped=False))
+        yard["site_names"] = ["Storage Yard"]
+        yard["lines"][0]["inventory_options"][0].update(
+            site_name="Storage Yard", location_name="Trailer 2", container_id="TOTE-22"
+        )
+        snapshot = self.snapshot("storage_yard_pull", [yard])
+        metadata = {"report_run_id": 77, "created_at": "2026-08-24T20:00:00+00:00", "snapshot_sha256": "abc123"}
+        pdf = render_report_pdf(metadata, snapshot)
+        self.assertTrue(pdf.startswith(b"%PDF-"))
+        self.assertGreater(len(pdf), 2000)
+        row = snapshot["pull_rows"][0]
+        self.assertEqual(row["locations"][0]["location"], "Trailer 2")
+        self.assertEqual(row["locations"][0]["container"], "TOTE-22")
+        self.assertEqual(snapshot["totals"]["active_orders"], 1)
+        self.assertEqual(snapshot["totals"]["units_required"], 3)
+        self.assertEqual(snapshot["totals"]["unmatched_items"], 1)
+        self.assertGreaterEqual(snapshot["totals"]["blocked_or_at_risk"], 1)
+
     def test_mapping_and_candidate_inventory_are_separate(self):
         candidate = line(mapped=False, available=7)
         snapshot = self.snapshot("exceptions", [order(order_line=candidate)])
@@ -155,7 +250,8 @@ class OperationsReportsTests(unittest.TestCase):
     @patch("app.operations_reports.run_sync_cycle")
     @patch("app.operations_reports.load_marketplace_orders", return_value=[order()])
     @patch("app.operations_reports.sync_health")
-    def test_fresh_data_generation_never_refreshes_channels(self, health, _orders, sync):
+    @patch("app.operations_reports.write_report_pdf")
+    def test_fresh_data_generation_never_refreshes_channels(self, write_pdf, health, _orders, sync):
         health.return_value = {"channels": {name: {"last_success": {"finished_at": datetime.now(timezone.utc).isoformat()}}
                                             for name in ("walmart", "amazon")}}
         job_id, _ = enqueue_report_job(report_type="active", mode="current", filters=self.job_filters(),
@@ -164,6 +260,7 @@ class OperationsReportsTests(unittest.TestCase):
         job = load_report_job(job_id, self.db, allow_fixture=True)
         self.assertEqual(job["state"], "complete")
         self.assertIsNotNone(job["result_report_run_id"])
+        write_pdf.assert_called_once()
         sync.assert_not_called()
 
     def test_default_freshness_window_accepts_reconciled_data_under_one_hour(self):
@@ -218,9 +315,93 @@ class OperationsReportsTests(unittest.TestCase):
         finally:
             release_operation_lock("marketplace_refresh", "first", database=self.db, allow_fixture=True)
 
+    def test_in_process_refresh_guard_prevents_overlap(self):
+        self.assertTrue(_SYNC_CYCLE_LOCK.acquire(blocking=False))
+        try:
+            result = run_sync_cycle(channels=["walmart"], database=self.db, allow_fixture=True)
+            self.assertTrue(result["walmart"]["busy"])
+            self.assertIn("this process", result["walmart"]["error"])
+        finally:
+            _SYNC_CYCLE_LOCK.release()
+
+    def test_channel_due_times_are_independent_and_back_off_failures(self):
+        now = datetime.now(timezone.utc)
+        with closing(sqlite3.connect(self.db)) as connection:
+            connection.execute(
+                "INSERT INTO marketplace_sync_runs(channel,started_at,finished_at,success,sanitized_database_target) VALUES(?,?,?,?,?)",
+                ("walmart", (now - timedelta(seconds=10)).isoformat(), now.isoformat(), 1, "fixture"),
+            )
+            for seconds in (20, 10):
+                stamp = now - timedelta(seconds=seconds)
+                connection.execute(
+                    "INSERT INTO marketplace_sync_runs(channel,started_at,finished_at,success,sanitized_database_target) VALUES(?,?,?,?,?)",
+                    ("amazon", stamp.isoformat(), stamp.isoformat(), 0, "fixture"),
+                )
+            connection.commit()
+        with patch("app.services.marketplace_order_ingestion.random.uniform", return_value=7.0):
+            due = _channel_due_times(database=self.db, allow_fixture=True, interval_seconds=60,
+                                     not_before=now - timedelta(seconds=1))
+        self.assertAlmostEqual((due["walmart"] - now).total_seconds(), 60.0, delta=1.0)
+        self.assertAlmostEqual((due["amazon"] - now).total_seconds(), 237.0, delta=1.0)
+
+    @patch("app.services.marketplace_order_ingestion.run_sync_cycle")
+    def test_worker_startup_delay_prevents_immediate_refresh(self, cycle):
+        self.assertTrue(start_worker(database=self.db, allow_fixture=True, interval_seconds=1,
+                                     startup_delay_seconds=2))
+        try:
+            time.sleep(0.15)
+            cycle.assert_not_called()
+            self.assertFalse(start_worker(database=self.db, allow_fixture=True, interval_seconds=1,
+                                          startup_delay_seconds=2))
+        finally:
+            self.assertTrue(stop_worker(timeout=2))
+
+    def test_worker_singleton_refuses_second_owner(self):
+        self.assertTrue(acquire_operation_lock("marketplace_worker_singleton", "external", ttl_seconds=120,
+                                               database=self.db, allow_fixture=True))
+        try:
+            self.assertFalse(start_worker(database=self.db, allow_fixture=True, interval_seconds=1,
+                                          startup_delay_seconds=2))
+        finally:
+            release_operation_lock("marketplace_worker_singleton", "external",
+                                   database=self.db, allow_fixture=True)
+
+    def test_amazon_nested_ship_by_window_is_normalized(self):
+        amazon_db = Path(self.temp.name) / "amazon-copy.db"
+        with closing(sqlite3.connect(amazon_db)) as connection:
+            create_tables(connection)
+            upsert_order(connection, {
+                "orderId": "A-SHIP-BY", "createdTime": "2026-08-24T00:00:00Z",
+                "fulfillment": {"fulfillmentStatus": "UNSHIPPED", "fulfilledBy": "MERCHANT",
+                                "shipByWindow": {"earliestDateTime": "2026-08-25T07:00:00Z",
+                                                 "latestDateTime": "2026-08-26T06:59:59Z"}},
+                "salesChannel": {"marketplaceId": "ATV", "marketplaceName": "Amazon.com"},
+                "orderItems": [],
+            })
+            value = connection.execute(
+                "SELECT ship_by_date FROM amazon_order_history WHERE amazon_order_id='A-SHIP-BY'"
+            ).fetchone()[0]
+        self.assertEqual(value, "2026-08-26T06:59:59Z")
+
     def test_acknowledgment_400_is_reconciliation_signal(self):
         message = "Acknowledgment is not required. Purchase order lines are already in shipped or cancelled state."
         self.assertTrue(is_acknowledgment_reconciliation_signal(message))
+
+    def test_amazon_429_failure_does_not_clear_stale_last_success(self):
+        with closing(sqlite3.connect(self.db)) as connection:
+            successful = begin_sync_run(connection, "amazon")
+            finish_sync_run(connection, successful, success=True)
+            connection.execute(
+                "UPDATE marketplace_sync_runs SET finished_at=? WHERE sync_run_id=?",
+                ((datetime.now(timezone.utc) - timedelta(hours=6)).isoformat(), successful),
+            )
+            failed = begin_sync_run(connection, "amazon")
+            finish_sync_run(connection, failed, success=False,
+                            error_message="AmazonRateLimitError: HTTP 429 after bounded attempts")
+        amazon = sync_health(self.db, allow_fixture=True, stale_after_minutes=60)["channels"]["amazon"]
+        self.assertTrue(amazon["stale"])
+        self.assertEqual(amazon["state"], "api_failure")
+        self.assertIn("429", amazon["latest_error"])
 
 
 class FakeResponse:
@@ -254,6 +435,40 @@ class AmazonThrottleTests(unittest.TestCase):
         client.session = FakeSession([FakeResponse(429), FakeResponse(429)])
         with self.assertRaises(AmazonRateLimitError): client.search_orders(marketplace_id="ATV", created_after="2026-08-24T00:00:00Z")
         self.assertGreater(_AMAZON_CIRCUIT["open_until"], 0); self.assertEqual(client.session.calls, 2)
+
+    @patch("amazon_order_history_sync.utc_now", return_value=datetime(2026, 8, 25, tzinfo=timezone.utc))
+    @patch("amazon_order_history_sync.time.sleep")
+    def test_retry_after_http_date_is_respected(self, sleep, _now):
+        client = AmazonClient("id", "secret", "refresh"); client.access_token = "token"; client.expires_at = datetime.max.replace(tzinfo=timezone.utc)
+        client.min_request_interval = 0; client.max_retries = 1
+        client.session = FakeSession([FakeResponse(429, headers={"Retry-After": "Tue, 25 Aug 2026 00:00:03 GMT"}), FakeResponse(200, {"orders": []})])
+        client.search_orders(marketplace_id="ATV", created_after="2026-08-24T00:00:00Z")
+        sleep.assert_called_with(3.0)
+
+    @patch("amazon_order_history_sync.time.sleep")
+    def test_token_request_uses_same_bounded_429_handling(self, sleep):
+        client = AmazonClient("id", "secret", "refresh"); client.min_request_interval = 0; client.max_retries = 1
+        client.session = FakeSession([FakeResponse(429, headers={"Retry-After": "1"}), FakeResponse(200, {"access_token": "safe", "expires_in": 3600})])
+        client.authenticate()
+        self.assertEqual(client.access_token, "safe"); sleep.assert_called_with(1.0)
+
+    def test_in_process_amazon_attempts_do_not_overlap(self):
+        class SerialProbeSession:
+            def __init__(self): self.active = 0; self.maximum = 0; self.guard = threading.Lock()
+            def request(self, *_args, **_kwargs):
+                with self.guard:
+                    self.active += 1; self.maximum = max(self.maximum, self.active)
+                time.sleep(0.02)
+                with self.guard: self.active -= 1
+                return FakeResponse(200, {"orders": []})
+        session = SerialProbeSession()
+        clients = [AmazonClient("id", "secret", "refresh") for _ in range(2)]
+        for client in clients:
+            client.access_token = "token"; client.expires_at = datetime.max.replace(tzinfo=timezone.utc)
+            client.min_request_interval = 0; client.session = session
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            list(pool.map(lambda client: client.search_orders(marketplace_id="ATV", created_after="2026-08-24T00:00:00Z"), clients))
+        self.assertEqual(session.maximum, 1)
 
     def test_get_order_reuses_same_run_cache(self):
         client = AmazonClient("id", "secret", "refresh"); client.access_token = "token"; client.expires_at = datetime.max.replace(tzinfo=timezone.utc)

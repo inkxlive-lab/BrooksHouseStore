@@ -1,21 +1,18 @@
 ﻿"""Financial calculations for the BrooksHouse dashboard."""
 
 import sqlite3
-from pathlib import Path
 from typing import Any
 
+from app.database_resolution import configured_sqlite_path, require_application_database_match
 
-DATABASE_PATH = Path(
-    r"C:\BrooksHouseStore"
-    r"\app\data\brookshouse_store.db"
-)
+DATABASE_PATH = configured_sqlite_path()
 
 STOREFRONT_NAME = "BrooksHouse Storefront"
 
 
 def connect_database() -> sqlite3.Connection:
     connection = sqlite3.connect(
-        DATABASE_PATH
+        require_application_database_match(DATABASE_PATH)
     )
 
     connection.row_factory = sqlite3.Row
@@ -321,7 +318,10 @@ def build_financial_summary() -> dict[str, Any]:
             SELECT
                 COUNT(
                     DISTINCT
-                    p.{quote_identifier(product_id)}
+                    CASE
+                        WHEN COALESCE(i.{quote_identifier(quantity_on_hand)}, 0) > 0
+                        THEN p.{quote_identifier(product_id)}
+                    END
                 ) AS product_count,
 
                 COALESCE(
@@ -337,7 +337,8 @@ def build_financial_summary() -> dict[str, Any]:
                 COUNT(
                     DISTINCT
                     CASE
-                        WHEN {selling_expression} IS NOT NULL
+                        WHEN COALESCE(i.{quote_identifier(quantity_on_hand)}, 0) > 0
+                         AND {selling_expression} IS NOT NULL
                          AND {selling_expression} > 0
                         THEN p.{quote_identifier(product_id)}
                     END
@@ -346,8 +347,9 @@ def build_financial_summary() -> dict[str, Any]:
                 COUNT(
                     DISTINCT
                     CASE
-                        WHEN {selling_expression} IS NULL
-                          OR {selling_expression} <= 0
+                        WHEN COALESCE(i.{quote_identifier(quantity_on_hand)}, 0) > 0
+                         AND ({selling_expression} IS NULL
+                          OR {selling_expression} <= 0)
                         THEN p.{quote_identifier(product_id)}
                     END
                 ) AS missing_price_count,
@@ -355,8 +357,9 @@ def build_financial_summary() -> dict[str, Any]:
                 COUNT(
                     DISTINCT
                     CASE
-                        WHEN {cost_expression} IS NULL
-                          OR {cost_expression} <= 0
+                        WHEN COALESCE(i.{quote_identifier(quantity_on_hand)}, 0) > 0
+                         AND ({cost_expression} IS NULL
+                          OR {cost_expression} <= 0)
                         THEN p.{quote_identifier(product_id)}
                     END
                 ) AS missing_cost_count,

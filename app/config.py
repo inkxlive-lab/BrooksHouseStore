@@ -36,7 +36,7 @@ def env_flag(name: str, default: bool = False) -> bool:
 
 BACKGROUND_JOBS_ENABLED = env_flag(
     "BROOKSHOUSE_BACKGROUND_JOBS_ENABLED",
-    default=True,
+    default=False,
 )
 POSTGRES_MIGRATION_READY = env_flag(
     "BROOKSHOUSE_POSTGRES_MIGRATION_READY",

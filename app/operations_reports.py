@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlencode
 from zoneinfo import ZoneInfo
 
 from fastapi import Form, Request
@@ -23,12 +23,63 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from app.database_resolution import configured_sqlite_path, require_application_database_match
 from app.marketplace_order_service import load_marketplace_orders
 from app.services.marketplace_order_ingestion import ensure_marketplace_operations_schema, run_sync_cycle, sync_health
+from app.services.operations_report_pdf import render_report_pdf, write_report_pdf
 
 CENTRAL = ZoneInfo("America/Chicago")
-REPORT_TYPES = {"active": "Today's Active Orders", "master_pull": "Printable Master Pull List",
+REPORT_TYPES = {"active": "Today's Active Orders", "master_pull": "Printable Master Pull List (All Locations)",
+                "storage_yard_pull": "Storage Yard Fulfillment Pull List",
                 "due_today": "Orders Due Today", "staged": "Staged but Not Shipped",
                 "exceptions": "Fulfillment Exceptions", "reconciliation": "Marketplace Reconciliation Report"}
 TERMINAL = {"shipped", "cancelled", "canceled", "refunded", "closed", "completed"}
+CHANNELS = {"walmart", "amazon"}
+FULFILLMENT_STAGES = {"all", "new", "acknowledged", "pulling", "pulled", "picked", "packed", "staged"}
+
+
+def normalize_report_filters(filters: dict | None = None) -> dict:
+    """Return the one canonical filter shape stored with every immutable snapshot."""
+    raw = dict(filters or {})
+    channel = str(raw.get("channel") or "all").strip().casefold()
+    if channel not in CHANNELS | {"all"}:
+        raise ValueError("Channel must be all, walmart, or amazon.")
+    stage = str(raw.get("stage") or "all").strip().casefold()
+    if stage not in FULFILLMENT_STAGES:
+        raise ValueError("Unknown fulfillment stage filter.")
+
+    def channel_list(name: str) -> list[str]:
+        value = raw.get(name, [])
+        values = value if isinstance(value, (list, tuple, set)) else [value]
+        return sorted({str(item).strip().casefold() for item in values if str(item).strip().casefold() in CHANNELS})
+
+    start_text = str(raw.get("ship_start") or "").strip()
+    end_text = str(raw.get("ship_end") or "").strip()
+    start = date.fromisoformat(start_text) if start_text else None
+    end = date.fromisoformat(end_text) if end_text else None
+    if start and end and start > end:
+        raise ValueError("Ship date from cannot be after ship date through.")
+    include_staged = raw.get("include_staged", True)
+    if isinstance(include_staged, str):
+        include_staged = include_staged.strip().casefold() in {"1", "true", "yes", "on"}
+    return {
+        "channel": channel,
+        "exclude_channels": channel_list("exclude_channels"),
+        "ship_start": start_text,
+        "ship_end": end_text,
+        "physical_site": str(raw.get("physical_site") or "all").strip() or "all",
+        "stage": stage,
+        "include_staged": bool(include_staged),
+        "allow_stale_channels": channel_list("allow_stale_channels"),
+    }
+
+
+def report_prefill_url(report_type: str, filters: dict) -> str:
+    normalized = normalize_report_filters(filters)
+    parameters: list[tuple[str, str]] = [("report_type", report_type)]
+    for name in ("channel", "physical_site", "ship_start", "ship_end", "stage"):
+        parameters.append((name, str(normalized[name])))
+    parameters.append(("include_staged", "yes" if normalized["include_staged"] else "no"))
+    parameters.extend(("exclude_channels", value) for value in normalized["exclude_channels"])
+    parameters.extend(("allow_stale_channels", value) for value in normalized["allow_stale_channels"])
+    return "/operations/reports?" + urlencode(parameters)
 
 
 @contextmanager
@@ -130,6 +181,7 @@ def _line_exception(order: dict, mapping: dict, available: int, remaining: int) 
 
 
 def _base_orders(orders: list[dict], filters: dict) -> list[dict]:
+    filters = normalize_report_filters(filters)
     channel = str(filters.get("channel") or "all").casefold()
     stage = str(filters.get("stage") or "all").casefold()
     site = str(filters.get("physical_site") or "all").casefold()
@@ -143,6 +195,8 @@ def _base_orders(orders: list[dict], filters: dict) -> list[dict]:
         channel_key = str(order.get("channel_key") or "").casefold()
         local = str(order.get("local_status") or "new").casefold()
         if order.get("is_terminal") or local in TERMINAL:
+            continue
+        if order.get("verification_stale") and channel_key not in stale_allowed:
             continue
         if not order.get("is_actionable") and not (channel_key in stale_allowed and not order.get("is_terminal")):
             continue
@@ -236,12 +290,25 @@ def _aggregate(order_rows: list[dict], *, remaining_only: bool) -> tuple[list[di
     return rows, [row for row in rows if row["exception_code"]]
 
 
+def _storage_yard_pull_candidate(row: dict) -> bool:
+    """Include known yard stock plus unmatched/unlocated lines that require a manual yard search."""
+    if row.get("mapping_status") != "mapped" or not row.get("locations") or row.get("exception_code"):
+        return True
+    location_text = " ".join(
+        f"{item.get('site','')} {item.get('location','')} {item.get('container','')}"
+        for item in row.get("locations") or []
+    ).casefold()
+    return any(token in location_text for token in ("storage yard", "trailer", "storage container", "yard"))
+
+
 def create_report_snapshot(*, report_type: str, filters: dict, freshness: dict, warnings: list[str],
                            actor: str = "BrooksHouse user", refresh_metadata: dict | None = None,
                            database=None, allow_fixture=False, today_central: date | None = None) -> int:
     if report_type not in REPORT_TYPES:
         raise ValueError("Unknown operations report type")
-    orders = _base_orders(load_marketplace_orders(database, allow_fixture=allow_fixture), filters)
+    filters = normalize_report_filters(filters)
+    base_filters = dict(filters)
+    orders = _base_orders(load_marketplace_orders(database, allow_fixture=allow_fixture), base_filters)
     today = today_central or datetime.now(CENTRAL).date()
     if report_type == "due_today":
         orders = [order for order in orders if central_date(order.get("ship_by_date")) == today]
@@ -252,8 +319,12 @@ def create_report_snapshot(*, report_type: str, filters: dict, freshness: dict, 
         order_rows = [row for row in order_rows if row["exception_code"] or row["overdue"]]
         allowed = {(row["channel_key"], row["order_id"]) for row in order_rows}
         orders = [order for order in orders if (order.get("channel_key"), order.get("purchase_order_id")) in allowed]
-    pull_rows, exceptions = _aggregate(order_rows, remaining_only=report_type == "master_pull")
-    if report_type == "master_pull":
+    is_pull_list = report_type in {"master_pull", "storage_yard_pull"}
+    pull_rows, exceptions = _aggregate(order_rows, remaining_only=is_pull_list)
+    if report_type == "storage_yard_pull":
+        pull_rows = [row for row in pull_rows if _storage_yard_pull_candidate(row)]
+        exceptions = [row for row in pull_rows if row["exception_code"]]
+    if is_pull_list:
         contributing = {(str(order["channel"]).casefold(), order["order_id"]) for row in pull_rows for order in row["orders"]}
         orders = [order for order in orders if (str(order.get("channel_key")), order.get("purchase_order_id")) in contributing]
         order_rows = [row for row in order_rows if row["remaining_to_pull"] > 0]
@@ -264,6 +335,8 @@ def create_report_snapshot(*, report_type: str, filters: dict, freshness: dict, 
         "unique_aggregated_products": len(pull_rows), "walmart_orders": len(walmart),
         "walmart_units": sum(int(order.get("unit_count") or 0) for order in walmart), "amazon_orders": len(amazon),
         "amazon_units": sum(int(order.get("unit_count") or 0) for order in amazon), "exceptions": len(exceptions),
+        "blocked_or_at_risk": sum(1 for row in pull_rows if row.get("exception_code") or row.get("shortage_quantity")),
+        "unmatched_items": sum(1 for row in pull_rows if row.get("mapping_status") != "mapped"),
         "refresh_timestamp": datetime.now(timezone.utc).isoformat()}
     reconciliation_events = []
     if report_type == "reconciliation":
@@ -401,14 +474,26 @@ def _run_report_job(job_id: int, *, database=None, allow_fixture=False) -> None:
     try:
         job = load_report_job(job_id, database, allow_fixture=allow_fixture)
         filters = json.loads(job["filters_json"])
-        requested = [filters["channel"]] if filters.get("channel") in {"walmart", "amazon"} else ["walmart", "amazon"]
+        filters = normalize_report_filters(filters)
+        requested = [filters["channel"]] if filters.get("channel") in CHANNELS else ["walmart", "amazon"]
+        requested = [channel for channel in requested if channel not in set(filters["exclude_channels"])]
         health = sync_health(database, allow_fixture=allow_fixture)
         refresh = {}
         warnings: list[str] = []
         if job["mode"] == "current":
             fresh, stale = _fresh_channels(health, requested)
             if not fresh:
-                raise RuntimeError(f"Current reconciled data is stale for: {', '.join(stale)}. Use the explicit Refresh channels action.")
+                allowed = set(filters.get("allow_stale_channels", []))
+                blocked = [channel for channel in stale if channel not in allowed]
+                if blocked:
+                    raise RuntimeError(
+                        f"Current reconciled data is stale for: {', '.join(blocked)}. "
+                        "Select Allow stale for those channels or use the explicit owner-approved refresh action."
+                    )
+                warnings.append(
+                    f"Current reconciled data is stale for: {', '.join(stale)}. "
+                    "The saved criteria explicitly allow these stored channel records; no refresh was requested."
+                )
         else:
             _update_job(job_id, "refreshing", "Refreshing selected channels and reconciling statuses", database=database, allow_fixture=allow_fixture)
             started, clock = datetime.now(timezone.utc), time.monotonic()
@@ -435,6 +520,9 @@ def _run_report_job(job_id: int, *, database=None, allow_fixture=False) -> None:
                                            refresh_metadata=refresh, database=database, allow_fixture=allow_fixture),
             int(os.getenv("OPERATIONS_REPORT_GENERATE_TIMEOUT_SECONDS", "60")),
         )
+        metadata, snapshot = load_snapshot(run_id, database, allow_fixture=allow_fixture)
+        _bounded_call(lambda: write_report_pdf(metadata, snapshot),
+                      int(os.getenv("OPERATIONS_REPORT_GENERATE_TIMEOUT_SECONDS", "60")))
         _update_job(job_id, "complete", "Report snapshot is ready", database=database, allow_fixture=allow_fixture,
                     result_run_id=run_id, finished=True)
     except FutureTimeout:
@@ -466,6 +554,34 @@ def _csv_response(rows: list[list[Any]], filename: str) -> Response:
                     headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
+def order_csv_rows(snapshot: dict) -> list[list[Any]]:
+    rows = [["Channel", "Marketplace order ID", "Marketplace lifecycle status", "BrooksHouse fulfillment stage",
+             "Ordered/received time (Central)", "Ship-by (Central)", "Overdue", "Product", "SKU", "UPC/barcode",
+             "Quantity required", "Quantity picked", "Quantity packed", "Quantity staged", "Quantity shipped",
+             "Mapping status", "Inventory readiness", "Exception/reason", "Repair action"]]
+    for row in snapshot.get("order_rows", []):
+        rows.append([row["channel"], row["order_id"], row["marketplace_status"], row["fulfillment_stage"],
+            row["ordered_time_central"], row["ship_by_central"], "YES" if row["overdue"] else "NO", row["product"], row["sku"], row["barcode"],
+            row["quantity_required"], row["quantity_picked"], row["quantity_packed"], row["quantity_staged"], row["quantity_shipped"],
+            row["mapping_status"], row["inventory_readiness"], row["exception"], row["action_url"]])
+    return rows
+
+
+def pull_csv_rows(snapshot: dict) -> list[list[Any]]:
+    rows = [["Product", "UPC/barcode", "Marketplace SKU", "Total units required", "Units already picked/staged",
+             "Remaining units to pull", "Total available", "Contributing orders and ship deadlines",
+             "Exact site/location/container/tote quantities", "Recommended pull location", "Shortage quantity",
+             "Mapping/exception status", "Repair action"]]
+    for row in snapshot.get("pull_rows", []):
+        recommended = row.get("recommended_location") or {}
+        rows.append([row["product"], row["barcode"], "; ".join(row["skus"]), row["units_required"], row["units_picked_staged"],
+            row["remaining_to_pull"], row["available_units"], "; ".join(f"{o['channel']} {o['order_id']} due {o['ship_by_central']}" for o in row["orders"]),
+            "; ".join(f"{x['site']} / {x['location']} / {x['container']} / {x['tote'] or 'no tote'} = {x['available']}" for x in row["locations"]),
+            f"{recommended.get('site','')} / {recommended.get('location','')} / {recommended.get('container','')} ({recommended.get('available',0)})" if recommended else "",
+            row["shortage_quantity"], row["exception"] or row["mapping_status"], row["action_url"]])
+    return rows
+
+
 def install_operations_reports(app, templates) -> None:
     with _connect(ensure_schema=True) as connection:
         connection.commit()
@@ -482,31 +598,53 @@ def install_operations_reports(app, templates) -> None:
             )]
         for row in history:
             row["warnings"] = json.loads(row.get("warnings_json") or "[]"); row["totals"] = json.loads(row.get("totals_json") or "{}")
+        supplied = any(name in request.query_params for name in (
+            "report_type", "channel", "physical_site", "ship_start", "ship_end", "stage",
+            "include_staged", "exclude_channels", "allow_stale_channels",
+        ))
+        prefill = normalize_report_filters({
+            "channel": request.query_params.get("channel", "all"),
+            "physical_site": request.query_params.get("physical_site", "all"),
+            "ship_start": request.query_params.get("ship_start", ""),
+            "ship_end": request.query_params.get("ship_end", ""),
+            "stage": request.query_params.get("stage", "all"),
+            "include_staged": request.query_params.get("include_staged", "yes"),
+            "exclude_channels": request.query_params.getlist("exclude_channels"),
+            "allow_stale_channels": request.query_params.getlist("allow_stale_channels") if supplied else ["walmart", "amazon"],
+        })
         return templates.TemplateResponse(request=request, name="operations_reports.html", context={"report_types": REPORT_TYPES,
-            "health": health, "history": history, "jobs": jobs, "message": request.query_params.get("message"), "error": request.query_params.get("error")})
+            "health": health, "history": history, "jobs": jobs, "prefill": prefill,
+            "selected_report_type": request.query_params.get("report_type", "storage_yard_pull"),
+            "message": request.query_params.get("message"), "error": request.query_params.get("error")})
 
     @app.post("/operations/reports/generate")
     def operations_reports_generate(request: Request, report_type: str = Form("master_pull"), channel: str = Form("all"),
             ship_start: str = Form(""), ship_end: str = Form(""), physical_site: str = Form("all"),
-            stage: str = Form("all"), include_staged: str | None = Form(None)):
+            stage: str = Form("all"), include_staged: str | None = Form(None),
+            exclude_channels: list[str] = Form([]), allow_stale_channels: list[str] = Form([])):
         return _submit_report_job(request, report_type, channel, ship_start, ship_end, physical_site,
-                                  stage, include_staged, mode="current")
+                                  stage, include_staged, exclude_channels, allow_stale_channels, mode="current")
 
     @app.post("/operations/reports/refresh-generate")
     def operations_reports_refresh_generate(request: Request, report_type: str = Form("master_pull"), channel: str = Form("all"),
             ship_start: str = Form(""), ship_end: str = Form(""), physical_site: str = Form("all"),
-            stage: str = Form("all"), include_staged: str | None = Form(None)):
+            stage: str = Form("all"), include_staged: str | None = Form(None),
+            exclude_channels: list[str] = Form([]), allow_stale_channels: list[str] = Form([])):
         user = getattr(request.state, "auth_user", None)
         if not user or getattr(user, "role", "") != "owner_admin":
             return RedirectResponse("/operations/reports?error=" + quote_plus("Only an owner administrator can explicitly refresh marketplaces."), status_code=303)
         return _submit_report_job(request, report_type, channel, ship_start, ship_end, physical_site,
-                                  stage, include_staged, mode="refresh")
+                                  stage, include_staged, exclude_channels, allow_stale_channels, mode="refresh")
 
     def _submit_report_job(request: Request, report_type: str, channel: str, ship_start: str, ship_end: str,
-                           physical_site: str, stage: str, include_staged: str | None, *, mode: str):
-        filters = {"channel": channel, "ship_start": ship_start, "ship_end": ship_end,
-                   "physical_site": physical_site, "stage": stage, "include_staged": include_staged == "yes",
-                   "exclude_channels": [], "allow_stale_channels": []}
+                           physical_site: str, stage: str, include_staged: str | None,
+                           exclude_channels: list[str], allow_stale_channels: list[str], *, mode: str):
+        try:
+            filters = normalize_report_filters({"channel": channel, "ship_start": ship_start, "ship_end": ship_end,
+                "physical_site": physical_site, "stage": stage, "include_staged": include_staged == "yes",
+                "exclude_channels": exclude_channels, "allow_stale_channels": allow_stale_channels})
+        except ValueError as error:
+            return RedirectResponse("/operations/reports?error=" + quote_plus(str(error)), status_code=303)
         user = getattr(request.state, "auth_user", None)
         actor = str(getattr(user, "display_name", None) or getattr(user, "username", None) or "BrooksHouse user")
         job_id, created = enqueue_report_job(report_type=report_type, mode=mode, filters=filters, actor=actor)
@@ -530,35 +668,27 @@ def install_operations_reports(app, templates) -> None:
     @app.get("/operations/reports/{report_run_id}", response_class=HTMLResponse)
     def operations_report_preview(report_run_id: int, request: Request):
         metadata, snapshot = load_snapshot(report_run_id)
-        return templates.TemplateResponse(request=request, name="operations_report_snapshot.html", context={"metadata": metadata, "snapshot": snapshot})
+        return templates.TemplateResponse(request=request, name="operations_report_snapshot.html", context={
+            "metadata": metadata, "snapshot": snapshot,
+            "new_report_url": report_prefill_url(snapshot["report_type"], snapshot.get("filters") or {}),
+        })
+
+    @app.get("/operations/reports/{report_run_id}/download.pdf")
+    def operations_report_pdf(report_run_id: int):
+        metadata, snapshot = load_snapshot(report_run_id)
+        content = render_report_pdf(metadata, snapshot)
+        safe_type = str(snapshot.get("report_type") or "operations-report").replace("_", "-")
+        return Response(content, media_type="application/pdf", headers={
+            "Content-Disposition": f'attachment; filename="{safe_type}-{report_run_id}.pdf"'
+        })
 
     @app.get("/operations/reports/{report_run_id}/export.csv")
     @app.get("/operations/reports/{report_run_id}/export-pull-list.csv")
     def operations_report_pull_csv(report_run_id: int):
         _, snapshot = load_snapshot(report_run_id)
-        rows = [["Product", "UPC/barcode", "Marketplace SKU", "Total units required", "Units already picked/staged",
-                 "Remaining units to pull", "Total available", "Contributing orders and ship deadlines",
-                 "Exact site/location/container/tote quantities", "Recommended pull location", "Shortage quantity",
-                 "Mapping/exception status", "Repair action"]]
-        for row in snapshot.get("pull_rows", []):
-            recommended = row.get("recommended_location") or {}
-            rows.append([row["product"], row["barcode"], "; ".join(row["skus"]), row["units_required"], row["units_picked_staged"],
-                row["remaining_to_pull"], row["available_units"], "; ".join(f"{o['channel']} {o['order_id']} due {o['ship_by_central']}" for o in row["orders"]),
-                "; ".join(f"{x['site']} / {x['location']} / {x['container']} / {x['tote'] or 'no tote'} = {x['available']}" for x in row["locations"]),
-                f"{recommended.get('site','')} / {recommended.get('location','')} / {recommended.get('container','')} ({recommended.get('available',0)})" if recommended else "",
-                row["shortage_quantity"], row["exception"] or row["mapping_status"], row["action_url"]])
-        return _csv_response(rows, f"operations-pull-list-{report_run_id}.csv")
+        return _csv_response(pull_csv_rows(snapshot), f"operations-pull-list-{report_run_id}.csv")
 
     @app.get("/operations/reports/{report_run_id}/export-orders.csv")
     def operations_report_orders_csv(report_run_id: int):
         _, snapshot = load_snapshot(report_run_id)
-        rows = [["Channel", "Marketplace order ID", "Marketplace lifecycle status", "BrooksHouse fulfillment stage",
-                 "Ordered/received time (Central)", "Ship-by (Central)", "Overdue", "Product", "SKU", "UPC/barcode",
-                 "Quantity required", "Quantity picked", "Quantity packed", "Quantity staged", "Quantity shipped",
-                 "Mapping status", "Inventory readiness", "Exception/reason", "Repair action"]]
-        for row in snapshot.get("order_rows", []):
-            rows.append([row["channel"], row["order_id"], row["marketplace_status"], row["fulfillment_stage"],
-                row["ordered_time_central"], row["ship_by_central"], "YES" if row["overdue"] else "NO", row["product"], row["sku"], row["barcode"],
-                row["quantity_required"], row["quantity_picked"], row["quantity_packed"], row["quantity_staged"], row["quantity_shipped"],
-                row["mapping_status"], row["inventory_readiness"], row["exception"], row["action_url"]])
-        return _csv_response(rows, f"operations-orders-{report_run_id}.csv")
+        return _csv_response(order_csv_rows(snapshot), f"operations-orders-{report_run_id}.csv")
