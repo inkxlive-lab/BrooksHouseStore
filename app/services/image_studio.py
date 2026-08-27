@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import ipaddress
 import json
+import logging
 import mimetypes
 import os
 import socket
@@ -28,6 +29,9 @@ from fastapi.templating import Jinja2Templates
 APP_DIR = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = APP_DIR.parent
 TEMPLATES = Jinja2Templates(directory=APP_DIR / "templates")
+LOGGER = logging.getLogger(__name__)
+
+
 def _resolve_db_path() -> Path:
     url = make_url(DATABASE_URL)
     if not url.drivername.startswith("sqlite"):
@@ -45,8 +49,18 @@ def _resolve_db_path() -> Path:
 
 
 DB_PATH = _resolve_db_path()
-PENDING_DIR = APP_DIR / "static" / "generated-images" / "pending"
-APPROVED_DIR = APP_DIR / "static" / "product-images" / "ai-studio"
+
+
+def _resolve_storage_root() -> Path:
+    configured = os.getenv("BROOKSHOUSE_STORAGE_ROOT", "").strip()
+    base = Path(configured).expanduser() if configured else PROJECT_ROOT / "app-data"
+    return (base / "image-studio").resolve()
+
+
+IMAGE_STUDIO_STORAGE_ROOT = _resolve_storage_root()
+PENDING_DIR = IMAGE_STUDIO_STORAGE_ROOT / "pending"
+APPROVED_DIR = IMAGE_STUDIO_STORAGE_ROOT / "approved"
+LOGGER.info("Image Studio storage root resolved to %s", IMAGE_STUDIO_STORAGE_ROOT)
 PRESET_CLEAN = """Create a clean marketplace product photograph from the supplied real product image.
 Preserve the actual product exactly, including its shape, colors, branding, labels, text, package contents,
 accessories, proportions, and visible condition. Do not invent, remove, redesign, or obscure product details.
@@ -186,7 +200,26 @@ def _local_static_path(reference: str) -> Path | None:
     return candidate if candidate.is_relative_to(static_root) else None
 
 
+def _studio_file_path(reference: str, expected_area: str | None = None) -> Path | None:
+    parsed = urlparse(reference)
+    path = parsed.path if parsed.scheme in {"http", "https"} else reference
+    prefix = "/images/studio/files/"
+    if not path.startswith(prefix):
+        return None
+    parts = path[len(prefix):].split("/")
+    if len(parts) != 2 or parts[0] not in {"pending", "approved"} or not parts[1]:
+        return None
+    area, filename = parts
+    if expected_area is not None and area != expected_area:
+        return None
+    root = PENDING_DIR if area == "pending" else APPROVED_DIR
+    candidate = (root / filename).resolve()
+    return candidate if candidate.parent == root.resolve() else None
+
+
 def _display_reference(reference: str) -> str:
+    if _studio_file_path(reference) is not None:
+        return urlparse(reference).path
     local = _local_static_path(reference)
     if local is None:
         return reference
@@ -195,7 +228,7 @@ def _display_reference(reference: str) -> str:
 
 
 def _read_source(reference: str) -> tuple[bytes, str, str]:
-    local = _local_static_path(reference)
+    local = _studio_file_path(reference, "approved") or _local_static_path(reference)
     if local is not None:
         if not local.is_file():
             raise ValueError("The selected local source image is unavailable.")
@@ -293,6 +326,13 @@ def _redirect(product_id: int | None = None, message: str = "", error: str = "")
 
 
 def install_image_studio(app: FastAPI) -> None:
+    @app.get("/images/studio/files/{area}/{filename}")
+    def image_studio_file(area: str, filename: str):
+        path = _studio_file_path(f"/images/studio/files/{area}/{filename}", area)
+        if path is None or not path.is_file():
+            raise HTTPException(status_code=404, detail="Image Studio file not found")
+        return FileResponse(path)
+
     @app.get("/images/studio", response_class=HTMLResponse)
     def image_studio_page(
         request: Request, product_id: int | None = None, search: str = "", message: str = "", error: str = ""
@@ -344,9 +384,9 @@ def install_image_studio(app: FastAPI) -> None:
             source, filename, content_type = _read_source(reference)
             result = provider.edit(source, filename, content_type, prompt)
             PENDING_DIR.mkdir(parents=True, exist_ok=True)
-            relative_path = f"/static/generated-images/pending/{generation_id}-{uuid4().hex}{result.extension}"
-            output_path = APP_DIR / relative_path.lstrip("/")
+            output_path = PENDING_DIR / f"{generation_id}-{uuid4().hex}{result.extension}"
             output_path.write_bytes(result.image_bytes)
+            relative_path = f"/images/studio/files/pending/{output_path.name}"
             with _connect() as connection:
                 connection.execute(
                     "UPDATE image_studio_generations SET status='pending', generated_image_path=? WHERE generation_id=?",
@@ -371,13 +411,13 @@ def install_image_studio(app: FastAPI) -> None:
             row = _generation(connection, generation_id)
             if row["status"] != "pending" or not row["generated_image_path"]:
                 return _redirect(row["product_id"], error="Only pending images can be approved.")
-            source_path = _local_static_path(row["generated_image_path"])
-            if source_path is None or not source_path.is_file() or source_path.parent != PENDING_DIR.resolve():
+            source_path = _studio_file_path(row["generated_image_path"], "pending")
+            if source_path is None or not source_path.is_file():
                 return _redirect(row["product_id"], error="The generated preview file is unavailable.")
             APPROVED_DIR.mkdir(parents=True, exist_ok=True)
             destination = APPROVED_DIR / f"product-{row['product_id']}-{generation_id}{source_path.suffix.lower()}"
             destination.write_bytes(source_path.read_bytes())
-            gallery_path = f"/static/product-images/ai-studio/{destination.name}"
+            gallery_path = f"/images/studio/files/approved/{destination.name}"
             try:
                 if save_as_primary:
                     connection.execute("UPDATE product_images SET is_primary=0 WHERE product_id=?", (row["product_id"],))
@@ -389,8 +429,8 @@ def install_image_studio(app: FastAPI) -> None:
                 )
                 connection.execute(
                     """UPDATE image_studio_generations SET status='approved', approved_product_image_id=?,
-                       save_as_primary=?, reviewed_at=? WHERE generation_id=?""",
-                    (cursor.lastrowid, int(save_as_primary), _now(), generation_id),
+                       generated_image_path=?, save_as_primary=?, reviewed_at=? WHERE generation_id=?""",
+                    (cursor.lastrowid, gallery_path, int(save_as_primary), _now(), generation_id),
                 )
                 connection.commit()
             except Exception:
@@ -406,8 +446,8 @@ def install_image_studio(app: FastAPI) -> None:
             row = _generation(connection, generation_id)
             if row["status"] != "pending":
                 return _redirect(row["product_id"], error="Only pending images can be discarded.")
-            source_path = _local_static_path(row["generated_image_path"] or "")
-            if source_path is not None and source_path.parent == PENDING_DIR.resolve():
+            source_path = _studio_file_path(row["generated_image_path"] or "", "pending")
+            if source_path is not None:
                 source_path.unlink(missing_ok=True)
             connection.execute(
                 "UPDATE image_studio_generations SET status='discarded', generated_image_path=NULL, reviewed_at=? WHERE generation_id=?",
