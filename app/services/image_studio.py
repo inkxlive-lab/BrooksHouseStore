@@ -12,7 +12,7 @@ from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Callable
 from urllib.parse import quote, urlparse
 from uuid import uuid4
@@ -57,10 +57,26 @@ def _resolve_storage_root() -> Path:
     return (base / "image-studio").resolve()
 
 
+def _resolve_product_image_root() -> Path:
+    configured = os.getenv("BROOKSHOUSE_STORAGE_ROOT", "").strip()
+    if configured:
+        storage_root = Path(configured).expanduser()
+        if storage_root.is_absolute() and storage_root.as_posix().rstrip("/") == "/data/app-data":
+            return (storage_root.parent / "product-images").resolve()
+    railway_volume = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "").strip()
+    if railway_volume:
+        volume_root = Path(railway_volume).expanduser()
+        if volume_root.is_absolute():
+            return (volume_root / "product-images").resolve()
+    return (APP_DIR / "static" / "product_images").resolve()
+
+
 IMAGE_STUDIO_STORAGE_ROOT = _resolve_storage_root()
 PENDING_DIR = IMAGE_STUDIO_STORAGE_ROOT / "pending"
 APPROVED_DIR = IMAGE_STUDIO_STORAGE_ROOT / "approved"
+PRODUCT_IMAGE_ROOT = _resolve_product_image_root()
 LOGGER.info("Image Studio storage root resolved to %s", IMAGE_STUDIO_STORAGE_ROOT)
+LOGGER.info("Image Studio product-image root resolved to %s", PRODUCT_IMAGE_ROOT)
 PRESET_CLEAN = """Create a clean marketplace product photograph from the supplied real product image.
 Preserve the actual product exactly, including its shape, colors, branding, labels, text, package contents,
 accessories, proportions, and visible condition. Do not invent, remove, redesign, or obscure product details.
@@ -217,9 +233,44 @@ def _studio_file_path(reference: str, expected_area: str | None = None) -> Path 
     return candidate if candidate.parent == root.resolve() else None
 
 
+def _persistent_product_image_path(reference: str) -> Path | None:
+    parsed = urlparse(reference)
+    value = parsed.path if parsed.scheme in {"http", "https"} else reference
+    relative: Path | None = None
+    for prefix in ("/static/product_images/", "/images/studio/product-images/"):
+        if value.startswith(prefix):
+            relative = Path(value[len(prefix):])
+            break
+    if relative is None:
+        windows_path = PureWindowsPath(reference)
+        legacy_root = PureWindowsPath(r"C:\BrooksHouseStore\app\static\product_images")
+        path_parts = tuple(part.casefold() for part in windows_path.parts)
+        root_parts = tuple(part.casefold() for part in legacy_root.parts)
+        if path_parts[:len(root_parts)] != root_parts or len(path_parts) <= len(root_parts):
+            return None
+        relative = Path(*windows_path.parts[len(root_parts):])
+    root = PRODUCT_IMAGE_ROOT.resolve()
+    candidate = (root / relative).resolve()
+    return candidate if candidate.is_relative_to(root) and candidate != root else None
+
+
+def _source_local_path(reference: str) -> Path | None:
+    studio = _studio_file_path(reference, "approved")
+    if studio is not None:
+        return studio
+    persistent = _persistent_product_image_path(reference)
+    if persistent is not None and persistent.is_file():
+        return persistent
+    return _local_static_path(reference)
+
+
 def _display_reference(reference: str) -> str:
     if _studio_file_path(reference) is not None:
         return urlparse(reference).path
+    persistent = _persistent_product_image_path(reference)
+    if persistent is not None and persistent.is_file():
+        relative = persistent.relative_to(PRODUCT_IMAGE_ROOT.resolve()).as_posix()
+        return f"/images/studio/product-images/{quote(relative, safe='/')}"
     local = _local_static_path(reference)
     if local is None:
         return reference
@@ -228,7 +279,7 @@ def _display_reference(reference: str) -> str:
 
 
 def _read_source(reference: str) -> tuple[bytes, str, str]:
-    local = _studio_file_path(reference, "approved") or _local_static_path(reference)
+    local = _source_local_path(reference)
     if local is not None:
         if not local.is_file():
             raise ValueError("The selected local source image is unavailable.")
@@ -331,6 +382,13 @@ def install_image_studio(app: FastAPI) -> None:
         path = _studio_file_path(f"/images/studio/files/{area}/{filename}", area)
         if path is None or not path.is_file():
             raise HTTPException(status_code=404, detail="Image Studio file not found")
+        return FileResponse(path)
+
+    @app.get("/images/studio/product-images/{relative_path:path}")
+    def image_studio_product_image(relative_path: str):
+        path = _persistent_product_image_path(f"/images/studio/product-images/{relative_path}")
+        if path is None or not path.is_file():
+            raise HTTPException(status_code=404, detail="Product image not found")
         return FileResponse(path)
 
     @app.get("/images/studio", response_class=HTMLResponse)
@@ -461,7 +519,7 @@ def install_image_studio(app: FastAPI) -> None:
         with _connect() as connection:
             _ensure_schema(connection)
             row = _generation(connection, generation_id)
-        local = _local_static_path(row["source_image_reference"])
+        local = _source_local_path(row["source_image_reference"])
         if local is None or not local.is_file():
             raise HTTPException(status_code=404, detail="Local source image not found")
         return FileResponse(local)
