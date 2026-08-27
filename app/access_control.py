@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ipaddress
+
 import hashlib
 import hmac
 import os
@@ -36,6 +38,15 @@ ROLE_LABELS = {
 SESSION_HOURS = 12
 IDLE_MINUTES = 120
 COOKIE_NAME = "brookshouse_session"
+
+def _is_private_http_host(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+        return ip.is_loopback or ip.is_private or ip in ipaddress.ip_network("100.64.0.0/10")
+    except ValueError:
+        return False
 
 
 @dataclass
@@ -373,7 +384,7 @@ def login(request: Request, username: str = Form(...), password: str = Form(...)
     response = RedirectResponse(_home(user), status_code=303)
     host = request.url.hostname or ""
     response.set_cookie(COOKIE_NAME, token, max_age=SESSION_HOURS * 3600, httponly=True,
-                        secure=host not in {"127.0.0.1", "localhost"} and not host.startswith("10."),
+                        secure=not _is_private_http_host(host),
                         samesite="strict", path="/")
     return response
 
@@ -684,3 +695,4 @@ def install_access_control(app) -> None:
             return await call_next(request)
         finally:
             reset_transaction_actor(actor_token)
+

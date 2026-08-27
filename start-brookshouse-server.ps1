@@ -37,6 +37,7 @@ try {
 
     $backgroundJobsValue = if ($EnableBackgroundJobs) { "true" } else { "false" }
     $env:BROOKSHOUSE_BACKGROUND_JOBS_ENABLED = $backgroundJobsValue
+    $env:BROOKSHOUSE_PROCESS_ROLE = "web"
     if ($DatabasePath) {
         $resolvedDatabase = [System.IO.Path]::GetFullPath($DatabasePath)
         if (-not (Test-Path -LiteralPath $resolvedDatabase -PathType Leaf)) {
@@ -89,3 +90,4 @@ catch {
     }
     exit 1
 }
+
