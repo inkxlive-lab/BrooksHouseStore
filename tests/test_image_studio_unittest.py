@@ -23,6 +23,11 @@ class FakeProvider(image_studio.ImageProvider):
         return image_studio.ProviderResult(b"generated-image")
 
 
+class FailingProvider(FakeProvider):
+    def edit(self, source, filename, content_type, prompt):
+        raise RuntimeError("provider test failure")
+
+
 def create_database(path: Path):
     with closing(sqlite3.connect(path)) as connection:
         connection.executescript("""
@@ -54,6 +59,8 @@ class ImageStudioTests(unittest.TestCase):
             patch.object(image_studio, "APP_DIR", self.root),
             patch.object(image_studio, "PENDING_DIR", self.static / "generated-images" / "pending"),
             patch.object(image_studio, "APPROVED_DIR", self.static / "product-images" / "ai-studio"),
+            patch.object(image_studio, "SOURCE_DIR", self.root / "studio-sources"),
+            patch.object(image_studio, "PRODUCT_IMAGE_ROOT", self.static / "product_images"),
         ]
         for patcher in self.patchers:
             patcher.start()
@@ -123,6 +130,97 @@ class ImageStudioTests(unittest.TestCase):
                     "SELECT status,generated_image_path FROM image_studio_generations WHERE generation_id=?", (second,)
                 ).fetchone()
                 self.assertEqual(row, ("discarded", None))
+
+    def test_approval_without_primary_preserves_existing_primary(self):
+        with patch.object(image_studio, "_provider_factory", FakeProvider):
+            client = self.client()
+            client.post("/images/studio/generate", data={
+                "product_id": 1, "source_image_id": 1, "preset": "clean_marketplace",
+                "instruction": "", "variations": 1,
+            })
+            with closing(sqlite3.connect(self.database)) as connection:
+                generation_id = connection.execute(
+                    "SELECT generation_id FROM image_studio_generations"
+                ).fetchone()[0]
+            response = client.post(
+                f"/images/studio/{generation_id}/approve", data={}, follow_redirects=False
+            )
+            self.assertEqual(response.status_code, 303)
+            with closing(sqlite3.connect(self.database)) as connection:
+                rows = connection.execute(
+                    "SELECT image_id,is_primary FROM product_images ORDER BY image_id"
+                ).fetchall()
+            self.assertEqual(rows, [(1, 1), (2, 0)])
+            self.assertEqual(self.source.read_bytes(), b"source-image")
+
+    def test_multiple_variations_create_independent_pending_records(self):
+        with patch.object(image_studio, "_provider_factory", FakeProvider):
+            response = self.client().post("/images/studio/generate", data={
+                "product_id": 1, "source_image_id": 1, "preset": "lifestyle",
+                "instruction": "Use a kitchen", "variations": 3,
+            }, follow_redirects=False)
+        self.assertEqual(response.status_code, 303)
+        with closing(sqlite3.connect(self.database)) as connection:
+            rows = connection.execute(
+                "SELECT status,preset_name FROM image_studio_generations ORDER BY generation_id"
+            ).fetchall()
+        self.assertEqual(rows, [("pending", "lifestyle")] * 3)
+        self.assertEqual(self.source.read_bytes(), b"source-image")
+
+    def test_upload_source_is_persistent_and_not_primary(self):
+        client = self.client()
+        png = b"\x89PNG\r\n\x1a\n" + b"safe-original"
+        response = client.post("/images/studio/source/upload", data={
+            "product_id": 1, "save_to_gallery": "true",
+        }, files={"photo": ("../../camera.png", png, "image/png")}, follow_redirects=False)
+        self.assertEqual(response.status_code, 303)
+        uploads = list((self.root / "studio-sources").glob("*.png"))
+        self.assertEqual(len(uploads), 1)
+        self.assertEqual(uploads[0].read_bytes(), png)
+        with closing(sqlite3.connect(self.database)) as connection:
+            images = connection.execute(
+                "SELECT image_type,is_primary FROM product_images ORDER BY image_id"
+            ).fetchall()
+            original_name = connection.execute(
+                "SELECT original_filename FROM image_studio_sources"
+            ).fetchone()[0]
+        self.assertEqual(images, [("front", 1), ("original_upload", 0)])
+        self.assertEqual(original_name, "camera.png")
+
+    def test_provider_failure_keeps_failed_generation_record(self):
+        with patch.object(image_studio, "_provider_factory", FailingProvider):
+            response = self.client().post("/images/studio/generate", data={
+                "product_id": 1, "source_image_id": 1, "preset": "enhance_only",
+                "instruction": "", "variations": 1,
+            }, follow_redirects=False)
+        self.assertEqual(response.status_code, 303)
+        with closing(sqlite3.connect(self.database)) as connection:
+            row = connection.execute(
+                "SELECT status,generated_image_path,error_message FROM image_studio_generations"
+            ).fetchone()
+        self.assertEqual(row[0], "failed")
+        self.assertIsNone(row[1])
+        self.assertIn("provider test failure", row[2])
+        self.assertEqual(self.source.read_bytes(), b"source-image")
+
+    def test_persistent_and_legacy_product_references_stay_confined(self):
+        persistent = self.static / "product_images" / "shopify" / "safe.jpg"
+        persistent.parent.mkdir(parents=True)
+        persistent.write_bytes(b"persistent-image")
+        url_reference = "/static/product_images/shopify/safe.jpg"
+        windows_reference = r"C:\BrooksHouseStore\app\static\product_images\shopify\safe.jpg"
+        self.assertEqual(image_studio._source_local_path(url_reference), persistent.resolve())
+        self.assertEqual(image_studio._source_local_path(windows_reference), persistent.resolve())
+        self.assertEqual(
+            image_studio._display_reference(windows_reference),
+            "/images/studio/product-images/shopify/safe.jpg",
+        )
+        self.assertIsNone(
+            image_studio._persistent_product_image_path("/static/product_images/../../outside.jpg")
+        )
+        self.assertIsNone(
+            image_studio._persistent_product_image_path(r"C:\Windows\System32\outside.jpg")
+        )
 
 
 if __name__ == "__main__":

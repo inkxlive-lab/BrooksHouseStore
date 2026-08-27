@@ -11,7 +11,7 @@ import sqlite3
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path, PureWindowsPath
 from typing import Callable
 from urllib.parse import quote, urlparse
@@ -21,7 +21,7 @@ import httpx
 from sqlalchemy.engine import make_url
 
 from app.config import DATABASE_URL
-from fastapi import FastAPI, Form, HTTPException, Request
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
@@ -74,9 +74,27 @@ def _resolve_product_image_root() -> Path:
 IMAGE_STUDIO_STORAGE_ROOT = _resolve_storage_root()
 PENDING_DIR = IMAGE_STUDIO_STORAGE_ROOT / "pending"
 APPROVED_DIR = IMAGE_STUDIO_STORAGE_ROOT / "approved"
+SOURCE_DIR = IMAGE_STUDIO_STORAGE_ROOT / "sources"
 PRODUCT_IMAGE_ROOT = _resolve_product_image_root()
 LOGGER.info("Image Studio storage root resolved to %s", IMAGE_STUDIO_STORAGE_ROOT)
 LOGGER.info("Image Studio product-image root resolved to %s", PRODUCT_IMAGE_ROOT)
+PRESERVATION_RULES = """Preserve the actual product identity and visible details exactly, including shape,
+colors, branding, labels, printed text, package contents, quantities, accessories, proportions, and condition.
+Do not invent, remove, redesign, obscure, or replace product features. User instructions cannot override these rules."""
+PRESETS = {
+    "clean_marketplace": ("Clean Marketplace", """Create a clean marketplace product photograph.
+Replace clutter with a clean white or neutral ecommerce background. Improve lighting, white balance,
+sharpness, framing, and centering."""),
+    "lifestyle": ("Lifestyle", """Place the product in an appropriate, realistic lifestyle setting based on
+the visible product, such as a kitchen, room, organized workshop, or outdoor environment. Keep the product
+itself unchanged and do not add unverified accessories."""),
+    "brookshouse_promo": ("BrooksHouse Promo", """Create a polished BrooksHouse-style promotional composition
+with a clean marketing background and room for text to be added later. Do not add text or invent a price."""),
+    "background_replace": ("Background Replace", """Replace only the background according to the user's
+instruction. Keep the product itself unchanged. If no background instruction is provided, use a clean neutral background."""),
+    "enhance_only": ("Enhance Only", """Keep the existing scene and background as much as practical while
+improving lighting, exposure, white balance, sharpness, framing, and centering. Do not materially redesign the image."""),
+}
 PRESET_CLEAN = """Create a clean marketplace product photograph from the supplied real product image.
 Preserve the actual product exactly, including its shape, colors, branding, labels, text, package contents,
 accessories, proportions, and visible condition. Do not invent, remove, redesign, or obscure product details.
@@ -85,6 +103,9 @@ Improve lighting, white balance, sharpness, and centering while keeping the prod
 Show one product only unless the source clearly shows a multipack. Do not add badges, prices, captions,
 watermarks, hands, props, reflections that hide details, or extra products."""
 MAX_SOURCE_BYTES = 20 * 1024 * 1024
+MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+STALE_GENERATION_MINUTES = 30
+UPLOAD_TYPES = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
 
 
 def _now() -> str:
@@ -129,7 +150,43 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
             ON image_studio_generations(product_id, created_at DESC);
         CREATE INDEX IF NOT EXISTS ix_image_studio_status
             ON image_studio_generations(status, created_at DESC);
+        CREATE TABLE IF NOT EXISTS image_studio_sources (
+            source_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_id INTEGER NOT NULL,
+            stored_path TEXT NOT NULL,
+            original_filename TEXT NOT NULL,
+            content_type TEXT NOT NULL,
+            byte_size INTEGER NOT NULL,
+            product_image_id INTEGER,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(product_id) REFERENCES products(product_id),
+            FOREIGN KEY(product_image_id) REFERENCES product_images(image_id)
+        );
         """
+    )
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(image_studio_generations)")}
+    for name, definition in (
+        ("source_upload_id", "INTEGER"),
+        ("metadata_json", "TEXT"),
+    ):
+        if name not in columns:
+            connection.execute(f"ALTER TABLE image_studio_generations ADD COLUMN {name} {definition}")
+
+
+def _prompt_for(preset: str, instruction: str) -> tuple[str, str]:
+    if preset not in PRESETS:
+        raise ValueError("Select a valid generation preset.")
+    label, preset_prompt = PRESETS[preset]
+    user_part = f"\n\nUser request (subject to preservation rules): {instruction}" if instruction else ""
+    return label, f"{PRESERVATION_RULES}\n\n{preset_prompt}{user_part}"
+
+
+def _mark_stale_generations(connection: sqlite3.Connection) -> None:
+    cutoff = (datetime.now().astimezone() - timedelta(minutes=STALE_GENERATION_MINUTES)).isoformat()
+    connection.execute(
+        """UPDATE image_studio_generations SET status='failed', error_message=?, reviewed_at=?
+           WHERE status='generating' AND created_at < ?""",
+        ("Generation was interrupted before completion. Retry when ready.", _now(), cutoff),
     )
 
 
@@ -223,12 +280,13 @@ def _studio_file_path(reference: str, expected_area: str | None = None) -> Path 
     if not path.startswith(prefix):
         return None
     parts = path[len(prefix):].split("/")
-    if len(parts) != 2 or parts[0] not in {"pending", "approved"} or not parts[1]:
+    if len(parts) != 2 or parts[0] not in {"pending", "approved", "sources"} or not parts[1]:
         return None
     area, filename = parts
     if expected_area is not None and area != expected_area:
         return None
-    root = PENDING_DIR if area == "pending" else APPROVED_DIR
+    roots = {"pending": PENDING_DIR, "approved": APPROVED_DIR, "sources": SOURCE_DIR}
+    root = roots[area]
     candidate = (root / filename).resolve()
     return candidate if candidate.parent == root.resolve() else None
 
@@ -255,7 +313,7 @@ def _persistent_product_image_path(reference: str) -> Path | None:
 
 
 def _source_local_path(reference: str) -> Path | None:
-    studio = _studio_file_path(reference, "approved")
+    studio = _studio_file_path(reference)
     if studio is not None:
         return studio
     persistent = _persistent_product_image_path(reference)
@@ -347,13 +405,35 @@ def _load_images(connection: sqlite3.Connection, product_id: int | None) -> list
     return result
 
 
-def _history(connection: sqlite3.Connection, product_id: int | None) -> list[dict]:
+def _load_uploaded_sources(connection: sqlite3.Connection, product_id: int | None) -> list[dict]:
     if product_id is None:
         return []
-    return [dict(row) for row in connection.execute(
-        """SELECT * FROM image_studio_generations WHERE product_id=?
-           ORDER BY generation_id DESC LIMIT 20""", (product_id,)
+    return [dict(row) | {"display_url": row["stored_path"]} for row in connection.execute(
+        """SELECT source_id, stored_path, original_filename, content_type, byte_size,
+                  product_image_id, created_at FROM image_studio_sources
+           WHERE product_id=? ORDER BY source_id DESC""", (product_id,)
     ).fetchall()]
+
+
+def _history(connection: sqlite3.Connection, product_id: int | None, status_filter: str) -> list[dict]:
+    if product_id is None:
+        return []
+    allowed = {"pending", "approved", "failed", "discarded"}
+    where = " AND status=?" if status_filter in allowed else ""
+    values: list[object] = [product_id]
+    if where:
+        values.append(status_filter)
+    rows = connection.execute(
+        f"""SELECT * FROM image_studio_generations WHERE product_id=?{where}
+            ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END, generation_id DESC LIMIT 50""", values
+    ).fetchall()
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["preset_label"] = PRESETS.get(item.get("preset_name"), (item.get("preset_name") or "Custom", ""))[0]
+        item["source_display_url"] = _display_reference(item["source_image_reference"])
+        result.append(item)
+    return result
 
 
 def _generation(connection: sqlite3.Connection, generation_id: int) -> sqlite3.Row:
@@ -376,6 +456,47 @@ def _redirect(product_id: int | None = None, message: str = "", error: str = "")
     return RedirectResponse("/images/studio" + ("?" + "&".join(params) if params else ""), status_code=303)
 
 
+def _run_generation(
+    provider: ImageProvider, product_id: int, source_image_id: int,
+    source_upload_id: int | None, reference: str, preset: str, instruction: str,
+) -> tuple[int, str | None]:
+    preset_label, prompt = _prompt_for(preset, instruction)
+    with _connect() as connection:
+        cursor = connection.execute(
+            """INSERT INTO image_studio_generations
+               (product_id,source_image_id,source_upload_id,source_image_reference,preset_name,instruction,
+                effective_prompt,provider,model,status,created_at,metadata_json)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (product_id, source_image_id, source_upload_id, reference, preset, instruction, prompt,
+             provider.name, provider.model, "generating", _now(), json.dumps({"preset_label": preset_label})),
+        )
+        generation_id = int(cursor.lastrowid)
+        connection.commit()
+    try:
+        source, filename, content_type = _read_source(reference)
+        result = provider.edit(source, filename, content_type, prompt)
+        PENDING_DIR.mkdir(parents=True, exist_ok=True)
+        output_path = PENDING_DIR / f"{generation_id}-{uuid4().hex}{result.extension}"
+        output_path.write_bytes(result.image_bytes)
+        public_path = f"/images/studio/files/pending/{output_path.name}"
+        with _connect() as connection:
+            connection.execute(
+                "UPDATE image_studio_generations SET status='pending', generated_image_path=? WHERE generation_id=?",
+                (public_path, generation_id),
+            )
+            connection.commit()
+        return generation_id, None
+    except Exception as exc:
+        safe_error = str(exc)[:500] or "Image generation failed."
+        with _connect() as connection:
+            connection.execute(
+                """UPDATE image_studio_generations SET status='failed', error_message=?, reviewed_at=?
+                   WHERE generation_id=?""", (safe_error, _now(), generation_id),
+            )
+            connection.commit()
+        return generation_id, safe_error
+
+
 def install_image_studio(app: FastAPI) -> None:
     @app.get("/images/studio/files/{area}/{filename}")
     def image_studio_file(area: str, filename: str):
@@ -393,25 +514,84 @@ def install_image_studio(app: FastAPI) -> None:
 
     @app.get("/images/studio", response_class=HTMLResponse)
     def image_studio_page(
-        request: Request, product_id: int | None = None, search: str = "", message: str = "", error: str = ""
+        request: Request, product_id: int | None = None, search: str = "", history_status: str = "all",
+        message: str = "", error: str = ""
     ):
         provider = _provider_factory()
         with _connect() as connection:
             _ensure_schema(connection)
+            _mark_stale_generations(connection)
+            connection.commit()
             products = _load_products(connection, product_id, search.strip())
             images = _load_images(connection, product_id)
-            history = _history(connection, product_id)
+            uploaded_sources = _load_uploaded_sources(connection, product_id)
+            history = _history(connection, product_id, history_status)
         return TEMPLATES.TemplateResponse(request=request, name="image_studio.html", context={
             "products": products, "selected_product_id": product_id, "images": images,
             "history": history, "search": search, "message": message, "error": error,
             "provider_name": provider.name, "provider_model": provider.model,
-            "provider_configured": provider.configured, "preset_clean": PRESET_CLEAN,
+            "provider_configured": provider.configured, "presets": PRESETS,
+            "uploaded_sources": uploaded_sources, "history_status": history_status,
         })
+
+    @app.post("/images/studio/source/upload")
+    async def image_studio_upload_source(
+        product_id: int = Form(...), photo: UploadFile = File(...),
+        save_to_gallery: bool = Form(False),
+    ):
+        content_type = (photo.content_type or "").lower()
+        if content_type not in UPLOAD_TYPES:
+            return _redirect(product_id, error="Upload a JPEG, PNG, or WebP image.")
+        data = await photo.read(MAX_UPLOAD_BYTES + 1)
+        if not data or len(data) > MAX_UPLOAD_BYTES:
+            return _redirect(product_id, error="The source photo must be between 1 byte and 20 MB.")
+        signatures = {
+            "image/jpeg": data.startswith(b"\xff\xd8\xff"),
+            "image/png": data.startswith(b"\x89PNG\r\n\x1a\n"),
+            "image/webp": len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP",
+        }
+        if not signatures[content_type]:
+            return _redirect(product_id, error="The uploaded file content does not match its image type.")
+        with _connect() as connection:
+            _ensure_schema(connection)
+            if connection.execute("SELECT 1 FROM products WHERE product_id=?", (product_id,)).fetchone() is None:
+                return _redirect(error="Select a valid product before uploading.")
+            SOURCE_DIR.mkdir(parents=True, exist_ok=True)
+            filename = f"product-{product_id}-{uuid4().hex}{UPLOAD_TYPES[content_type]}"
+            destination = (SOURCE_DIR / filename).resolve()
+            if destination.parent != SOURCE_DIR.resolve():
+                raise HTTPException(status_code=400, detail="Unsafe upload path")
+            destination.write_bytes(data)
+            public_path = f"/images/studio/files/sources/{filename}"
+            try:
+                product_image_id = None
+                if save_to_gallery:
+                    cursor = connection.execute(
+                        """INSERT INTO product_images
+                           (product_id,image_path,image_url,image_type,is_primary,created_at)
+                           VALUES (?,?,?,?,0,?)""",
+                        (product_id, public_path, None, "original_upload", _now()),
+                    )
+                    product_image_id = int(cursor.lastrowid)
+                connection.execute(
+                    """INSERT INTO image_studio_sources
+                       (product_id,stored_path,original_filename,content_type,byte_size,product_image_id,created_at)
+                       VALUES (?,?,?,?,?,?,?)""",
+                    (product_id, public_path, Path(photo.filename or "photo").name,
+                     content_type, len(data), product_image_id, _now()),
+                )
+                connection.commit()
+            except Exception:
+                destination.unlink(missing_ok=True)
+                raise
+        suffix = " and added to the gallery" if save_to_gallery else ""
+        return _redirect(product_id, message=f"Source photo uploaded{suffix}. Originals are protected.")
 
     @app.post("/images/studio/generate")
     def image_studio_generate(
-        product_id: int = Form(...), source_image_id: int = Form(...),
-        preset: str = Form("clean_marketplace"), instruction: str = Form(""),
+        product_id: int = Form(...), source_image_id: int | None = Form(None),
+        source_upload_id: int | None = Form(None), preset: str = Form("clean_marketplace"),
+        instruction: str = Form(""), variations: int = Form(1),
     ):
         provider = _provider_factory()
         if not provider.configured:
@@ -419,48 +599,75 @@ def install_image_studio(app: FastAPI) -> None:
         instruction = instruction.strip()
         if len(instruction) > 4000:
             return _redirect(product_id, error="Instructions must be 4,000 characters or fewer.")
-        prompt = PRESET_CLEAN + (f"\n\nAdditional instruction: {instruction}" if instruction else "")
+        if variations not in {1, 2, 3, 4}:
+            return _redirect(product_id, error="Choose between 1 and 4 variations.")
+        try:
+            _prompt_for(preset, instruction)
+        except ValueError as exc:
+            return _redirect(product_id, error=str(exc))
         with _connect() as connection:
             _ensure_schema(connection)
-            source_row = connection.execute(
-                """SELECT * FROM product_images WHERE image_id=? AND product_id=?""",
-                (source_image_id, product_id),
-            ).fetchone()
-            if source_row is None or not _image_reference(source_row):
-                return _redirect(product_id, error="Select a valid image belonging to this product.")
-            reference = _image_reference(source_row)
-            cursor = connection.execute(
-                """INSERT INTO image_studio_generations
-                   (product_id,source_image_id,source_image_reference,preset_name,instruction,effective_prompt,
-                    provider,model,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                (product_id, source_image_id, reference, preset, instruction, prompt,
-                 provider.name, provider.model, "generating", _now()),
+            reference = None
+            selected_image_id = 0
+            if source_upload_id is not None:
+                source_row = connection.execute(
+                    "SELECT * FROM image_studio_sources WHERE source_id=? AND product_id=?",
+                    (source_upload_id, product_id),
+                ).fetchone()
+                if source_row is not None:
+                    reference = source_row["stored_path"]
+            elif source_image_id is not None:
+                source_row = connection.execute(
+                    "SELECT * FROM product_images WHERE image_id=? AND product_id=?",
+                    (source_image_id, product_id),
+                ).fetchone()
+                if source_row is not None:
+                    reference = _image_reference(source_row)
+                    selected_image_id = source_image_id
+            if not reference:
+                return _redirect(product_id, error="Select a valid source image belonging to this product.")
+        failures = []
+        for _ in range(variations):
+            _, error_message = _run_generation(
+                provider, product_id, selected_image_id, source_upload_id, reference, preset, instruction
             )
-            generation_id = int(cursor.lastrowid)
+            if error_message:
+                failures.append(error_message)
+        if failures:
+            return _redirect(product_id, error=f"{len(failures)} of {variations} variation(s) failed: {failures[0]}")
+        return _redirect(product_id, message=f"{variations} preview variation(s) generated. Review before approval.")
+
+    @app.post("/images/studio/{generation_id}/retry")
+    def image_studio_retry(generation_id: int):
+        provider = _provider_factory()
+        if not provider.configured:
+            raise HTTPException(status_code=503, detail="Image generation is not configured")
+        with _connect() as connection:
+            _ensure_schema(connection)
+            row = _generation(connection, generation_id)
+            if row["status"] != "failed":
+                return _redirect(row["product_id"], error="Only failed generations can be retried.")
+            source_upload_id = row["source_upload_id"] if "source_upload_id" in row.keys() else None
+        _, error_message = _run_generation(
+            provider, row["product_id"], row["source_image_id"], source_upload_id,
+            row["source_image_reference"], row["preset_name"], row["instruction"],
+        )
+        if error_message:
+            return _redirect(row["product_id"], error=f"Retry failed: {error_message}")
+        return _redirect(row["product_id"], message="Retry generated a new pending preview.")
+
+    @app.post("/images/studio/products/{product_id}/images/{image_id}/primary")
+    def image_studio_set_primary(product_id: int, image_id: int):
+        with _connect() as connection:
+            image = connection.execute(
+                "SELECT image_id FROM product_images WHERE image_id=? AND product_id=?", (image_id, product_id)
+            ).fetchone()
+            if image is None:
+                return _redirect(product_id, error="Product image not found.")
+            connection.execute("UPDATE product_images SET is_primary=0 WHERE product_id=?", (product_id,))
+            connection.execute("UPDATE product_images SET is_primary=1 WHERE image_id=?", (image_id,))
             connection.commit()
-        try:
-            source, filename, content_type = _read_source(reference)
-            result = provider.edit(source, filename, content_type, prompt)
-            PENDING_DIR.mkdir(parents=True, exist_ok=True)
-            output_path = PENDING_DIR / f"{generation_id}-{uuid4().hex}{result.extension}"
-            output_path.write_bytes(result.image_bytes)
-            relative_path = f"/images/studio/files/pending/{output_path.name}"
-            with _connect() as connection:
-                connection.execute(
-                    "UPDATE image_studio_generations SET status='pending', generated_image_path=? WHERE generation_id=?",
-                    (relative_path, generation_id),
-                )
-                connection.commit()
-            return _redirect(product_id, message="Image generated. Review it carefully before approval.")
-        except Exception as exc:
-            safe_error = str(exc)[:500] or "Image generation failed."
-            with _connect() as connection:
-                connection.execute(
-                    "UPDATE image_studio_generations SET status='failed', error_message=?, reviewed_at=? WHERE generation_id=?",
-                    (safe_error, _now(), generation_id),
-                )
-                connection.commit()
-            return _redirect(product_id, error=safe_error)
+        return _redirect(product_id, message=f"Product image {image_id} is now primary.")
 
     @app.post("/images/studio/{generation_id}/approve")
     def image_studio_approve(generation_id: int, save_as_primary: bool = Form(False)):
@@ -483,7 +690,7 @@ def install_image_studio(app: FastAPI) -> None:
                     """INSERT INTO product_images
                        (product_id,image_path,image_url,image_type,is_primary,created_at)
                        VALUES (?,?,?,?,?,?)""",
-                    (row["product_id"], gallery_path, None, "ai_generated", int(save_as_primary), _now()),
+                    (row["product_id"], gallery_path, None, "ai_studio", int(save_as_primary), _now()),
                 )
                 connection.execute(
                     """UPDATE image_studio_generations SET status='approved', approved_product_image_id=?,
