@@ -13497,6 +13497,11 @@ install_offline_mode(app, templates)
 from app.services.image_studio import install_image_studio
 install_image_studio(app)
 
+# MANUAL WALMART + AMAZON MARKETPLACE PUBLISH CENTER
+from app.marketplace_publish import install_marketplace_publish
+install_marketplace_publish(app, templates)
+
+
 
 
 # BROOKSHOUSE INVENTORY ACTIVITY / TRANSACTION HISTORY

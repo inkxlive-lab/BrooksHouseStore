@@ -1,0 +1,209 @@
+import json
+import os
+import sqlite3
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from app.marketplace_publish import (
+    _product,
+    channel_state,
+    publish_page_data,
+    refresh_publish,
+    save_draft,
+    submit_publish,
+    validate_draft,
+)
+from app.migrations.marketplace_publish_schema import initialize_schema, schema_installed
+
+
+BASE_SCHEMA = """
+CREATE TABLE products(product_id INTEGER PRIMARY KEY,product_name TEXT,brand TEXT,description TEXT,category TEXT,store_price NUMERIC,active INTEGER);
+CREATE TABLE product_barcodes(barcode_id INTEGER PRIMARY KEY,product_id INTEGER,barcode TEXT,is_primary INTEGER);
+CREATE TABLE inventory(inventory_id INTEGER PRIMARY KEY,product_id INTEGER,quantity_on_hand INTEGER,quantity_reserved INTEGER);
+CREATE TABLE product_images(image_id INTEGER PRIMARY KEY,product_id INTEGER,image_url TEXT,image_path TEXT,image_type TEXT,is_primary INTEGER);
+CREATE TABLE walmart_catalog_matches(match_id INTEGER PRIMARY KEY,barcode_lookup TEXT,barcode_exact TEXT,query_value TEXT,item_id TEXT,title TEXT,brand TEXT,description TEXT,image_url TEXT,match_status TEXT);
+CREATE TABLE walmart_listings(walmart_listing_id INTEGER PRIMARY KEY,seller_sku TEXT UNIQUE,walmart_item_id TEXT,walmart_price NUMERIC,walmart_quantity INTEGER);
+CREATE TABLE walmart_product_links(walmart_product_link_id INTEGER PRIMARY KEY,walmart_listing_id INTEGER,product_id INTEGER,match_status TEXT);
+CREATE TABLE amazon_listings(amazon_listing_id INTEGER PRIMARY KEY,seller_sku TEXT UNIQUE,asin TEXT,amazon_price NUMERIC,amazon_quantity INTEGER,approval_status TEXT,inventory_status TEXT);
+CREATE TABLE amazon_product_links(amazon_product_link_id INTEGER PRIMARY KEY,amazon_listing_id INTEGER,product_id INTEGER,match_status TEXT);
+CREATE TABLE amazon_catalog_match_audit(amazon_listing_id INTEGER PRIMARY KEY,asin TEXT,seller_sku TEXT,identifiers_json TEXT,result_status TEXT,matched_product_id INTEGER,checked_at TEXT);
+"""
+
+
+class SuccessAdapter:
+    def __init__(self, response=None):
+        self.calls = 0
+        self.response = response or {"status": "SUBMITTED", "external_submission_id": "FEED-1"}
+
+    def submit(self, payload):
+        self.calls += 1
+        return dict(self.response)
+
+    def refresh(self, row):
+        return {"status": "PUBLISHED", "external_submission_id": row.get("external_submission_id")}
+
+
+class FailureAdapter(SuccessAdapter):
+    def submit(self, payload):
+        self.calls += 1
+        raise RuntimeError("mock submission failure")
+
+
+class MarketplacePublishTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.path = Path(self.temp.name) / "publish.db"
+        self.db = sqlite3.connect(self.path)
+        self.db.row_factory = sqlite3.Row
+        self.db.execute("PRAGMA foreign_keys=ON")
+        self.db.executescript(BASE_SCHEMA)
+        initialize_schema(self.db)
+        self.db.execute("INSERT INTO products VALUES(1,'Widget','Acme','Useful widget','Home',12.50,1)")
+        self.db.execute("INSERT INTO product_barcodes VALUES(1,1,'012345678905',1)")
+        self.db.execute("INSERT INTO inventory VALUES(1,1,14,0)")
+        self.db.execute("INSERT INTO product_images VALUES(1,1,'/static/widget.jpg',NULL,'original',1)")
+        self.db.execute("INSERT INTO walmart_catalog_matches VALUES(1,'12345678905','012345678905','012345678905','WM1','Widget','Acme','Useful','/w.jpg','MATCH')")
+        self.db.execute("INSERT INTO amazon_catalog_match_audit VALUES(1,'B000TEST','OLD',?, 'unique',1,'2026-08-27')",
+                        (json.dumps([["UPC", "012345678905"]]),))
+        self.db.commit()
+
+    def tearDown(self):
+        self.db.close()
+        self.temp.cleanup()
+
+    def product(self):
+        return _product(self.db, 1)
+
+    def draft(self, channel="walmart", price="12.50", quantity="4", sku="", image=1):
+        return save_draft(self.db, channel=channel, product_id=1, seller_sku=sku,
+                          proposed_price=price, proposed_quantity=quantity, selected_image_id=image)
+
+    def test_schema_is_explicit_and_additive(self):
+        self.assertTrue(schema_installed(self.db))
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM marketplace_publish_queue").fetchone()[0], 0)
+
+    def test_walmart_catalog_match_uses_offer_path(self):
+        state = channel_state(self.db, self.product(), "walmart")
+        self.assertEqual((state["submission_type"], state["external_catalog_id"]), ("offer", "WM1"))
+
+    def test_walmart_not_found_uses_new_item_path(self):
+        self.db.execute("DELETE FROM walmart_catalog_matches")
+        self.assertEqual(channel_state(self.db, self.product(), "walmart")["submission_type"], "new_product")
+
+    def test_amazon_asin_match_uses_offer_path(self):
+        state = channel_state(self.db, self.product(), "amazon")
+        self.assertEqual((state["submission_type"], state["external_catalog_id"]), ("offer", "B000TEST"))
+
+    def test_amazon_not_found_new_product_when_complete(self):
+        self.db.execute("DELETE FROM amazon_catalog_match_audit")
+        state = channel_state(self.db, self.product(), "amazon")
+        self.assertEqual(state["submission_type"], "new_product")
+        errors = validate_draft(self.db, self.product(), state, "9.99", 1, "BH-AMZ-1", 1)
+        self.assertTrue(any("product-type attributes" in item for item in errors))
+
+    def test_invalid_gtin_is_blocked(self):
+        self.db.execute("UPDATE product_barcodes SET barcode='123' WHERE product_id=1")
+        row = self.draft()
+        self.assertEqual(row["status"], "NEEDS ATTENTION")
+        self.assertIn("GTIN", row["validation_json"])
+
+    def test_missing_price_is_blocked(self):
+        self.assertEqual(self.draft(price="")["status"], "NEEDS ATTENTION")
+
+    def test_missing_image_is_blocked(self):
+        self.assertEqual(self.draft(image=None)["status"], "NEEDS ATTENTION")
+
+    def test_channel_quantity_cannot_exceed_availability(self):
+        self.assertEqual(self.draft(quantity="15")["status"], "NEEDS ATTENTION")
+
+    def test_combined_channel_quantities_are_validated(self):
+        self.assertEqual(self.draft("walmart", quantity="10")["status"], "READY")
+        self.assertEqual(self.draft("amazon", quantity="10")["status"], "NEEDS ATTENTION")
+
+    def test_publishing_does_not_deduct_inventory(self):
+        before = tuple(self.db.execute("SELECT quantity_on_hand,quantity_reserved FROM inventory").fetchone())
+        row = self.draft()
+        submit_publish(self.db, row["publish_id"], SuccessAdapter())
+        after = tuple(self.db.execute("SELECT quantity_on_hand,quantity_reserved FROM inventory").fetchone())
+        self.assertEqual(before, after)
+
+    def test_existing_walmart_listing_is_already_listed(self):
+        self.db.execute("INSERT INTO walmart_listings VALUES(1,'EXISTING-WM','WM1',10,2)")
+        self.db.execute("INSERT INTO walmart_product_links VALUES(1,1,1,'linked')")
+        row = self.draft(sku="DIFFERENT")
+        self.assertEqual((row["status"], row["seller_sku"]), ("ALREADY LISTED", "EXISTING-WM"))
+
+    def test_existing_amazon_listing_is_already_listed(self):
+        self.db.execute("INSERT INTO amazon_listings VALUES(1,'EXISTING-AMZ','B001',10,2,'approved','in_stock')")
+        self.db.execute("INSERT INTO amazon_product_links VALUES(1,1,1,'linked')")
+        row = self.draft("amazon", sku="DIFFERENT")
+        self.assertEqual((row["status"], row["seller_sku"]), ("ALREADY LISTED", "EXISTING-AMZ"))
+
+    def test_existing_seller_sku_is_preserved(self):
+        self.db.execute("INSERT INTO amazon_listings VALUES(1,'KEEP-ME','B001',10,2,'approved','in_stock')")
+        self.db.execute("INSERT INTO amazon_product_links VALUES(1,1,1,'linked')")
+        self.assertEqual(self.draft("amazon", sku="REPLACE-ME")["seller_sku"], "KEEP-ME")
+
+    def test_sku_cannot_move_to_another_product(self):
+        self.db.execute("INSERT INTO products VALUES(2,'Other','Acme','Other','Home',5,1)")
+        self.db.execute("INSERT INTO product_barcodes VALUES(2,2,'099999999999',1)")
+        self.db.execute("INSERT INTO inventory VALUES(2,2,2,0)")
+        self.db.execute("INSERT INTO product_images VALUES(2,2,'/static/other.jpg',NULL,'original',1)")
+        self.draft(sku="COLLIDE")
+        other = _product(self.db, 2); state = channel_state(self.db, other, "walmart")
+        errors = validate_draft(self.db, other, state, "5", 1, "COLLIDE", 2)
+        self.assertTrue(any("different" in item for item in errors))
+
+    def test_double_submission_is_prevented(self):
+        row = self.draft(); adapter = SuccessAdapter()
+        submit_publish(self.db, row["publish_id"], adapter)
+        submit_publish(self.db, row["publish_id"], adapter)
+        self.assertEqual(adapter.calls, 1)
+
+    def test_failed_walmart_submission_is_consistent(self):
+        row = self.draft(); result = submit_publish(self.db, row["publish_id"], FailureAdapter())
+        self.assertEqual(result["status"], "FAILED")
+        self.assertIn("mock submission failure", result["error_message"])
+
+    def test_failed_amazon_submission_is_consistent(self):
+        row = self.draft("amazon"); result = submit_publish(self.db, row["publish_id"], FailureAdapter())
+        self.assertEqual(result["status"], "FAILED")
+
+    def test_successful_walmart_submission_stores_feed_id(self):
+        row = self.draft(); result = submit_publish(self.db, row["publish_id"], SuccessAdapter())
+        self.assertEqual(result["external_submission_id"], "FEED-1")
+
+    def test_successful_amazon_submission_stores_identifiers(self):
+        row = self.draft("amazon")
+        adapter = SuccessAdapter({"status": "SUBMITTED", "submission_id": "AMZ-1", "asin": "BNEW"})
+        result = submit_publish(self.db, row["publish_id"], adapter)
+        self.assertEqual((result["external_submission_id"], result["external_catalog_id"]), ("AMZ-1", "BNEW"))
+
+    def test_status_refresh_does_not_duplicate_submission(self):
+        row = self.draft(); adapter = SuccessAdapter(); submitted = submit_publish(self.db, row["publish_id"], adapter)
+        refreshed = refresh_publish(self.db, submitted["publish_id"], adapter)
+        self.assertEqual((adapter.calls, refreshed["status"]), (1, "PUBLISHED"))
+
+    def test_walmart_usable_when_amazon_unconfigured(self):
+        with patch.dict(os.environ, {"WALMART_CLIENT_ID": "x", "WALMART_CLIENT_SECRET": "y"}, clear=True):
+            data = publish_page_data(self.db, 1)
+        self.assertTrue(data["states"]["walmart"]["configured"])
+        self.assertFalse(data["states"]["amazon"]["configured"])
+
+    def test_no_credentials_are_stored_in_queue_or_events(self):
+        with patch.dict(os.environ, {"WALMART_CLIENT_ID": "secret-id", "WALMART_CLIENT_SECRET": "secret-value"}):
+            self.draft()
+        dumped = " ".join(str(value) for row in self.db.execute("SELECT * FROM marketplace_publish_queue") for value in row)
+        dumped += " ".join(str(value) for row in self.db.execute("SELECT * FROM marketplace_publish_events") for value in row)
+        self.assertNotIn("secret-value", dumped)
+
+    def test_audit_events_are_immutable(self):
+        self.draft()
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.execute("UPDATE marketplace_publish_events SET result='changed'")
+
+
+if __name__ == "__main__":
+    unittest.main()
