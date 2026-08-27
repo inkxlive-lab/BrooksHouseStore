@@ -308,6 +308,7 @@
         <a href="/sales">&#128176; Sales Dashboard</a><a href="/channels/stats">&#128202; Marketplace Stats</a>
         <a href="/reports/channel-performance">Channel Performance</a><a href="/reports/product-matching">Product Matching</a>
         {% if access_role == 'owner_admin' %}
+        <a href="/images/studio">&#127912; AI Image Studio</a>
         <a href="/channels/shopify/reconcile">Shopify Compare</a><a href="/channels/shopify/approve">Approval Queue</a>
         <a href="/channels/shopify/sales">Shopify Sales History</a>
         <a href="/channels/amazon/mapping">Amazon Mapping</a><a href="/tools/notifications">&#128276; Notifications</a>
@@ -348,6 +349,7 @@
             <a class="quick-action" href="/inventory/transfer"><span class="icon">&#128260;</span><strong>Transfer</strong><small>Move between locations</small></a>
             <a class="quick-action" href="/channels/orders"><span class="icon">&#128722;</span><strong>Actionable Orders</strong><small>Current cross-channel fulfillment</small></a>
             <a class="quick-action" href="/operations/reports"><span class="icon">&#128202;</span><strong>Operations Reports</strong><small>Refresh, snapshot, print or export</small></a>
+            {% if access_role == 'owner_admin' %}<a class="quick-action" href="/images/studio"><span class="icon">&#127912;</span><strong>AI Image Studio</strong><small>Clean and approve product photos</small></a>{% endif %}
             {% if access_role == 'owner_admin' %}<a class="quick-action" href="/admin/system-check"><span class="icon">&#128737;</span><strong>System Check</strong><small>Health and exceptions</small></a>{% endif %}
         </section>
 

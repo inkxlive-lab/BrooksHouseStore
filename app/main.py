@@ -13493,6 +13493,10 @@ install_sales_dashboard(app)
 from app.services.offline_mode import install_offline_mode
 install_offline_mode(app, templates)
 
+# BROOKSHOUSE AI IMAGE STUDIO
+from app.services.image_studio import install_image_studio
+install_image_studio(app)
+
 
 
 # BROOKSHOUSE INVENTORY ACTIVITY / TRANSACTION HISTORY

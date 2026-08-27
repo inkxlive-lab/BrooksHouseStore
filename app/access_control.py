@@ -276,6 +276,7 @@ def _permission(user: AuthUser, request: Request) -> bool:
         path.startswith("/channels/shopify/approve"), path.startswith("/channels/shopify/storefront-import"),
         path.startswith("/channels/amazon/mapping"), path.startswith("/channels/amazon/link"),
         path.startswith("/channels/amazon/unlink"), path.startswith("/tools/notifications/settings"),
+        path.startswith("/images/studio"),
     )
     if any(owner_only):
         return False
