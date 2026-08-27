@@ -759,8 +759,7 @@ def sync_recent_orders(*, days: int = 3, database: str | Path | None = None,
                                 connection, channel="amazon", order_id=order_id, line_id=line_id,
                                 sku=item_sku(item), quantity=item_quantity(item), product_id=None,
                             )
-                    if is_new:
-                        register_order_alert(connection, "amazon", order_id, status)
+                    register_order_alert(connection, "amazon", order_id, status)
             connection.commit()
             if not token:
                 break
