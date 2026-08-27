@@ -17,6 +17,9 @@ from urllib.parse import quote, urlparse
 from uuid import uuid4
 
 import httpx
+from sqlalchemy.engine import make_url
+
+from app.config import DATABASE_URL
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -25,7 +28,23 @@ from fastapi.templating import Jinja2Templates
 APP_DIR = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = APP_DIR.parent
 TEMPLATES = Jinja2Templates(directory=APP_DIR / "templates")
-DB_PATH = APP_DIR / "data" / "brookshouse_store.db"
+def _resolve_db_path() -> Path:
+    url = make_url(DATABASE_URL)
+    if not url.drivername.startswith("sqlite"):
+        raise RuntimeError(f"Image Studio currently requires SQLite, got: {url.drivername}")
+
+    database = url.database
+    if not database:
+        raise RuntimeError("DATABASE_URL does not contain a SQLite database path")
+
+    path = Path(database)
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+
+    return path
+
+
+DB_PATH = _resolve_db_path()
 PENDING_DIR = APP_DIR / "static" / "generated-images" / "pending"
 APPROVED_DIR = APP_DIR / "static" / "product-images" / "ai-studio"
 PRESET_CLEAN = """Create a clean marketplace product photograph from the supplied real product image.
