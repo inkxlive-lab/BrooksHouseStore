@@ -80,6 +80,8 @@ from app.database.models import (
     ProductImage,
 )
 from app.schemas import ProductCreate
+from app.services.workflow_navigation import safe_return_to
+from app.services.smart_lookup_images import save_lookup_image
 
 class SmartScanApproval(BaseModel):
     barcode: str
@@ -95,6 +97,9 @@ class SmartScanApproval(BaseModel):
 
     internet_price_low: float | None = None
     internet_price_high: float | None = None
+    product_id: int | None = None
+    save_image_to_gallery: bool = False
+    make_image_primary: bool = False
 
 APP_DIRECTORY = Path(__file__).resolve().parent
 STATIC_DIRECTORY = APP_DIRECTORY / "static"
@@ -1231,11 +1236,23 @@ def normalize_container_id(value: str | None) -> str:
 
 
 @app.get("/smart-scan", response_class=HTMLResponse)
-def smart_scan_page(request: Request):
+def smart_scan_page(request: Request, product_id: int | None = None, return_to: str = ""):
+    preload_barcode = ""
+    if product_id is not None:
+        connection = sqlite3.connect(DB_PATH, timeout=30)
+        try:
+            row = connection.execute(
+                """SELECT barcode FROM product_barcodes WHERE product_id=?
+                   ORDER BY is_primary DESC, barcode_id LIMIT 1""", (product_id,)
+            ).fetchone()
+            preload_barcode = str(row[0]) if row and row[0] else ""
+        finally:
+            connection.close()
     return templates.TemplateResponse(
         request=request,
         name="smart_scan.html",
-        context={}
+        context={"workflow_product_id": product_id, "preload_barcode": preload_barcode,
+                 "return_to": safe_return_to(return_to) if return_to else ""}
     )
 
 @app.get(
@@ -1517,6 +1534,14 @@ def approve_smart_scan(item: SmartScanApproval):
                     store_product["product_id"],
                 ),
             )
+
+            if item.save_image_to_gallery and item.image_url:
+                if item.product_id is not None and int(item.product_id) != int(store_product["product_id"]):
+                    raise ValueError("The Smart Lookup product does not match the scanned barcode.")
+                save_lookup_image(
+                    conn, product_id=int(store_product["product_id"]), image_url=item.image_url,
+                    make_primary=item.make_image_primary, created_at=timestamp,
+                )
 
         cursor.execute(
             """

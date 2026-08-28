@@ -21,6 +21,7 @@ import httpx
 from sqlalchemy.engine import make_url
 
 from app.config import DATABASE_URL
+from app.services.workflow_navigation import safe_return_to
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -267,9 +268,12 @@ def _local_static_path(reference: str) -> Path | None:
         return candidate if candidate.is_relative_to(static_root) else None
     parsed = urlparse(reference)
     value = parsed.path if parsed.scheme in {"http", "https"} else reference
-    if not value.startswith("/static/"):
+    if value.startswith("/static/"):
+        candidate = (APP_DIR / value.lstrip("/")).resolve()
+    elif value.startswith(("product-images/", "product_images/")):
+        candidate = (static_root / value).resolve()
+    else:
         return None
-    candidate = (APP_DIR / value.lstrip("/")).resolve()
     return candidate if candidate.is_relative_to(static_root) else None
 
 
@@ -295,18 +299,26 @@ def _persistent_product_image_path(reference: str) -> Path | None:
     parsed = urlparse(reference)
     value = parsed.path if parsed.scheme in {"http", "https"} else reference
     relative: Path | None = None
-    for prefix in ("/static/product_images/", "/images/studio/product-images/"):
+    for prefix in (
+        "/static/product_images/", "/static/product-images/",
+        "/images/studio/product-images/", "product_images/", "product-images/",
+    ):
         if value.startswith(prefix):
             relative = Path(value[len(prefix):])
             break
     if relative is None:
         windows_path = PureWindowsPath(reference)
-        legacy_root = PureWindowsPath(r"C:\BrooksHouseStore\app\static\product_images")
+        legacy_roots = (
+            PureWindowsPath(r"C:\BrooksHouseStore\app\static\product_images"),
+            PureWindowsPath(r"C:\BrooksHouseStore\app\static\product-images"),
+        )
         path_parts = tuple(part.casefold() for part in windows_path.parts)
-        root_parts = tuple(part.casefold() for part in legacy_root.parts)
-        if path_parts[:len(root_parts)] != root_parts or len(path_parts) <= len(root_parts):
+        matched_root = next((root for root in legacy_roots
+                             if path_parts[:len(root.parts)] == tuple(part.casefold() for part in root.parts)
+                             and len(path_parts) > len(root.parts)), None)
+        if matched_root is None:
             return None
-        relative = Path(*windows_path.parts[len(root_parts):])
+        relative = Path(*windows_path.parts[len(matched_root.parts):])
     root = PRODUCT_IMAGE_ROOT.resolve()
     candidate = (root / relative).resolve()
     return candidate if candidate.is_relative_to(root) and candidate != root else None
@@ -364,21 +376,27 @@ def _image_reference(row: sqlite3.Row) -> str | None:
     return row["image_path"] or row["image_url"]
 
 
-def _load_products(connection: sqlite3.Connection, selected_id: int | None, search: str) -> list[dict]:
-    where = ""
+def _load_products(
+    connection: sqlite3.Connection, selected_id: int | None, search: str, image_filter: str = "all",
+) -> list[dict]:
+    clauses: list[str] = []
     values: list[object] = []
     if search:
-        where = "WHERE p.product_name LIKE ? OR CAST(p.product_id AS TEXT)=?"
+        clauses.append("(p.product_name LIKE ? OR CAST(p.product_id AS TEXT)=?)")
         values.extend([f"%{search}%", search])
     if selected_id is not None:
-        where = "WHERE p.product_id=?"
+        clauses = ["p.product_id=?"]
         values = [selected_id]
+    elif image_filter in {"with_images", "without_images", "marketplace_needs_image"}:
+        operator = ">" if image_filter == "with_images" else "="
+        clauses.append(f"(SELECT COUNT(*) FROM product_images px WHERE px.product_id=p.product_id) {operator} 0")
+    where = "WHERE " + " AND ".join(clauses) if clauses else ""
     rows = connection.execute(
         f"""SELECT p.product_id, p.product_name,
                    (SELECT pb.barcode FROM product_barcodes pb WHERE pb.product_id=p.product_id
                     ORDER BY pb.is_primary DESC, pb.barcode_id LIMIT 1) barcode,
                    COUNT(pi.image_id) image_count
-            FROM products p JOIN product_images pi ON pi.product_id=p.product_id
+            FROM products p LEFT JOIN product_images pi ON pi.product_id=p.product_id
             {where}
             GROUP BY p.product_id, p.product_name
             ORDER BY p.product_name LIMIT 100""",
@@ -445,7 +463,9 @@ def _generation(connection: sqlite3.Connection, generation_id: int) -> sqlite3.R
     return row
 
 
-def _redirect(product_id: int | None = None, message: str = "", error: str = "") -> RedirectResponse:
+def _redirect(
+    product_id: int | None = None, message: str = "", error: str = "", return_to: str | None = None,
+) -> RedirectResponse:
     params = []
     if product_id is not None:
         params.append(f"product_id={product_id}")
@@ -453,6 +473,8 @@ def _redirect(product_id: int | None = None, message: str = "", error: str = "")
         params.append(f"message={quote(message)}")
     if error:
         params.append(f"error={quote(error)}")
+    if return_to:
+        params.append(f"return_to={quote(safe_return_to(return_to), safe='')}")
     return RedirectResponse("/images/studio" + ("?" + "&".join(params) if params else ""), status_code=303)
 
 
@@ -515,14 +537,14 @@ def install_image_studio(app: FastAPI) -> None:
     @app.get("/images/studio", response_class=HTMLResponse)
     def image_studio_page(
         request: Request, product_id: int | None = None, search: str = "", history_status: str = "all",
-        message: str = "", error: str = ""
+        product_filter: str = "all", return_to: str = "", message: str = "", error: str = ""
     ):
         provider = _provider_factory()
         with _connect() as connection:
             _ensure_schema(connection)
             _mark_stale_generations(connection)
             connection.commit()
-            products = _load_products(connection, product_id, search.strip())
+            products = _load_products(connection, product_id, search.strip(), product_filter)
             images = _load_images(connection, product_id)
             uploaded_sources = _load_uploaded_sources(connection, product_id)
             history = _history(connection, product_id, history_status)
@@ -532,12 +554,13 @@ def install_image_studio(app: FastAPI) -> None:
             "provider_name": provider.name, "provider_model": provider.model,
             "provider_configured": provider.configured, "presets": PRESETS,
             "uploaded_sources": uploaded_sources, "history_status": history_status,
+            "product_filter": product_filter, "return_to": safe_return_to(return_to) if return_to else "",
         })
 
     @app.post("/images/studio/source/upload")
     async def image_studio_upload_source(
         product_id: int = Form(...), photo: UploadFile = File(...),
-        save_to_gallery: bool = Form(False),
+        save_to_gallery: bool = Form(False), return_to: str = Form(""),
     ):
         content_type = (photo.content_type or "").lower()
         if content_type not in UPLOAD_TYPES:
@@ -585,7 +608,7 @@ def install_image_studio(app: FastAPI) -> None:
                 destination.unlink(missing_ok=True)
                 raise
         suffix = " and added to the gallery" if save_to_gallery else ""
-        return _redirect(product_id, message=f"Source photo uploaded{suffix}. Originals are protected.")
+        return _redirect(product_id, message=f"Source photo uploaded{suffix}. Originals are protected.", return_to=return_to)
 
     @app.post("/images/studio/generate")
     def image_studio_generate(
@@ -670,7 +693,9 @@ def install_image_studio(app: FastAPI) -> None:
         return _redirect(product_id, message=f"Product image {image_id} is now primary.")
 
     @app.post("/images/studio/{generation_id}/approve")
-    def image_studio_approve(generation_id: int, save_as_primary: bool = Form(False)):
+    def image_studio_approve(
+        generation_id: int, save_as_primary: bool = Form(False), return_to: str = Form(""),
+    ):
         with _connect() as connection:
             _ensure_schema(connection)
             row = _generation(connection, generation_id)
@@ -702,6 +727,8 @@ def install_image_studio(app: FastAPI) -> None:
                 destination.unlink(missing_ok=True)
                 raise
         source_path.unlink(missing_ok=True)
+        if return_to:
+            return RedirectResponse(safe_return_to(return_to), status_code=303)
         return _redirect(row["product_id"], message="Approved image saved to the product gallery.")
 
     @app.post("/images/studio/{generation_id}/discard")

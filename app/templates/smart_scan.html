@@ -355,6 +355,8 @@
 
 <div class="container">
 
+    {% if workflow_product_id %}<div class="batch-return-banner"><span>🖼️ Image workflow for BrooksHouse product {{ workflow_product_id }}.</span>{% if return_to %}<a class="primary-button link-button" href="{{ return_to }}">Back to Publish Center</a>{% endif %}</div>{% endif %}
+
     <div id="batchReturnBanner" class="batch-return-banner hidden">
         <span>📦 Smart Lookup opened from Batch Scan. Your batch is safely waiting.</span>
         <button type="button" onclick="returnToBatch(false)">↩ Cancel & Return</button>
@@ -696,12 +698,16 @@
             <option value="store">Keep BrooksHouse Image</option>
             <option value="none">Do Not Save</option>
         </select>
+        <label><input id="saveImageToGallery" type="checkbox"> Save selected internet image to the BrooksHouse product gallery</label>
+        <label><input id="makeLookupImagePrimary" type="checkbox"> Make newly saved image primary</label>
     </div>
 
     <div class="actions">
         <button class="approve-btn" onclick="approveProduct()">
             Approve Selected Fields & Save
         </button>
+        {% if workflow_product_id %}<button class="approve-btn" onclick="approveProduct('studio')">Save &amp; Open AI Image Studio</button>{% endif %}
+        {% if return_to %}<a class="primary-button link-button" href="{{ return_to }}">Back to Publish Center</a>{% endif %}
     </div>
 <div id="newProductPanel" class="card hidden" style="margin-top:20px;">
 
@@ -785,6 +791,9 @@
 
 let currentData = null;
 let selectedSource = "internet";
+const workflowProductId = {{ workflow_product_id|tojson }};
+const workflowReturnTo = {{ return_to|tojson }};
+const workflowPreloadBarcode = {{ preload_barcode|tojson }};
 
 
 function display(value) {
@@ -1168,7 +1177,7 @@ function keepMine() {
         "BrooksHouse information selected.";
 
 }
-async function approveProduct() {
+async function approveProduct(nextAction = "") {
 
     if (!currentData) {
         return;
@@ -1336,7 +1345,14 @@ async function approveProduct() {
                     internet_price_low:
                         online.price_low ?? null,
                     internet_price_high:
-                        online.price_high ?? null
+                        online.price_high ?? null,
+                    product_id: workflowProductId,
+                    save_image_to_gallery:
+                        imageChoice === "internet" &&
+                        document.getElementById("saveImageToGallery").checked,
+                    make_image_primary:
+                        imageChoice === "internet" &&
+                        document.getElementById("makeLookupImagePrimary").checked
                 })
             }
         );
@@ -1359,6 +1375,14 @@ async function approveProduct() {
 
             status.textContent =
                 "Product fields approved and saved.";
+
+            if (nextAction === "studio" && result.product_id) {
+                const studio = new URL("/images/studio", window.location.origin);
+                studio.searchParams.set("product_id", result.product_id);
+                if (workflowReturnTo) studio.searchParams.set("return_to", workflowReturnTo);
+                window.location.assign(studio.toString());
+                return;
+            }
 
             await lookupBarcode();
 
@@ -1635,7 +1659,17 @@ function initializeBatchSmartLookup() {
     }
 }
 
+function initializeProductImageWorkflow() {
+    if (!workflowProductId || !workflowPreloadBarcode || isBatchReturn()) return;
+    const barcodeInput = document.getElementById("barcode");
+    barcodeInput.value = workflowPreloadBarcode;
+    document.getElementById("status").textContent =
+        "🔍 Looking up product " + workflowProductId + "...";
+    setTimeout(lookupBarcode, 150);
+}
+
 window.addEventListener("DOMContentLoaded", initializeBatchSmartLookup);
+window.addEventListener("DOMContentLoaded", initializeProductImageWorkflow);
 let smartScanTimer = null;
 const smartScanInput = document.getElementById("barcode");
 

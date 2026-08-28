@@ -17,6 +17,7 @@ from fastapi.templating import Jinja2Templates
 
 from app.database_resolution import configured_sqlite_path
 from app.migrations.marketplace_publish_schema import schema_installed
+from app.services.image_studio import _display_reference
 
 
 CHANNELS = ("walmart", "amazon")
@@ -98,7 +99,7 @@ def _product(connection: sqlite3.Connection, product_id: int) -> dict[str, Any]:
         for item in rows:
             record = dict(item)
             source = next((_text(record.get(name)) for name in ("image_url", "image_path", "url", "source_url", "external_url") if _text(record.get(name))), "")
-            record["display_url"] = source
+            record["display_url"] = _display_reference(source) if source else ""
             images.append(record)
         result["images"] = images
     else:

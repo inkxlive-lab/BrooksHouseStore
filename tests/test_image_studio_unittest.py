@@ -39,6 +39,7 @@ def create_database(path: Path):
             is_primary INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
         );
         INSERT INTO products VALUES (1, 'Test Coffee Maker');
+        INSERT INTO products VALUES (2, 'No Image Product');
         INSERT INTO product_barcodes VALUES (1, 1, '012345678905', 1);
         INSERT INTO product_images VALUES (1, 1, '/static/product-images/source.png', NULL, 'front', 1, '2026-01-01');
         """)
@@ -221,6 +222,45 @@ class ImageStudioTests(unittest.TestCase):
         self.assertIsNone(
             image_studio._persistent_product_image_path(r"C:\Windows\System32\outside.jpg")
         )
+
+    def test_all_with_and_without_image_filters(self):
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.row_factory = sqlite3.Row
+            all_ids = {row["product_id"] for row in image_studio._load_products(connection, None, "", "all")}
+            with_ids = {row["product_id"] for row in image_studio._load_products(connection, None, "", "with_images")}
+            without_ids = {row["product_id"] for row in image_studio._load_products(connection, None, "", "without_images")}
+        self.assertEqual(all_ids, {1, 2})
+        self.assertEqual(with_ids, {1})
+        self.assertEqual(without_ids, {2})
+
+    def test_product_without_source_cannot_generate_but_can_upload(self):
+        client = self.client()
+        blocked = client.post("/images/studio/generate", data={
+            "product_id": 2, "preset": "clean_marketplace", "variations": 1,
+        }, follow_redirects=False)
+        self.assertEqual(blocked.status_code, 303)
+        self.assertIn("Select%20a%20valid%20source", blocked.headers["location"])
+        png = b"\x89PNG\r\n\x1a\n" + b"new-original"
+        uploaded = client.post("/images/studio/source/upload", data={"product_id": 2},
+                               files={"photo": ("photo.png", png, "image/png")}, follow_redirects=False)
+        self.assertEqual(uploaded.status_code, 303)
+        with closing(sqlite3.connect(self.database)) as connection:
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) FROM image_studio_sources WHERE product_id=2"
+            ).fetchone()[0], 1)
+
+    def test_product_44_style_relative_image_path_resolves_safely(self):
+        product_file = self.static / "product-images" / "internet" / "44-test.jpg"
+        product_file.parent.mkdir(parents=True)
+        product_file.write_bytes(b"source-image")
+        self.assertEqual(
+            image_studio._source_local_path("product-images/internet/44-test.jpg"),
+            product_file.resolve(),
+        )
+        self.assertEqual(
+            image_studio._read_source("product-images/internet/44-test.jpg")[0], b"source-image"
+        )
+        self.assertIsNone(image_studio._source_local_path("../../outside.jpg"))
 
 
 if __name__ == "__main__":

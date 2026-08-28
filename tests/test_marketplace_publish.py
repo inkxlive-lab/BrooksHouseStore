@@ -6,6 +6,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from fastapi.templating import Jinja2Templates
+
 from app.marketplace_publish import (
     _product,
     channel_state,
@@ -14,6 +18,7 @@ from app.marketplace_publish import (
     save_draft,
     submit_publish,
     validate_draft,
+    install_marketplace_publish,
 )
 from app.migrations.marketplace_publish_schema import initialize_schema, schema_installed
 
@@ -58,6 +63,7 @@ class MarketplacePublishTests(unittest.TestCase):
         self.db = sqlite3.connect(self.path)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA foreign_keys=ON")
+        self.route_connections = []
         self.db.executescript(BASE_SCHEMA)
         initialize_schema(self.db)
         self.db.execute("INSERT INTO products VALUES(1,'Widget','Acme','Useful widget','Home',12.50,1)")
@@ -70,6 +76,8 @@ class MarketplacePublishTests(unittest.TestCase):
         self.db.commit()
 
     def tearDown(self):
+        for connection in self.route_connections:
+            connection.close()
         self.db.close()
         self.temp.cleanup()
 
@@ -79,6 +87,12 @@ class MarketplacePublishTests(unittest.TestCase):
     def draft(self, channel="walmart", price="12.50", quantity="4", sku="", image=1):
         return save_draft(self.db, channel=channel, product_id=1, seller_sku=sku,
                           proposed_price=price, proposed_quantity=quantity, selected_image_id=image)
+
+    def route_connection(self):
+        connection = sqlite3.connect(self.path, check_same_thread=False)
+        connection.row_factory = sqlite3.Row
+        self.route_connections.append(connection)
+        return connection
 
     def test_schema_is_explicit_and_additive(self):
         self.assertTrue(schema_installed(self.db))
@@ -203,6 +217,43 @@ class MarketplacePublishTests(unittest.TestCase):
         self.draft()
         with self.assertRaises(sqlite3.IntegrityError):
             self.db.execute("UPDATE marketplace_publish_events SET result='changed'")
+
+    def test_publish_center_shows_image_and_workflow_links(self):
+        data = publish_page_data(self.db, 1)
+        self.assertEqual(data["product"]["primary_image"]["display_url"], "/static/widget.jpg")
+        app = FastAPI()
+        templates = Jinja2Templates(directory=Path(__file__).parents[1] / "app" / "templates")
+        install_marketplace_publish(app, templates)
+        with patch("app.marketplace_publish.connect", side_effect=self.route_connection):
+            with TestClient(app) as client:
+                response = client.get("/channels/publish?product_id=1")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('/smart-scan?product_id=1', response.text)
+        self.assertIn('/images/studio?product_id=1', response.text)
+        self.assertIn('/static/widget.jpg', response.text)
+
+    def test_publish_center_reports_no_saved_image(self):
+        self.db.execute("DELETE FROM product_images WHERE product_id=1")
+        app = FastAPI()
+        templates = Jinja2Templates(directory=Path(__file__).parents[1] / "app" / "templates")
+        install_marketplace_publish(app, templates)
+        self.db.commit()
+        with patch("app.marketplace_publish.connect", side_effect=self.route_connection):
+            with TestClient(app) as client:
+                response = client.get("/channels/publish?product_id=1")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("No saved image", response.text)
+
+    def test_approved_ai_studio_image_is_available_to_publish_center(self):
+        self.db.execute("UPDATE product_images SET is_primary=0 WHERE product_id=1")
+        self.db.execute(
+            "INSERT INTO product_images VALUES(2,1,NULL,'/images/studio/files/approved/product-1.png','ai_studio',1)"
+        )
+        product = publish_page_data(self.db, 1)["product"]
+        self.assertEqual(
+            product["primary_image"]["display_url"],
+            "/images/studio/files/approved/product-1.png",
+        )
 
 
 if __name__ == "__main__":
