@@ -11,6 +11,9 @@ import sqlite3
 
 
 REQUIRED_TABLES = {"marketplace_publish_queue", "marketplace_publish_events"}
+REQUIRED_QUEUE_COLUMNS = {
+    "shipping_weight_lb", "estimated_shipping_cost", "marketplace_fee_rate",
+}
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS marketplace_publish_queue (
@@ -25,6 +28,9 @@ CREATE TABLE IF NOT EXISTS marketplace_publish_queue (
     selected_image_id INTEGER,
     proposed_price NUMERIC NOT NULL,
     proposed_quantity INTEGER NOT NULL,
+    shipping_weight_lb NUMERIC,
+    estimated_shipping_cost NUMERIC NOT NULL DEFAULT 6.00,
+    marketplace_fee_rate NUMERIC,
     fulfillment_type TEXT NOT NULL DEFAULT 'merchant',
     status TEXT NOT NULL,
     idempotency_key TEXT NOT NULL,
@@ -44,7 +50,10 @@ CREATE TABLE IF NOT EXISTS marketplace_publish_queue (
     FOREIGN KEY(product_id) REFERENCES products(product_id),
     FOREIGN KEY(selected_image_id) REFERENCES product_images(image_id),
     CHECK(proposed_quantity >= 0),
-    CHECK(proposed_price >= 0)
+    CHECK(proposed_price >= 0),
+    CHECK(shipping_weight_lb IS NULL OR shipping_weight_lb > 0),
+    CHECK(estimated_shipping_cost >= 0),
+    CHECK(marketplace_fee_rate IS NULL OR (marketplace_fee_rate >= 0 AND marketplace_fee_rate <= 100))
 );
 CREATE INDEX IF NOT EXISTS ix_marketplace_publish_queue_status
 ON marketplace_publish_queue(status, channel, updated_at);
@@ -94,10 +103,29 @@ def schema_installed(connection: sqlite3.Connection) -> bool:
             tuple(sorted(REQUIRED_TABLES)),
         )
     }
-    return found == REQUIRED_TABLES
+    if found != REQUIRED_TABLES:
+        return False
+    columns = {
+        str(row[1])
+        for row in connection.execute("PRAGMA table_info(marketplace_publish_queue)")
+    }
+    return REQUIRED_QUEUE_COLUMNS <= columns
 
 
 def initialize_schema(connection: sqlite3.Connection) -> None:
     """Install the additive schema on an explicitly selected database."""
     connection.executescript(SCHEMA_SQL)
+    columns = {
+        str(row[1])
+        for row in connection.execute("PRAGMA table_info(marketplace_publish_queue)")
+    }
+    for name, definition in (
+        ("shipping_weight_lb", "NUMERIC"),
+        ("estimated_shipping_cost", "NUMERIC NOT NULL DEFAULT 6.00"),
+        ("marketplace_fee_rate", "NUMERIC"),
+    ):
+        if name not in columns:
+            connection.execute(
+                f'ALTER TABLE marketplace_publish_queue ADD COLUMN "{name}" {definition}'
+            )
 

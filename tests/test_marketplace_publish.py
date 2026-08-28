@@ -19,16 +19,18 @@ from app.marketplace_publish import (
     submit_publish,
     validate_draft,
     install_marketplace_publish,
+    walmart_candidate_products,
+    walmart_economics,
 )
 from app.migrations.marketplace_publish_schema import initialize_schema, schema_installed
 
 
 BASE_SCHEMA = """
-CREATE TABLE products(product_id INTEGER PRIMARY KEY,product_name TEXT,brand TEXT,description TEXT,category TEXT,store_price NUMERIC,active INTEGER);
+CREATE TABLE products(product_id INTEGER PRIMARY KEY,product_name TEXT,brand TEXT,description TEXT,category TEXT,store_price NUMERIC,average_cost NUMERIC,active INTEGER);
 CREATE TABLE product_barcodes(barcode_id INTEGER PRIMARY KEY,product_id INTEGER,barcode TEXT,is_primary INTEGER);
 CREATE TABLE inventory(inventory_id INTEGER PRIMARY KEY,product_id INTEGER,quantity_on_hand INTEGER,quantity_reserved INTEGER);
 CREATE TABLE product_images(image_id INTEGER PRIMARY KEY,product_id INTEGER,image_url TEXT,image_path TEXT,image_type TEXT,is_primary INTEGER);
-CREATE TABLE walmart_catalog_matches(match_id INTEGER PRIMARY KEY,barcode_lookup TEXT,barcode_exact TEXT,query_value TEXT,item_id TEXT,title TEXT,brand TEXT,description TEXT,image_url TEXT,match_status TEXT);
+CREATE TABLE walmart_catalog_matches(match_id INTEGER PRIMARY KEY,barcode_lookup TEXT,barcode_exact TEXT,query_value TEXT,item_id TEXT,walmart_item_id TEXT,title TEXT,brand TEXT,description TEXT,product_type TEXT,image_url TEXT,price_amount NUMERIC,price_currency TEXT,checked_at TEXT,error_message TEXT,standard_upc TEXT,match_status TEXT);
 CREATE TABLE walmart_listings(walmart_listing_id INTEGER PRIMARY KEY,seller_sku TEXT UNIQUE,walmart_item_id TEXT,walmart_price NUMERIC,walmart_quantity INTEGER);
 CREATE TABLE walmart_product_links(walmart_product_link_id INTEGER PRIMARY KEY,walmart_listing_id INTEGER,product_id INTEGER,match_status TEXT);
 CREATE TABLE amazon_listings(amazon_listing_id INTEGER PRIMARY KEY,seller_sku TEXT UNIQUE,asin TEXT,amazon_price NUMERIC,amazon_quantity INTEGER,approval_status TEXT,inventory_status TEXT);
@@ -66,11 +68,16 @@ class MarketplacePublishTests(unittest.TestCase):
         self.route_connections = []
         self.db.executescript(BASE_SCHEMA)
         initialize_schema(self.db)
-        self.db.execute("INSERT INTO products VALUES(1,'Widget','Acme','Useful widget','Home',12.50,1)")
+        self.db.execute("INSERT INTO products VALUES(1,'Widget','Acme','Useful widget','Home',12.50,4.00,1)")
         self.db.execute("INSERT INTO product_barcodes VALUES(1,1,'012345678905',1)")
         self.db.execute("INSERT INTO inventory VALUES(1,1,14,0)")
         self.db.execute("INSERT INTO product_images VALUES(1,1,'/static/widget.jpg',NULL,'original',1)")
-        self.db.execute("INSERT INTO walmart_catalog_matches VALUES(1,'12345678905','012345678905','012345678905','WM1','Widget','Acme','Useful','/w.jpg','MATCH')")
+        self.db.execute("""INSERT INTO walmart_catalog_matches
+            (match_id,barcode_lookup,barcode_exact,query_value,walmart_item_id,title,brand,description,
+             image_url,price_amount,price_currency,checked_at,standard_upc,match_status)
+            VALUES(1,'12345678905','012345678905','012345678905','WM1','Walmart Widget','Acme',
+                   'Useful','https://walmart.example/w.jpg',7.99,'USD','2026-08-01T00:00:00+00:00',
+                   '012345678905','MATCH')""")
         self.db.execute("INSERT INTO amazon_catalog_match_audit VALUES(1,'B000TEST','OLD',?, 'unique',1,'2026-08-27')",
                         (json.dumps([["UPC", "012345678905"]]),))
         self.db.commit()
@@ -84,9 +91,12 @@ class MarketplacePublishTests(unittest.TestCase):
     def product(self):
         return _product(self.db, 1)
 
-    def draft(self, channel="walmart", price="12.50", quantity="4", sku="", image=1):
+    def draft(self, channel="walmart", price="12.50", quantity="4", sku="", image=1,
+              weight="1.00", shipping="6.00", fee_rate=""):
         return save_draft(self.db, channel=channel, product_id=1, seller_sku=sku,
-                          proposed_price=price, proposed_quantity=quantity, selected_image_id=image)
+                          proposed_price=price, proposed_quantity=quantity, selected_image_id=image,
+                          shipping_weight_lb=weight, estimated_shipping_cost=shipping,
+                          marketplace_fee_rate=fee_rate)
 
     def route_connection(self):
         connection = sqlite3.connect(self.path, check_same_thread=False)
@@ -95,16 +105,60 @@ class MarketplacePublishTests(unittest.TestCase):
         return connection
 
     def test_schema_is_explicit_and_additive(self):
+        initialize_schema(self.db)
         self.assertTrue(schema_installed(self.db))
         self.assertEqual(self.db.execute("SELECT COUNT(*) FROM marketplace_publish_queue").fetchone()[0], 0)
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(marketplace_publish_queue)")}
+        self.assertTrue({"shipping_weight_lb", "estimated_shipping_cost", "marketplace_fee_rate"} <= columns)
 
     def test_walmart_catalog_match_uses_offer_path(self):
         state = channel_state(self.db, self.product(), "walmart")
         self.assertEqual((state["submission_type"], state["external_catalog_id"]), ("offer", "WM1"))
+        self.assertEqual(state["catalog_result"]["title"], "Walmart Widget")
+        self.assertEqual(state["catalog_result"]["price_amount"], 7.99)
+        self.assertIn("Stale Walmart price snapshot", state["walmart_price_note"])
 
-    def test_walmart_not_found_uses_new_item_path(self):
-        self.db.execute("DELETE FROM walmart_catalog_matches")
-        self.assertEqual(channel_state(self.db, self.product(), "walmart")["submission_type"], "new_product")
+    def test_default_candidates_only_include_walmart_match_or_listing(self):
+        self.db.execute("INSERT INTO products VALUES(2,'Review Me','Acme','Review','Home',5,2,1)")
+        self.db.execute("INSERT INTO product_barcodes VALUES(2,2,'099999999999',1)")
+        self.db.execute("""INSERT INTO walmart_catalog_matches
+            (match_id,barcode_lookup,barcode_exact,query_value,match_status)
+            VALUES(2,'99999999999','099999999999','099999999999','NOT_FOUND')""")
+        eligible = walmart_candidate_products(self.db, "walmart_eligible")
+        review = walmart_candidate_products(self.db, "walmart_review")
+        self.assertEqual([item["product_id"] for item in eligible], [1])
+        self.assertEqual([item["product_id"] for item in review], [2])
+
+    def test_amazon_eligibility_is_independent_of_walmart_rejection(self):
+        self.db.execute("UPDATE walmart_catalog_matches SET match_status='INVALID_BARCODE',walmart_item_id=NULL")
+        product = self.product()
+        self.assertFalse(channel_state(self.db, product, "walmart")["eligible"])
+        self.assertEqual(channel_state(self.db, product, "amazon")["external_catalog_id"], "B000TEST")
+
+    def test_walmart_weight_is_required_and_planning_fields_persist(self):
+        self.assertEqual(self.draft(weight="")["status"], "NEEDS ATTENTION")
+        self.assertEqual(self.draft(fee_rate="101")["status"], "NEEDS ATTENTION")
+        row = self.draft(weight="2.25", shipping="6.75", fee_rate="15")
+        self.assertEqual(row["status"], "READY")
+        self.assertEqual(
+            (float(row["shipping_weight_lb"]), float(row["estimated_shipping_cost"]), float(row["marketplace_fee_rate"])),
+            (2.25, 6.75, 15.0),
+        )
+        self.assertEqual(self.db.execute("SELECT store_price FROM products WHERE product_id=1").fetchone()[0], 12.5)
+
+    def test_low_price_shipping_economics_are_flagged(self):
+        state = channel_state(self.db, self.product(), "walmart")
+        state.update({"proposed_price": "7.99", "estimated_shipping_cost": "6.00", "marketplace_fee_rate": None})
+        result = walmart_economics(self.product(), state)
+        self.assertTrue(result["poor"])
+        self.assertEqual(str(result["before_fee_profit"]), "-2.01")
+
+    def test_walmart_not_found_is_review_only_not_ready(self):
+        self.db.execute("UPDATE walmart_catalog_matches SET match_status='NOT_FOUND',walmart_item_id=NULL")
+        state = channel_state(self.db, self.product(), "walmart")
+        self.assertFalse(state["eligible"])
+        self.assertEqual(state["catalog_status"], "NOT_FOUND")
+        self.assertEqual(self.draft()["status"], "NEEDS ATTENTION")
 
     def test_amazon_asin_match_uses_offer_path(self):
         state = channel_state(self.db, self.product(), "amazon")
@@ -148,6 +202,7 @@ class MarketplacePublishTests(unittest.TestCase):
         self.db.execute("INSERT INTO walmart_product_links VALUES(1,1,1,'linked')")
         row = self.draft(sku="DIFFERENT")
         self.assertEqual((row["status"], row["seller_sku"]), ("ALREADY LISTED", "EXISTING-WM"))
+        self.assertEqual(channel_state(self.db, self.product(), "walmart")["submission_type"], "offer")
 
     def test_existing_amazon_listing_is_already_listed(self):
         self.db.execute("INSERT INTO amazon_listings VALUES(1,'EXISTING-AMZ','B001',10,2,'approved','in_stock')")
@@ -161,7 +216,7 @@ class MarketplacePublishTests(unittest.TestCase):
         self.assertEqual(self.draft("amazon", sku="REPLACE-ME")["seller_sku"], "KEEP-ME")
 
     def test_sku_cannot_move_to_another_product(self):
-        self.db.execute("INSERT INTO products VALUES(2,'Other','Acme','Other','Home',5,1)")
+        self.db.execute("INSERT INTO products VALUES(2,'Other','Acme','Other','Home',5,2,1)")
         self.db.execute("INSERT INTO product_barcodes VALUES(2,2,'099999999999',1)")
         self.db.execute("INSERT INTO inventory VALUES(2,2,2,0)")
         self.db.execute("INSERT INTO product_images VALUES(2,2,'/static/other.jpg',NULL,'original',1)")
