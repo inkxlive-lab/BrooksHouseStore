@@ -786,6 +786,7 @@
 </div>
 
 
+<script src="/static/hot-item-alert.js"></script>
 <script src="/static/vendor/zxing-browser.min.js"></script>
 <script>
 
@@ -894,6 +895,8 @@ async function lookupBarcode() {
         const data = await response.json();
 
         currentData = data;
+
+        HotItemAlert.show(data.hot_item_alert);
 
         renderResults(data);
 

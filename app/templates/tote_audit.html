@@ -375,6 +375,7 @@
 </main>
 
 
+<script src="/static/hot-item-alert.js"></script>
 <script src="/static/offline-mode.js"></script>
 <script>
 
@@ -643,10 +644,13 @@ async function addScannedItem() {
             "/inventory/adjust/batch/lookup"
             + "?barcode="
             + encodeURIComponent(barcode)
+            + "&location_id=" + encodeURIComponent(lockedLocationId || "")
+            + "&container_id=" + encodeURIComponent(lockedContainerId || "")
         );
 
         const result =
             await response.json();
+        HotItemAlert.show(result.hot_item_alert);
 
         if (!result.found) {
 

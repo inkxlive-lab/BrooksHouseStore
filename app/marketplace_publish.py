@@ -753,11 +753,13 @@ def _inventory_breakdown(connection: sqlite3.Connection, product_ids: list[int])
 def walmart_opportunities(
     connection: sqlite3.Connection, search: str = "", sort: str = "auto",
     opportunity_filter: str = "all",
+    product_id: int | None = None,
 ) -> list[dict[str, Any]]:
     if not (_table_exists(connection, "walmart_catalog_matches") and _table_exists(connection, "product_barcodes")):
         return []
+    product_clause = " AND p.product_id=?" if product_id is not None else ""
     rows = connection.execute(
-        """SELECT p.product_id,p.product_name,p.brand,p.average_cost,p.store_price,
+        f"""SELECT p.product_id,p.product_name,p.brand,p.average_cost,p.store_price,
                   pb.barcode,wcm.walmart_item_id,wcm.title AS walmart_title,wcm.image_url,
                   wcm.price_amount,wcm.price_currency,wcm.checked_at
            FROM products p JOIN product_barcodes pb USING(product_id)
@@ -766,9 +768,11 @@ def walmart_opportunities(
              ELSE LTRIM(TRIM(CAST(pb.barcode AS TEXT)),'0') END
            WHERE p.active=1 AND upper(COALESCE(wcm.match_status,''))='MATCH'
              AND wcm.price_amount IS NOT NULL AND wcm.price_amount>0
-           ORDER BY p.product_id,wcm.checked_at DESC,wcm.rowid DESC"""
+             {product_clause}
+           ORDER BY p.product_id,wcm.checked_at DESC,wcm.rowid DESC""",
+        (product_id,) if product_id is not None else (),
     ).fetchall()
-    search_ranks = _search_product_ranks(connection, search)
+    search_ranks = None if product_id is not None else _search_product_ranks(connection, search)
     base: dict[int, dict[str, Any]] = {}
     for row in rows:
         product_id = int(row["product_id"])

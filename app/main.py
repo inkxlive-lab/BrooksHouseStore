@@ -82,6 +82,7 @@ from app.database.models import (
 from app.schemas import ProductCreate
 from app.services.workflow_navigation import safe_return_to
 from app.services.smart_lookup_images import save_lookup_image
+from app.services.hot_item_alerts import evaluate_hot_item_path
 
 class SmartScanApproval(BaseModel):
     barcode: str
@@ -498,6 +499,26 @@ def product_to_dictionary(product: Product) -> dict:
         ],
     }
 DB_PATH = configured_sqlite_path()
+
+
+def scan_hot_item_alert(
+    product_id: int | None,
+    barcode: str,
+    *,
+    location_id: int | None = None,
+    container_id: str = "",
+):
+    """Best-effort local-only alert; scanning must never fail because of alert data."""
+    if not product_id:
+        return None
+    try:
+        return evaluate_hot_item_path(
+            DB_PATH, int(product_id), str(barcode),
+            location_id=location_id, container_id=normalize_container_id(container_id),
+        )
+    except Exception:
+        logging.getLogger(__name__).exception("Hot Item Alert evaluation failed for product %s", product_id)
+        return None
 
 
 def load_walmart_inventory_flags(
@@ -1424,6 +1445,7 @@ def scan_item_page(
             "match_type": None,
             "shopify_matches": [],
             "shopify_match_type": None,
+            "hot_item_alert": None,
         },
     )
 @app.get("/api/smart-scan/{barcode}")
@@ -1434,12 +1456,14 @@ def smart_scan_lookup(barcode: str):
     online = lookup_upc_online(barcode)
     local = lookup_barcode_local(barcode)
 
+    product_data = local.get("store_product", {}).get("data", {})
     return {
         "barcode": barcode,
         "online": online,
         "local": local,
         "store_product": local.get("store_product", {}),
         "master_catalog": local.get("master_catalog", {}),
+        "hot_item_alert": scan_hot_item_alert(product_data.get("product_id"), barcode),
     }
 
 
@@ -1790,6 +1814,7 @@ def check_scanned_item(
                 "shopify_matches": [],
                 "shopify_match_type": None,
                 "error": str(error),
+                "hot_item_alert": None,
             },
         )
 
@@ -1951,6 +1976,9 @@ def check_scanned_item(
             ),
             "shopify_matches": shopify_matches,
             "shopify_match_type": shopify_match_type,
+            "hot_item_alert": scan_hot_item_alert(
+                store_product.product_id if store_product else None, cleaned_barcode,
+            ),
         },
     )
 
@@ -3936,6 +3964,7 @@ def receive_inventory_page(
     request: Request,
     barcode: Optional[str] = None,
     location_id: Optional[int] = None,
+    container_id: str = "",
     database: Session = Depends(get_database),
 ):
     locations = database.scalars(
@@ -4017,6 +4046,10 @@ def receive_inventory_page(
             ),
             "message": None,
             "error": error,
+            "hot_item_alert": scan_hot_item_alert(
+                product.product_id if product else None, scanned_barcode or barcode or "",
+                location_id=location_id, container_id=container_id,
+            ),
         },
     )
 
@@ -5046,9 +5079,12 @@ def batch_inventory_adjustment_page(
 @app.get("/inventory/adjust/batch/lookup")
 def batch_inventory_adjustment_lookup(
     barcode: str,
+    location_id: str = "",
+    container_id: str = "",
     database: Session = Depends(get_database),
 ):
     try:
+        alert_location_id = int(location_id) if location_id.strip().isdigit() else None
         product, scanned_barcode = (
             find_store_product_by_scan(
                 database=database,
@@ -5065,6 +5101,10 @@ def batch_inventory_adjustment_lookup(
                 str(product.store_price)
                 if product.store_price is not None
                 else None
+            ),
+            "hot_item_alert": scan_hot_item_alert(
+                product.product_id, scanned_barcode,
+                location_id=alert_location_id, container_id=container_id,
             ),
         }
 

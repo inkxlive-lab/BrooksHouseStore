@@ -480,6 +480,7 @@
         </form>
     </main>
 
+    <script src="/static/hot-item-alert.js"></script>
     <script src="/static/offline-mode.js"></script>
     <script>
         const barcodeInput = document.querySelector(
@@ -810,9 +811,12 @@ function updateHiddenValue() {
                 "/inventory/adjust/batch/lookup"
                 + "?barcode="
                 + encodeURIComponent(barcode)
+                + "&location_id=" + encodeURIComponent(locationSelect.value || "")
+                + "&container_id=" + encodeURIComponent(containerInput.value || "")
             );
 
             const result = await response.json();
+            HotItemAlert.show(result.hot_item_alert);
 
             if (!result.found) {
                 const runSmartLookup = window.confirm(
