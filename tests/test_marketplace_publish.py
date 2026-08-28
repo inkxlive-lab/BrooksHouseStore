@@ -21,6 +21,7 @@ from app.marketplace_publish import (
     install_marketplace_publish,
     walmart_candidate_products,
     walmart_economics,
+    walmart_opportunities,
 )
 from app.migrations.marketplace_publish_schema import initialize_schema, schema_installed
 
@@ -309,6 +310,125 @@ class MarketplacePublishTests(unittest.TestCase):
             product["primary_image"]["display_url"],
             "/images/studio/files/approved/product-1.png",
         )
+
+    def test_search_covers_exact_barcode_description_marketplace_ids_and_skus(self):
+        self.db.execute("INSERT INTO walmart_listings VALUES(1,'WM-SKU-ONE','WM1',7.99,3)")
+        self.db.execute("INSERT INTO walmart_product_links VALUES(1,1,1,'linked')")
+        self.db.execute("INSERT INTO amazon_listings VALUES(1,'AMZ-SKU-ONE','B000TEST',12.50,3,'approved','active')")
+        self.db.execute("INSERT INTO amazon_product_links VALUES(1,1,1,'linked')")
+        for query in ("012345678905", "Useful widget", "WM1", "WM-SKU-ONE", "AMZ-SKU-ONE", "B000TEST", "1"):
+            with self.subTest(query=query):
+                rows = walmart_candidate_products(self.db, "all", query)
+                self.assertEqual(rows[0]["product_id"], 1)
+
+    def test_draft_route_reports_missing_schema_instead_of_silently_failing(self):
+        self.db.execute("DROP TRIGGER marketplace_publish_events_immutable_update")
+        self.db.execute("DROP TRIGGER marketplace_publish_events_immutable_delete")
+        self.db.execute("DROP TABLE marketplace_publish_events")
+        self.db.execute("DROP TABLE marketplace_publish_queue")
+        self.db.commit()
+        app = FastAPI()
+        templates = Jinja2Templates(directory=Path(__file__).parents[1] / "app" / "templates")
+        install_marketplace_publish(app, templates)
+        with patch("app.marketplace_publish.connect", side_effect=self.route_connection):
+            with TestClient(app) as client:
+                response = client.post("/channels/publish/draft", data={
+                    "product_id": 1, "channel": "walmart", "seller_sku": "WM-1",
+                    "proposed_price": "12.50", "proposed_quantity": "1", "selected_image_id": "1",
+                })
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Draft saving unavailable", response.text)
+        self.assertIn("Publish Center setup required", response.text)
+
+    def test_real_submission_route_remains_fail_closed(self):
+        app = FastAPI()
+        templates = Jinja2Templates(directory=Path(__file__).parents[1] / "app" / "templates")
+        install_marketplace_publish(app, templates)
+        with TestClient(app) as client:
+            response = client.post("/channels/publish/1/submit")
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("submissions are disabled", response.json()["detail"])
+
+    def test_opportunities_require_match_stock_and_saved_price(self):
+        rows = walmart_opportunities(self.db)
+        self.assertEqual([row["product_id"] for row in rows], [1])
+        self.db.execute("UPDATE inventory SET quantity_reserved=quantity_on_hand")
+        row = walmart_opportunities(self.db)[0]
+        self.assertFalse(row["confirmed_stock"])
+        self.assertEqual(row["stock_status"], "Stock not confirmed")
+        self.assertIsNone(row["total_opportunity"])
+        self.assertEqual(walmart_opportunities(self.db, opportunity_filter="in_stock"), [])
+        self.assertEqual(
+            walmart_opportunities(self.db, opportunity_filter="inventory_hunt")[0]["product_id"], 1,
+        )
+
+    def test_zero_quantity_is_inventory_hunt_not_known_out_of_stock(self):
+        self.db.execute("UPDATE inventory SET quantity_on_hand=0,quantity_reserved=0")
+        self.draft(price="29.88", quantity="0", weight="1", shipping="6", fee_rate="10")
+        row = walmart_opportunities(self.db)[0]
+        self.assertIn("stock not confirmed", row["opportunity_label"].lower())
+        self.assertNotIn("out of stock", row["opportunity_label"].lower())
+        self.assertEqual(row["available_quantity"], 0)
+        self.assertIsNone(row["total_opportunity"])
+        self.assertFalse(row["location_known"])
+
+    def test_opportunity_economics_are_before_fee_until_verified(self):
+        row = self.draft(price="7.99", quantity="2", weight="1", shipping="6", fee_rate="")
+        self.assertEqual(row["status"], "READY")
+        opportunity = walmart_opportunities(self.db)[0]
+        self.assertIsNone(opportunity["profit"])
+        self.assertEqual(str(opportunity["before_fee_profit"]), "-2.01")
+        self.assertIsNone(opportunity["total_opportunity"])
+        self.draft(price="7.99", quantity="2", weight="1", shipping="6", fee_rate="10")
+        opportunity = walmart_opportunities(self.db)[0]
+        self.assertEqual(str(opportunity["profit"]), "-2.81")
+        self.assertEqual(str(opportunity["total_opportunity"]), "-39.34")
+
+    def test_opportunity_location_breakdown_does_not_change_inventory(self):
+        before = list(self.db.execute("SELECT * FROM inventory"))
+        self.db.execute("ALTER TABLE inventory ADD COLUMN location_id INTEGER")
+        self.db.execute("ALTER TABLE inventory ADD COLUMN container_id TEXT")
+        self.db.execute("UPDATE inventory SET location_id=7,container_id='BIN-A'")
+        self.db.execute("CREATE TABLE inventory_locations(location_id INTEGER PRIMARY KEY,location_name TEXT)")
+        self.db.execute("INSERT INTO inventory_locations VALUES(7,'Storage Yard')")
+        self.db.execute("CREATE TABLE product_pick_slots(product_id INTEGER,location_id INTEGER,container_id TEXT)")
+        self.db.execute("INSERT INTO product_pick_slots VALUES(1,7,'PICK-1')")
+        location = walmart_opportunities(self.db)[0]["locations"][0]
+        self.assertEqual((location["location_name"], location["container_label"], location["pick_slot"]),
+                         ("Storage Yard", "BIN-A", "PICK-1"))
+        self.assertEqual(location["available_quantity"], 14)
+        opportunity = walmart_opportunities(self.db)[0]
+        self.assertEqual(opportunity["location_precision"], "precise")
+        self.assertFalse(opportunity["needs_locating"])
+        after_values = [(row["inventory_id"], row["product_id"], row["quantity_on_hand"], row["quantity_reserved"])
+                        for row in self.db.execute("SELECT * FROM inventory")]
+        before_values = [(row["inventory_id"], row["product_id"], row["quantity_on_hand"], row["quantity_reserved"])
+                         for row in before]
+        self.assertEqual(after_values, before_values)
+
+    def test_confirmed_stock_without_mapping_remains_ranked_and_needs_locating(self):
+        self.db.execute("UPDATE walmart_catalog_matches SET price_amount=29.88")
+        self.draft(price="29.88", quantity="2", weight="1", shipping="6", fee_rate="10")
+        row = walmart_opportunities(self.db)[0]
+        self.assertTrue(row["confirmed_stock"])
+        self.assertEqual(row["location_precision"], "unmapped")
+        self.assertEqual(row["location_status"], "Location unknown — needs location scan")
+        self.assertTrue(row["needs_locating"])
+        self.assertEqual(row["opportunity_label"], "Strong Walmart opportunity — needs locating")
+        self.assertEqual(walmart_opportunities(self.db, opportunity_filter="needs_locating")[0]["product_id"], 1)
+        self.assertEqual(walmart_opportunities(self.db, opportunity_filter="location_known"), [])
+
+    def test_general_location_is_distinct_from_precise_location(self):
+        self.db.execute("ALTER TABLE inventory ADD COLUMN location_id INTEGER")
+        self.db.execute("ALTER TABLE inventory ADD COLUMN container_id TEXT")
+        self.db.execute("UPDATE inventory SET location_id=8,container_id=NULL")
+        self.db.execute("CREATE TABLE inventory_locations(location_id INTEGER PRIMARY KEY,location_name TEXT)")
+        self.db.execute("INSERT INTO inventory_locations VALUES(8,'Reserve Trailer Area')")
+        row = walmart_opportunities(self.db)[0]
+        self.assertEqual(row["location_precision"], "general")
+        self.assertTrue(row["location_known"])
+        self.assertTrue(row["needs_locating"])
+        self.assertIn("General location known", row["location_status"])
 
 
 if __name__ == "__main__":

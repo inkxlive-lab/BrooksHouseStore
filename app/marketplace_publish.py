@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import sqlite3
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import urlencode
 
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -24,6 +26,7 @@ CHANNELS = ("walmart", "amazon")
 FINAL_SUBMISSION_STATUSES = {"SUBMITTED", "PROCESSING", "PUBLISHED", "ALREADY LISTED"}
 AMAZON_MARKETPLACE_ID = "ATVPDKIKX0DER"
 WALMART_PRICE_FRESH_DAYS = 7
+LOGGER = logging.getLogger(__name__)
 
 
 def _now() -> str:
@@ -571,8 +574,72 @@ def refresh_publish(connection: sqlite3.Connection, publish_id: int, adapter: Pu
     return updated
 
 
+def _search_product_ranks(connection: sqlite3.Connection, search: str) -> dict[int, int] | None:
+    term = _text(search).casefold()
+    if not term:
+        return None
+    ranks: dict[int, int] = {}
+
+    def add(product_id: Any, rank: int) -> None:
+        if product_id is None:
+            return
+        key = int(product_id)
+        ranks[key] = min(rank, ranks.get(key, rank))
+
+    like = f"%{term}%"
+    for row in connection.execute(
+        """SELECT product_id,product_name,description,brand FROM products
+           WHERE lower(COALESCE(product_name,'')) LIKE ?
+              OR lower(COALESCE(description,'')) LIKE ?
+              OR lower(COALESCE(brand,'')) LIKE ?""", (like, like, like),
+    ):
+        add(row["product_id"], 20)
+    if term.isdigit():
+        row = connection.execute("SELECT product_id FROM products WHERE product_id=?", (int(term),)).fetchone()
+        if row:
+            add(row["product_id"], 0)
+    digits = _digits(term)
+    if digits and _table_exists(connection, "product_barcodes"):
+        for row in connection.execute("SELECT product_id,barcode FROM product_barcodes"):
+            barcode = _digits(row["barcode"])
+            if barcode == digits or _lookup(barcode) == _lookup(digits):
+                add(row["product_id"], 0)
+            elif digits in barcode:
+                add(row["product_id"], 10)
+    if _table_exists(connection, "walmart_catalog_matches"):
+        columns = _columns(connection, "walmart_catalog_matches")
+        searchable = [name for name in ("walmart_item_id", "item_id", "title") if name in columns]
+        if searchable:
+            conditions = " OR ".join(f"lower(COALESCE(wcm.\"{name}\",'')) LIKE ?" for name in searchable)
+            for row in connection.execute(
+                f"""SELECT DISTINCT pb.product_id FROM walmart_catalog_matches wcm
+                    JOIN product_barcodes pb ON wcm.barcode_lookup=CASE
+                      WHEN LTRIM(TRIM(CAST(pb.barcode AS TEXT)),'0')='' THEN '0'
+                      ELSE LTRIM(TRIM(CAST(pb.barcode AS TEXT)),'0') END
+                    WHERE {conditions}""", [like] * len(searchable),
+            ):
+                add(row["product_id"], 5)
+    for listings, links, listing_key, fields in (
+        ("walmart_listings", "walmart_product_links", "walmart_listing_id", ("seller_sku",)),
+        ("amazon_listings", "amazon_product_links", "amazon_listing_id", ("seller_sku", "asin")),
+    ):
+        if not (_table_exists(connection, listings) and _table_exists(connection, links)):
+            continue
+        columns = _columns(connection, listings)
+        searchable = [name for name in fields if name in columns]
+        if not searchable:
+            continue
+        conditions = " OR ".join(f"lower(COALESCE(l.\"{name}\",'')) LIKE ?" for name in searchable)
+        for row in connection.execute(
+            f"SELECT DISTINCT x.product_id FROM {links} x JOIN {listings} l USING({listing_key}) "
+            f"WHERE x.product_id IS NOT NULL AND ({conditions})", [like] * len(searchable),
+        ):
+            add(row["product_id"], 5)
+    return ranks
+
+
 def walmart_candidate_products(
-    connection: sqlite3.Connection, candidate_filter: str = "walmart_eligible",
+    connection: sqlite3.Connection, candidate_filter: str = "walmart_eligible", search: str = "",
 ) -> list[dict[str, Any]]:
     products = [dict(row) for row in connection.execute(
         "SELECT product_id,product_name,brand,store_price FROM products WHERE active=1 ORDER BY product_name"
@@ -610,20 +677,243 @@ def walmart_candidate_products(
         product["walmart_candidate_status"] = (
             "ALREADY_LISTED" if product_id in existing_products else status_by_product.get(product_id, "UNKNOWN")
         )
+    queue_status: dict[int, set[str]] = {}
+    if schema_installed(connection):
+        for row in connection.execute("SELECT product_id,status FROM marketplace_publish_queue"):
+            queue_status.setdefault(int(row["product_id"]), set()).add(_text(row["status"]).upper())
+    search_ranks = _search_product_ranks(connection, search)
+    if search_ranks is not None:
+        products = [item for item in products if int(item["product_id"]) in search_ranks]
+        products.sort(key=lambda item: (search_ranks[int(item["product_id"])], _text(item["product_name"]).casefold()))
     if candidate_filter == "walmart_review":
         return [item for item in products if item["walmart_candidate_status"] not in {"MATCH", "ALREADY_LISTED"}][:1000]
+    if candidate_filter == "already_listed":
+        return [item for item in products if item["walmart_candidate_status"] == "ALREADY_LISTED"][:1000]
+    if candidate_filter in {"ready", "needs_attention"}:
+        wanted = "READY" if candidate_filter == "ready" else "NEEDS ATTENTION"
+        return [item for item in products if wanted in queue_status.get(int(item["product_id"]), set())][:1000]
     if candidate_filter == "all":
         return products[:1000]
     return [item for item in products if item["walmart_candidate_status"] in {"MATCH", "ALREADY_LISTED"}][:1000]
 
 
+def _opportunity_threshold(name: str, default: str) -> Decimal:
+    return _decimal_or_none(os.getenv(name, default)) or Decimal(default)
+
+
+def _inventory_breakdown(connection: sqlite3.Connection, product_ids: list[int]) -> dict[int, list[dict[str, Any]]]:
+    result = {product_id: [] for product_id in product_ids}
+    if not product_ids or not _table_exists(connection, "inventory"):
+        return result
+    placeholders = ",".join("?" for _ in product_ids)
+    inventory_columns = _columns(connection, "inventory")
+    has_location = "location_id" in inventory_columns
+    has_container = "container_id" in inventory_columns
+    location_id = "i.location_id" if has_location else "NULL AS location_id"
+    container_id = "i.container_id" if has_container else "NULL AS container_id"
+    location_join = ""
+    location_name = "NULL AS location_name"
+    if has_location and _table_exists(connection, "inventory_locations"):
+        location_join = "LEFT JOIN inventory_locations il ON il.location_id=i.location_id"
+        location_name = "il.location_name"
+    pick_join = ""
+    pick_slot = "NULL AS pick_slot"
+    if has_location and _table_exists(connection, "product_pick_slots"):
+        pick_join = "LEFT JOIN product_pick_slots ps ON ps.product_id=i.product_id AND ps.location_id=i.location_id"
+        pick_slot = "ps.container_id AS pick_slot"
+    rows = connection.execute(
+        f"""SELECT i.product_id,{location_id},{location_name},{container_id},{pick_slot},
+                   SUM(MAX(COALESCE(i.quantity_on_hand,0)-COALESCE(i.quantity_reserved,0),0)) AS available_quantity
+            FROM inventory i {location_join} {pick_join}
+            WHERE i.product_id IN ({placeholders})
+            GROUP BY 1,2,3,4,5
+            HAVING available_quantity>0
+            ORDER BY 1,3,4""", product_ids,
+    ).fetchall()
+    for row in rows:
+        mapped_name = _text(row["location_name"])
+        container = _text(row["container_id"])
+        slot = _text(row["pick_slot"])
+        display_location = mapped_name or "Location unknown — needs location scan"
+        if mapped_name and not (container or slot):
+            display_location += " — general location; needs container/location scan"
+        result[int(row["product_id"])].append({
+            "location_id": row["location_id"],
+            "location_name": display_location,
+            "container_id": container,
+            "container_label": container,
+            "pick_slot": slot,
+            "quantity": int(row["available_quantity"] or 0),
+            "available_quantity": int(row["available_quantity"] or 0),
+            "mapped": bool(mapped_name),
+        })
+    return result
+
+
+def walmart_opportunities(
+    connection: sqlite3.Connection, search: str = "", sort: str = "profit",
+    opportunity_filter: str = "all",
+) -> list[dict[str, Any]]:
+    if not (_table_exists(connection, "walmart_catalog_matches") and _table_exists(connection, "product_barcodes")):
+        return []
+    rows = connection.execute(
+        """SELECT p.product_id,p.product_name,p.brand,p.average_cost,p.store_price,
+                  pb.barcode,wcm.walmart_item_id,wcm.title AS walmart_title,wcm.image_url,
+                  wcm.price_amount,wcm.price_currency,wcm.checked_at
+           FROM products p JOIN product_barcodes pb USING(product_id)
+           JOIN walmart_catalog_matches wcm ON wcm.barcode_lookup=CASE
+             WHEN LTRIM(TRIM(CAST(pb.barcode AS TEXT)),'0')='' THEN '0'
+             ELSE LTRIM(TRIM(CAST(pb.barcode AS TEXT)),'0') END
+           WHERE p.active=1 AND upper(COALESCE(wcm.match_status,''))='MATCH'
+             AND wcm.price_amount IS NOT NULL AND wcm.price_amount>0
+           ORDER BY p.product_id,wcm.checked_at DESC,wcm.rowid DESC"""
+    ).fetchall()
+    search_ranks = _search_product_ranks(connection, search)
+    base: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        product_id = int(row["product_id"])
+        if product_id in base or (search_ranks is not None and product_id not in search_ranks):
+            continue
+        base[product_id] = dict(row)
+    if not base:
+        return []
+    product_ids = list(base)
+    placeholders = ",".join("?" for _ in product_ids)
+    availability = {
+        int(row["product_id"]): int(row["available_quantity"] or 0)
+        for row in connection.execute(
+            f"""SELECT product_id,SUM(MAX(COALESCE(quantity_on_hand,0)-COALESCE(quantity_reserved,0),0)) available_quantity
+                FROM inventory WHERE product_id IN ({placeholders}) GROUP BY product_id""", product_ids,
+        )
+    }
+    queue = {}
+    if schema_installed(connection):
+        queue = {
+            int(row["product_id"]): dict(row)
+            for row in connection.execute(
+                f"SELECT * FROM marketplace_publish_queue WHERE channel='walmart' AND product_id IN ({placeholders})",
+                product_ids,
+            )
+        }
+    locations = _inventory_breakdown(connection, product_ids)
+    strong_profit = _opportunity_threshold("WALMART_OPPORTUNITY_STRONG_PROFIT", "10.00")
+    strong_margin = _opportunity_threshold("WALMART_OPPORTUNITY_STRONG_MARGIN", "30.00")
+    poor_profit = _opportunity_threshold("WALMART_OPPORTUNITY_POOR_PROFIT", "1.00")
+    opportunities = []
+    for product_id, item in base.items():
+        available = availability.get(product_id, 0)
+        saved = queue.get(product_id, {})
+        weight = _decimal_or_none(saved.get("shipping_weight_lb"), allow_zero=False)
+        shipping = _decimal_or_none(saved.get("estimated_shipping_cost")) or _walmart_shipping_default()
+        fee_rate = _decimal_or_none(saved.get("marketplace_fee_rate"))
+        price = _decimal_or_none(item.get("price_amount"), allow_zero=False)
+        cost = _decimal_or_none(item.get("average_cost"))
+        economics = {"commission": None, "proceeds": None, "profit": None, "margin": None,
+                     "before_fee_profit": None, "planning_margin": None, "poor": False}
+        if weight is not None and price is not None and cost is not None:
+            economics = walmart_economics({"average_cost": cost}, {
+                "proposed_price": price, "estimated_shipping_cost": shipping,
+                "marketplace_fee_rate": fee_rate,
+            })
+        final_profit = economics.get("profit")
+        before_fee = economics.get("before_fee_profit")
+        margin = economics.get("margin") if final_profit is not None else economics.get("planning_margin")
+        confirmed_stock = available > 0
+        product_locations = locations.get(product_id, [])
+        location_known = any(location["mapped"] for location in product_locations)
+        precise_location = any(
+            location["mapped"] and (location["container_id"] or location["pick_slot"])
+            for location in product_locations
+        )
+        location_precision = (
+            "precise" if precise_location else "general" if location_known else "unmapped"
+        )
+        location_status = {
+            "precise": "Precise location known",
+            "general": "General location known — needs container/location scan",
+            "unmapped": "Location unknown — needs location scan",
+        }[location_precision]
+        total = (
+            (final_profit * available).quantize(Decimal("0.01"))
+            if confirmed_stock and final_profit is not None else None
+        )
+        if weight is None:
+            opportunity_state = "Missing weight"
+        elif cost is None:
+            opportunity_state = "Missing cost"
+        elif final_profit is not None and final_profit >= strong_profit and (margin or 0) >= strong_margin:
+            opportunity_state = "Strong opportunity"
+        elif (final_profit if final_profit is not None else before_fee) is not None and (
+            final_profit if final_profit is not None else before_fee
+        ) <= poor_profit:
+            opportunity_state = "Poor seller-fulfilled economics"
+        else:
+            opportunity_state = "Maybe"
+        css_state = "strong" if opportunity_state == "Strong opportunity" else (
+            "poor" if opportunity_state == "Poor seller-fulfilled economics" else "maybe"
+        )
+        if not confirmed_stock:
+            opportunity_state = (
+                "Strong opportunity — inventory hunt"
+                if opportunity_state == "Strong opportunity" else
+                "Walmart opportunity — stock not confirmed"
+            )
+        elif opportunity_state == "Strong opportunity" and not precise_location:
+            opportunity_state = "Strong Walmart opportunity — needs locating"
+        opportunities.append({
+            **item, "available_quantity": available, "shipping_weight_lb": weight,
+            "shipping_estimate": shipping, "fee_rate": fee_rate, "economics": economics,
+            "estimated_profit": final_profit, "display_margin": margin,
+            "total_opportunity": total, "opportunity_state": opportunity_state,
+            "locations": product_locations, "price_note": _walmart_price_note(item),
+            "wfs_status": "Future analysis — verified WFS fees are not available.",
+            "walmart_price": price, "estimated_shipping_cost": shipping,
+            "marketplace_fee": economics.get("commission"), "profit": final_profit,
+            "before_fee_profit": before_fee, "margin": economics.get("margin"),
+            "before_fee_margin": economics.get("planning_margin"),
+            "opportunity_label": opportunity_state, "opportunity_css": css_state,
+            "confirmed_stock": confirmed_stock, "stock_status": (
+                "Confirmed stock" if confirmed_stock else "Stock not confirmed"
+            ),
+            "location_known": location_known,
+            "precise_location": precise_location, "location_precision": location_precision,
+            "location_status": location_status, "needs_locating": not precise_location,
+        })
+    allowed_filters = {
+        "all", "in_stock", "inventory_hunt", "location_known", "location_unknown", "needs_locating",
+    }
+    if opportunity_filter not in allowed_filters:
+        opportunity_filter = "all"
+    if opportunity_filter == "in_stock":
+        opportunities = [row for row in opportunities if row["confirmed_stock"]]
+    elif opportunity_filter == "inventory_hunt":
+        opportunities = [row for row in opportunities if not row["confirmed_stock"]]
+    elif opportunity_filter == "location_known":
+        opportunities = [row for row in opportunities if row["location_known"]]
+    elif opportunity_filter == "location_unknown":
+        opportunities = [row for row in opportunities if not row["location_known"]]
+    elif opportunity_filter == "needs_locating":
+        opportunities = [row for row in opportunities if row["needs_locating"]]
+    keys = {
+        "profit": lambda row: row["estimated_profit"],
+        "margin": lambda row: row["display_margin"],
+        "price": lambda row: _decimal_or_none(row["price_amount"]),
+        "quantity": lambda row: Decimal(row["available_quantity"]),
+        "total": lambda row: row["total_opportunity"],
+    }
+    selected = keys.get(sort, keys["profit"])
+    opportunities.sort(key=lambda row: (selected(row) is not None, selected(row) or Decimal("-999999")), reverse=True)
+    return opportunities[:250]
+
+
 def publish_page_data(
     connection: sqlite3.Connection, product_id: int | None = None, queue_filter: str = "all",
-    candidate_filter: str = "walmart_eligible",
+    candidate_filter: str = "walmart_eligible", search: str = "", opportunity_sort: str = "profit",
+    opportunity_filter: str = "all",
 ) -> dict[str, Any]:
-    if candidate_filter not in {"walmart_eligible", "walmart_review", "all"}:
+    if candidate_filter not in {"walmart_eligible", "walmart_review", "all", "already_listed", "ready", "needs_attention"}:
         candidate_filter = "walmart_eligible"
-    products = walmart_candidate_products(connection, candidate_filter)
+    products = walmart_candidate_products(connection, candidate_filter, search)
     product = _product(connection, product_id) if product_id else None
     if product and not any(int(item["product_id"]) == int(product_id) for item in products):
         products.insert(0, {
@@ -653,7 +943,10 @@ def publish_page_data(
         )]
     return {"schema_installed": schema_installed(connection), "products": products, "product": product,
             "states": states, "queue": queue, "queue_filter": queue_filter,
-            "candidate_filter": candidate_filter}
+            "candidate_filter": candidate_filter, "search": search,
+            "opportunity_sort": opportunity_sort, "opportunity_filter": opportunity_filter,
+            "opportunities": walmart_opportunities(connection, search, opportunity_sort, opportunity_filter)
+            if candidate_filter == "walmart_eligible" else []}
 
 
 def _require_operator(request: Request) -> None:
@@ -662,14 +955,33 @@ def _require_operator(request: Request) -> None:
         raise HTTPException(status_code=403, detail="Owner/admin or manager access is required.")
 
 
+def _publish_redirect(product_id: int | None = None, *, candidate_filter: str = "walmart_eligible",
+                      search: str = "", message: str = "", error: str = "") -> RedirectResponse:
+    params: dict[str, Any] = {"candidate_filter": candidate_filter}
+    if product_id is not None:
+        params["product_id"] = product_id
+    if search:
+        params["search"] = search
+    if message:
+        params["message"] = message
+    if error:
+        params["error"] = error
+    return RedirectResponse("/channels/publish?" + urlencode(params), status_code=303)
+
+
 def install_marketplace_publish(app: FastAPI, templates: Jinja2Templates) -> None:
     @app.get("/channels/publish", response_class=HTMLResponse)
     def marketplace_publish_page(request: Request, product_id: int | None = None, queue_filter: str = "all",
                                  candidate_filter: str = "walmart_eligible",
+                                 search: str = "", opportunity_sort: str = "profit",
+                                 opportunity_filter: str = "all",
                                  message: str = "", error: str = ""):
         _require_operator(request)
         with connect() as connection:
-            data = publish_page_data(connection, product_id, queue_filter, candidate_filter)
+            data = publish_page_data(
+                connection, product_id, queue_filter, candidate_filter, search.strip(), opportunity_sort,
+                opportunity_filter,
+            )
         return templates.TemplateResponse(request=request, name="marketplace_publish.html",
                                           context={**data, "message": message, "error": error})
 
@@ -678,19 +990,45 @@ def install_marketplace_publish(app: FastAPI, templates: Jinja2Templates) -> Non
                                   seller_sku: str = Form(""), proposed_price: str = Form(""),
                                   proposed_quantity: str = Form("0"), selected_image_id: int | None = Form(None),
                                   shipping_weight_lb: str = Form(""), estimated_shipping_cost: str = Form(""),
-                                  marketplace_fee_rate: str = Form("")):
+                                  marketplace_fee_rate: str = Form(""),
+                                  candidate_filter: str = Form("walmart_eligible"), search: str = Form("")):
         _require_operator(request)
         try:
             with connect() as connection:
+                if not schema_installed(connection):
+                    return _publish_redirect(
+                        product_id, candidate_filter=candidate_filter, search=search,
+                        error="Draft saving unavailable — Publish Center setup required. The queue/event schema is not installed.",
+                    )
                 row = save_draft(connection, channel=channel, product_id=product_id, seller_sku=seller_sku,
                                  proposed_price=proposed_price, proposed_quantity=proposed_quantity,
                                  selected_image_id=selected_image_id, shipping_weight_lb=shipping_weight_lb,
                                  estimated_shipping_cost=estimated_shipping_cost,
                                  marketplace_fee_rate=marketplace_fee_rate)
-            message = f"{channel.title()} draft saved as {row.get('status', 'DRAFT')}."
-            return RedirectResponse(f"/channels/publish?product_id={product_id}&message={message.replace(' ', '+')}", status_code=303)
-        except Exception as exc:
-            return RedirectResponse(f"/channels/publish?product_id={product_id}&error={str(exc).replace(' ', '+')}", status_code=303)
+            warnings = json.loads(row.get("validation_json") or "[]")
+            if warnings:
+                return _publish_redirect(
+                    product_id, candidate_filter=candidate_filter, search=search,
+                    error=f"Draft saved as {row.get('status', 'NEEDS ATTENTION')}: " + "; ".join(warnings),
+                )
+            return _publish_redirect(
+                product_id, candidate_filter=candidate_filter, search=search,
+                message=f"{channel.title()} draft saved successfully as {row.get('status', 'DRAFT')}. Publish Queue updated.",
+            )
+        except (ValueError, RuntimeError) as exc:
+            return _publish_redirect(product_id, candidate_filter=candidate_filter, search=search, error=str(exc))
+        except sqlite3.Error:
+            LOGGER.exception("Publish Center draft database error for product %s", product_id)
+            return _publish_redirect(
+                product_id, candidate_filter=candidate_filter, search=search,
+                error="Draft could not be saved because of a database error. No marketplace action was taken.",
+            )
+        except Exception:
+            LOGGER.exception("Unexpected Publish Center draft error for product %s", product_id)
+            return _publish_redirect(
+                product_id, candidate_filter=candidate_filter, search=search,
+                error="Draft could not be saved. No marketplace action was taken; review the server log.",
+            )
 
     @app.post("/channels/publish/{publish_id}/submit")
     def marketplace_publish_submit(request: Request, publish_id: int):
