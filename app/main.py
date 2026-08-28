@@ -383,7 +383,7 @@ from app.config import should_run_background_jobs
 from app.database_resolution import configured_sqlite_path
 from app.services.marketplace_order_ingestion import (
     alert_counts, mark_alert_reviewed, start_worker, stop_worker, sync_health,
-    terminal_local_status,
+    terminal_local_status, run_locked_daily_recap,
 )
 from app.services.search_helpers import (
     clean_search_term,
@@ -13482,7 +13482,7 @@ def _daily_recap_notification_loop():
     sleep(30)
     while True:
         try:
-            maybe_send_daily_recaps()
+            run_locked_daily_recap(maybe_send_daily_recaps)
         except Exception as error:
             print(f"BrooksHouse daily recap check skipped: {error}")
         sleep(60)

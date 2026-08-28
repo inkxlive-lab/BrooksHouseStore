@@ -539,6 +539,26 @@ def release_operation_lock(lock_name: str, owner_token: str, *, database: str | 
         connection.commit()
 
 
+def run_locked_daily_recap(callback: Callable[[], Any], *, database: str | Path | None = None,
+                           allow_fixture: bool = False) -> bool:
+    """Run one recap check under the shared durable operation lock."""
+    owner = f"{socket.gethostname()}:{os.getpid()}:{threading.get_ident()}:{uuid.uuid4().hex}"
+    if not acquire_operation_lock(
+        "daily_recap_notifications", owner, ttl_seconds=120,
+        database=database, allow_fixture=allow_fixture,
+        details="scheduled daily recap check",
+    ):
+        return False
+    try:
+        callback()
+        return True
+    finally:
+        release_operation_lock(
+            "daily_recap_notifications", owner,
+            database=database, allow_fixture=allow_fixture,
+        )
+
+
 def run_sync_cycle(channels: list[str] | tuple[str, ...] | None = None, *, database: str | Path | None = None,
                    allow_fixture: bool = False) -> dict[str, Any]:
     from app.walmart_order_service import sync_orders

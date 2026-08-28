@@ -20,7 +20,8 @@ from app.services.operations_report_pdf import render_report_pdf
 from app.services.marketplace_order_ingestion import (_SYNC_CYCLE_LOCK, _channel_due_times, acquire_operation_lock,
                                                       begin_sync_run, ensure_marketplace_operations_schema,
                                                       finish_sync_run, reconcile_order_status, release_operation_lock,
-                                                      run_sync_cycle, start_worker, stop_worker, sync_health)
+                                                      run_locked_daily_recap, run_sync_cycle, start_worker,
+                                                      stop_worker, sync_health)
 from app.walmart_order_service import is_acknowledgment_reconciliation_signal
 
 
@@ -314,6 +315,25 @@ class OperationsReportsTests(unittest.TestCase):
             walmart_sync.assert_not_called(); amazon_sync.assert_not_called()
         finally:
             release_operation_lock("marketplace_refresh", "first", database=self.db, allow_fixture=True)
+
+    def test_daily_recap_lock_prevents_duplicate_notification_check(self):
+        calls = []
+        self.assertTrue(acquire_operation_lock(
+            "daily_recap_notifications", "first", database=self.db, allow_fixture=True,
+        ))
+        try:
+            self.assertFalse(run_locked_daily_recap(
+                lambda: calls.append("sent"), database=self.db, allow_fixture=True,
+            ))
+            self.assertEqual(calls, [])
+        finally:
+            release_operation_lock(
+                "daily_recap_notifications", "first", database=self.db, allow_fixture=True,
+            )
+        self.assertTrue(run_locked_daily_recap(
+            lambda: calls.append("sent"), database=self.db, allow_fixture=True,
+        ))
+        self.assertEqual(calls, ["sent"])
 
     def test_in_process_refresh_guard_prevents_overlap(self):
         self.assertTrue(_SYNC_CYCLE_LOCK.acquire(blocking=False))
