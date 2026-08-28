@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Screen Directory | BrooksHouse OS</title>
+    <style>
+        :root{--wine:#86151d;--ink:#202830;--paper:#f5f1ea;--card:#fff;--line:#d9d0c5;--blue:#087ac1;--muted:#666}
+        *{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.45 Arial,sans-serif}
+        header{background:linear-gradient(135deg,#72131a,var(--wine));color:#fff;padding:22px}.head{max-width:1400px;margin:auto;display:flex;justify-content:space-between;gap:20px;align-items:center;flex-wrap:wrap}
+        header h1{margin:2px 0;font-size:clamp(1.7rem,4vw,2.5rem)}header p{margin:0;opacity:.9}header a{color:#fff;font-weight:800}
+        main{max-width:1400px;margin:auto;padding:20px}.counts{display:grid;grid-template-columns:repeat(5,minmax(130px,1fr));gap:12px;margin-bottom:18px}.count{background:#fff;border:1px solid var(--line);border-radius:14px;padding:15px}.count strong{display:block;font-size:1.65rem;color:var(--wine)}
+        .controls{position:sticky;top:0;z-index:3;background:rgba(245,241,234,.97);padding:12px 0;display:grid;grid-template-columns:minmax(220px,2fr) minmax(180px,1fr) auto;gap:10px;align-items:end}.controls label{font-weight:800}.controls input[type=search],.controls select{display:block;width:100%;min-height:45px;margin-top:5px;border:1px solid #aaa;border-radius:9px;padding:10px;background:#fff}.toggle{display:flex;gap:8px;align-items:center;min-height:45px}
+        .validation{padding:11px 14px;border-radius:10px;background:#e9f7ef;border:1px solid #83c59e;margin-bottom:18px}.validation.bad{background:#fff1e7;border-color:#e2a36c}
+        .category{margin:27px 0}.category h2{border-bottom:3px solid var(--wine);padding-bottom:7px}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:14px}.screen{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;display:flex;flex-direction:column;min-height:265px}.screen h3{margin:0 0 7px;font-size:1.2rem}.screen p{margin:0 0 12px;color:#404850}.meta{display:grid;gap:5px;margin-top:auto}.meta div{overflow-wrap:anywhere}.label{font-weight:800;color:#555}.badges{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0}.badge{background:#e8edf2;border-radius:999px;padding:4px 9px;font-size:.78rem;font-weight:800}.badge.unlinked{background:#ffe1bf;color:#783500}.badge.developer{background:#efe2ff;color:#572782}.badge.missing{background:#ffd8d8;color:#8a1212}.open{display:inline-block;align-self:flex-start;margin-top:8px;padding:10px 13px;border-radius:9px;background:var(--wine);color:#fff;text-decoration:none;font-weight:900}.empty{display:none;background:#fff;border-radius:12px;padding:22px;text-align:center}.review{font-size:.85rem;color:#754b00;background:#fff6d9;padding:7px;border-radius:7px}.route{font-family:Consolas,monospace}
+        @media(max-width:800px){.counts{grid-template-columns:repeat(2,1fr)}.controls{position:static;grid-template-columns:1fr}.grid{grid-template-columns:1fr}}
+    </style>
+</head>
+<body>
+<header><div class="head"><div><p>THE BROOKSHOUSE STORE</p><h1>BrooksHouse Screen Directory</h1><p>A living map of routes, workflows, access, and navigation coverage.</p></div><nav><a href="/dashboard">← Dashboard</a></nav></div></header>
+<main>
+    <section class="counts" aria-label="Directory counts">
+        <div class="count"><strong>{{ counts.total }}</strong>Total Screens</div>
+        <div class="count"><strong>{{ counts.dashboard }}</strong>Dashboard / More</div>
+        <div class="count"><strong>{{ counts.subscreens }}</strong>Sub-screens</div>
+        <div class="count"><strong>{{ counts.admin_developer }}</strong>Admin / Developer</div>
+        <div class="count"><strong>{{ counts.unlinked }}</strong>Unlinked</div>
+    </section>
+    <section class="controls" aria-label="Directory filters">
+        <label>Search screens<input id="screen-search" type="search" placeholder="Name, purpose, route, or category" autocomplete="off"></label>
+        <label>Category<select id="category-filter"><option value="">All categories</option>{% for category in categories %}<option>{{ category }}</option>{% endfor %}</select></label>
+        <label class="toggle"><input id="unlinked-filter" type="checkbox"> Show Unlinked Screens only</label>
+    </section>
+    <div class="validation {{ 'bad' if counts.missing_routes else '' }}">
+        {% if counts.missing_routes %}<strong>Route validation needs attention:</strong> {{ counts.missing_routes }} registry route(s) are not currently installed: {{ validation.missing_routes|join(', ') }}
+        {% else %}<strong>Route validation:</strong> every registry entry matches an installed FastAPI route.{% endif %}
+    </div>
+    <p id="no-results" class="empty">No screens match these filters.</p>
+    {% for category in categories %}
+    <section class="category" data-category-section="{{ category }}">
+        <h2>{{ category }}</h2><div class="grid">
+        {% for screen in screens if screen.category == category %}
+            <article class="screen" data-search="{{ (screen.name ~ ' ' ~ screen.description ~ ' ' ~ screen.route ~ ' ' ~ screen.category)|lower }}" data-category="{{ screen.category }}" data-unlinked="{{ 'true' if screen.unlinked else 'false' }}">
+                <h3>{{ screen.name }}</h3><p>{{ screen.description }}</p>
+                <div class="badges">{% for badge in screen.badges %}<span class="badge {{ badge|lower|replace(' ','-') }}">{{ badge }}</span>{% endfor %}{% if not screen.route_exists %}<span class="badge missing">Missing route</span>{% endif %}</div>
+                {% if screen.review_note %}<div class="review">{{ screen.review_note }}</div>{% endif %}
+                <div class="meta"><div><span class="label">Route:</span> <span class="route">{{ screen.route }}</span></div><div><span class="label">Navigation:</span> {{ screen.navigation }}</div><div><span class="label">Access:</span> {{ screen.access }}</div><div><span class="label">Template:</span> {{ screen.template or 'Redirect / shared response' }}</div></div>
+                <a class="open" href="{{ screen.open_route }}">Open Screen →</a>
+            </article>
+        {% endfor %}
+        </div>
+    </section>
+    {% endfor %}
+</main>
+<script>
+(() => {
+    const search=document.getElementById('screen-search');
+    const category=document.getElementById('category-filter');
+    const unlinked=document.getElementById('unlinked-filter');
+    const cards=[...document.querySelectorAll('.screen')];
+    const sections=[...document.querySelectorAll('[data-category-section]')];
+    const empty=document.getElementById('no-results');
+    function filter(){
+        const term=search.value.trim().toLowerCase(); let visible=0;
+        cards.forEach(card=>{const show=(!term||card.dataset.search.includes(term))&&(!category.value||card.dataset.category===category.value)&&(!unlinked.checked||card.dataset.unlinked==='true');card.hidden=!show;if(show)visible++;});
+        sections.forEach(section=>section.hidden=![...section.querySelectorAll('.screen')].some(card=>!card.hidden));
+        empty.style.display=visible?'none':'block';
+    }
+    search.addEventListener('input',filter); category.addEventListener('change',filter); unlinked.addEventListener('change',filter);
+})();
+</script>
+</body></html>

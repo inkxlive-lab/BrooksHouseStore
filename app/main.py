@@ -13577,6 +13577,10 @@ install_inventory_activity(app, templates)
 from app.operations_reports import install_operations_reports
 install_operations_reports(app, templates)
 
+# CENTRAL BROOKSHOUSE SCREEN DIRECTORY
+from app.screen_directory import install_screen_directory
+install_screen_directory(app, templates)
+
 # === BROOKSHOUSE LOCATION MASTER PHASE 1B START ===
 
 def _location_master_require_manager(request: Request):
