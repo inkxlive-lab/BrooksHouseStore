@@ -194,3 +194,8 @@ def audit_page(request: Request, batch_id: int):
 
 def install_product_enrichment(app) -> None:
     app.include_router(router)
+
+    @app.get("/product-enrichment", include_in_schema=False)
+    def legacy_product_enrichment_redirect():
+        """Keep the former short URL useful without duplicating the owner-admin screen."""
+        return RedirectResponse("/admin/product-enrichment", status_code=307)

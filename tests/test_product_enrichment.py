@@ -5,8 +5,10 @@ import unittest
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
+from fastapi.testclient import TestClient
 from jinja2 import Environment, FileSystemLoader
 from sqlalchemy import create_engine, func, inspect, select, text
 from sqlalchemy.orm import sessionmaker
@@ -17,7 +19,7 @@ from app.database.models import (
     ProductImage,
 )
 from app.migrations.product_enrichment_phase1 import TABLES, apply as apply_migration, preview
-from app.product_enrichment import _owner, _review_fields
+from app.product_enrichment import _owner, _review_fields, install_product_enrichment
 from app.services.product_enrichment_lookup import RateLimiter, internet_candidates
 from app.services.product_enrichment_workflow import (
     MAX_BATCH_SIZE, StaleProductError, apply_item, create_batch, process_next_item,
@@ -327,6 +329,24 @@ class ProductEnrichmentTests(unittest.TestCase):
             "product_enrichment_review.html", "product_enrichment_audit.html",
         ):
             environment.get_template(name)
+
+    def test_registered_enrichment_routes_and_legacy_redirect(self):
+        app = FastAPI()
+
+        @app.middleware("http")
+        async def owner_session(request, call_next):
+            request.state.auth_user = self.user
+            return await call_next(request)
+
+        install_product_enrichment(app)
+        with patch("app.product_enrichment.SessionLocal", self.Session):
+            with TestClient(app) as client:
+                response = client.get("/product-enrichment", follow_redirects=False)
+                registered = client.get("/admin/product-enrichment", follow_redirects=False)
+        self.assertEqual(response.status_code, 307)
+        self.assertEqual(response.headers["location"], "/admin/product-enrichment")
+        self.assertEqual(registered.status_code, 200)
+        self.assertIn("Product Enrichment", registered.text)
 
 
 if __name__ == "__main__":

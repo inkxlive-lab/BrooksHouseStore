@@ -99,6 +99,28 @@ class MarketplacePublishTests(unittest.TestCase):
                           shipping_weight_lb=weight, estimated_shipping_cost=shipping,
                           marketplace_fee_rate=fee_rate)
 
+    def add_walmart_opportunity(self, product_id, price, quantity=0, average_cost=4.00):
+        barcode = f"0123456789{product_id:02d}"
+        lookup = barcode.lstrip("0")
+        self.db.execute(
+            "INSERT INTO products VALUES(?,?,?,?,?,?,?,1)",
+            (product_id, f"Opportunity {product_id}", "Acme", "Trailer item", "Home", price, average_cost),
+        )
+        self.db.execute(
+            "INSERT INTO product_barcodes VALUES(?,?,?,1)", (product_id, product_id, barcode)
+        )
+        self.db.execute(
+            "INSERT INTO inventory VALUES(?,?,?,0)", (product_id, product_id, quantity)
+        )
+        self.db.execute(
+            """INSERT INTO walmart_catalog_matches
+               (match_id,barcode_lookup,barcode_exact,query_value,walmart_item_id,title,brand,description,
+                image_url,price_amount,price_currency,checked_at,standard_upc,match_status)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (product_id, lookup, barcode, barcode, f"WM{product_id}", f"Opportunity {product_id}",
+             "Acme", "Trailer item", None, price, "USD", "2026-08-01T00:00:00+00:00", barcode, "MATCH"),
+        )
+
     def route_connection(self):
         connection = sqlite3.connect(self.path, check_same_thread=False)
         connection.row_factory = sqlite3.Row
@@ -288,6 +310,19 @@ class MarketplacePublishTests(unittest.TestCase):
         self.assertIn('/images/studio?product_id=1', response.text)
         self.assertIn('/static/widget.jpg', response.text)
 
+    def test_publish_center_accepts_empty_optional_product_id(self):
+        app = FastAPI()
+        templates = Jinja2Templates(directory=Path(__file__).parents[1] / "app" / "templates")
+        install_marketplace_publish(app, templates)
+        with patch("app.marketplace_publish.connect", side_effect=self.route_connection):
+            with TestClient(app) as client:
+                base = client.get("/channels/publish?candidate_filter=walmart_eligible")
+                empty = client.get("/channels/publish?candidate_filter=walmart_eligible&product_id=")
+                invalid = client.get("/channels/publish?product_id=not-a-product")
+        self.assertEqual(base.status_code, 200)
+        self.assertEqual(empty.status_code, 200)
+        self.assertEqual(invalid.status_code, 422)
+
     def test_publish_center_reports_no_saved_image(self):
         self.db.execute("DELETE FROM product_images WHERE product_id=1")
         app = FastAPI()
@@ -371,6 +406,36 @@ class MarketplacePublishTests(unittest.TestCase):
         self.assertEqual(row["available_quantity"], 0)
         self.assertIsNone(row["total_opportunity"])
         self.assertFalse(row["location_known"])
+
+    def test_inventory_hunt_defaults_to_highest_walmart_selling_price(self):
+        self.db.execute("UPDATE inventory SET quantity_on_hand=0,quantity_reserved=0 WHERE product_id=1")
+        self.db.execute("UPDATE walmart_catalog_matches SET price_amount=5 WHERE match_id=1")
+        self.add_walmart_opportunity(2, 100, quantity=0)
+        rows = walmart_opportunities(self.db, opportunity_filter="inventory_hunt")
+        self.assertEqual([row["product_id"] for row in rows[:2]], [2, 1])
+        data = publish_page_data(self.db, opportunity_filter="inventory_hunt")
+        self.assertEqual(data["opportunity_sort"], "price")
+
+    def test_inventory_hunt_template_explains_physical_workflow_and_sort_options(self):
+        app = FastAPI()
+        templates = Jinja2Templates(directory=Path(__file__).parents[1] / "app" / "templates")
+        install_marketplace_publish(app, templates)
+        self.db.execute("UPDATE inventory SET quantity_on_hand=0,quantity_reserved=0")
+        self.db.commit()
+        with patch("app.marketplace_publish.connect", side_effect=self.route_connection):
+            with TestClient(app) as client:
+                response = client.get(
+                    "/channels/publish?candidate_filter=walmart_eligible&opportunity_filter=inventory_hunt"
+                )
+        self.assertEqual(response.status_code, 200)
+        for expected in (
+            "Highest Walmart selling price", "Highest estimated profit per found unit",
+            "Highest confirmed total opportunity", "Highest margin",
+            "Walmart price: $7.99", "BrooksHouse qty: 0 — Stock not confirmed",
+            "Location: Not located", "Action:", "Find / Scan Item", "Count / Assign Location",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, response.text)
 
     def test_opportunity_economics_are_before_fee_until_verified(self):
         row = self.draft(price="7.99", quantity="2", weight="1", shipping="6", fee_rate="")

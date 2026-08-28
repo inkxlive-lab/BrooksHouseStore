@@ -751,7 +751,7 @@ def _inventory_breakdown(connection: sqlite3.Connection, product_ids: list[int])
 
 
 def walmart_opportunities(
-    connection: sqlite3.Connection, search: str = "", sort: str = "profit",
+    connection: sqlite3.Connection, search: str = "", sort: str = "auto",
     opportunity_filter: str = "all",
 ) -> list[dict[str, Any]]:
     if not (_table_exists(connection, "walmart_catalog_matches") and _table_exists(connection, "product_barcodes")):
@@ -871,6 +871,7 @@ def walmart_opportunities(
             "marketplace_fee": economics.get("commission"), "profit": final_profit,
             "before_fee_profit": before_fee, "margin": economics.get("margin"),
             "before_fee_margin": economics.get("planning_margin"),
+            "profit_sort_value": final_profit if final_profit is not None else before_fee,
             "opportunity_label": opportunity_state, "opportunity_css": css_state,
             "confirmed_stock": confirmed_stock, "stock_status": (
                 "Confirmed stock" if confirmed_stock else "Stock not confirmed"
@@ -895,20 +896,23 @@ def walmart_opportunities(
     elif opportunity_filter == "needs_locating":
         opportunities = [row for row in opportunities if row["needs_locating"]]
     keys = {
-        "profit": lambda row: row["estimated_profit"],
+        "profit": lambda row: row["profit_sort_value"],
         "margin": lambda row: row["display_margin"],
         "price": lambda row: _decimal_or_none(row["price_amount"]),
         "quantity": lambda row: Decimal(row["available_quantity"]),
         "total": lambda row: row["total_opportunity"],
     }
-    selected = keys.get(sort, keys["profit"])
+    effective_sort = "price" if sort == "auto" and opportunity_filter == "inventory_hunt" else (
+        "profit" if sort == "auto" else sort
+    )
+    selected = keys.get(effective_sort, keys["profit"])
     opportunities.sort(key=lambda row: (selected(row) is not None, selected(row) or Decimal("-999999")), reverse=True)
     return opportunities[:250]
 
 
 def publish_page_data(
     connection: sqlite3.Connection, product_id: int | None = None, queue_filter: str = "all",
-    candidate_filter: str = "walmart_eligible", search: str = "", opportunity_sort: str = "profit",
+    candidate_filter: str = "walmart_eligible", search: str = "", opportunity_sort: str = "auto",
     opportunity_filter: str = "all",
 ) -> dict[str, Any]:
     if candidate_filter not in {"walmart_eligible", "walmart_review", "all", "already_listed", "ready", "needs_attention"}:
@@ -941,10 +945,14 @@ def publish_page_data(
             f"SELECT q.*,p.product_name FROM marketplace_publish_queue q JOIN products p USING(product_id) {where} ORDER BY q.updated_at DESC,q.publish_id DESC",
             params,
         )]
+    effective_opportunity_sort = (
+        "price" if opportunity_sort == "auto" and opportunity_filter == "inventory_hunt"
+        else "profit" if opportunity_sort == "auto" else opportunity_sort
+    )
     return {"schema_installed": schema_installed(connection), "products": products, "product": product,
             "states": states, "queue": queue, "queue_filter": queue_filter,
             "candidate_filter": candidate_filter, "search": search,
-            "opportunity_sort": opportunity_sort, "opportunity_filter": opportunity_filter,
+            "opportunity_sort": effective_opportunity_sort, "opportunity_filter": opportunity_filter,
             "opportunities": walmart_opportunities(connection, search, opportunity_sort, opportunity_filter)
             if candidate_filter == "walmart_eligible" else []}
 
@@ -969,17 +977,31 @@ def _publish_redirect(product_id: int | None = None, *, candidate_filter: str = 
     return RedirectResponse("/channels/publish?" + urlencode(params), status_code=303)
 
 
+def _optional_product_id(value: str | None) -> int | None:
+    text = _text(value)
+    if not text:
+        return None
+    try:
+        product_id = int(text)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="product_id must be a positive integer") from exc
+    if product_id < 1:
+        raise HTTPException(status_code=422, detail="product_id must be a positive integer")
+    return product_id
+
+
 def install_marketplace_publish(app: FastAPI, templates: Jinja2Templates) -> None:
     @app.get("/channels/publish", response_class=HTMLResponse)
-    def marketplace_publish_page(request: Request, product_id: int | None = None, queue_filter: str = "all",
+    def marketplace_publish_page(request: Request, product_id: str | None = None, queue_filter: str = "all",
                                  candidate_filter: str = "walmart_eligible",
-                                 search: str = "", opportunity_sort: str = "profit",
+                                 search: str = "", opportunity_sort: str = "auto",
                                  opportunity_filter: str = "all",
                                  message: str = "", error: str = ""):
         _require_operator(request)
+        selected_product_id = _optional_product_id(product_id)
         with connect() as connection:
             data = publish_page_data(
-                connection, product_id, queue_filter, candidate_filter, search.strip(), opportunity_sort,
+                connection, selected_product_id, queue_filter, candidate_filter, search.strip(), opportunity_sort,
                 opportunity_filter,
             )
         return templates.TemplateResponse(request=request, name="marketplace_publish.html",
