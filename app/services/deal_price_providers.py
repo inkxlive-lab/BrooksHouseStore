@@ -8,8 +8,14 @@ online observation into a local-store observation.
 from __future__ import annotations
 
 import os
+import json
+import statistics
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Iterable
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 from sqlalchemy import inspect, text
 
@@ -19,6 +25,13 @@ LOCATION_LOCAL = "LOCAL_STORE"
 LOCATION_ONLINE = "ONLINE"
 LOCATION_MARKETPLACE = "MARKETPLACE"
 LOCATION_UNKNOWN = "UNKNOWN_LOCATION"
+FRESHNESS_STATES = {"VERIFIED_CURRENT", "CURRENT", "STALE", "UNKNOWN"}
+QUALITY_STATES = {"TRUSTED", "ACCEPTABLE", "LOW_CONFIDENCE", "OUTLIER", "UNVERIFIED"}
+TRUSTED_RETAILERS = {
+    "walmart", "walmart.com", "target", "home depot", "the home depot", "lowe's", "lowes",
+    "ace hardware", "true value", "cvs", "walgreens", "best buy", "kroger", "kroger family",
+}
+RETAILER_ALIASES = {"the home depot": "Home Depot", "lowes": "Lowe's", "walmart": "Walmart.com"}
 
 
 def _number(value: Any) -> float | None:
@@ -38,6 +51,37 @@ def _text(value: Any) -> str | None:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _observed_datetime(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def freshness_state(value: Any, *, now: datetime | None = None, exact_match: bool = False) -> str:
+    observed = _observed_datetime(value)
+    if observed is None:
+        return "UNKNOWN"
+    age_days = max(0.0, ((now or datetime.now(timezone.utc)) - observed).total_seconds() / 86400)
+    if age_days <= 2:
+        return "VERIFIED_CURRENT" if exact_match else "CURRENT"
+    if age_days <= 14:
+        return "CURRENT"
+    return "STALE"
+
+
+def retailer_trust(retailer: Any) -> str:
+    name = str(retailer or "").casefold().strip()
+    if name in TRUSTED_RETAILERS or any(value in name for value in TRUSTED_RETAILERS if len(value) > 4):
+        return "TRUSTED"
+    if not name or name in {"unknown", "internet", "seller"}:
+        return "UNVERIFIED"
+    return "ACCEPTABLE"
 
 
 def _merchant_marketplace(raw: dict[str, Any]) -> str | None:
@@ -62,8 +106,11 @@ def normalize_observation(raw: dict[str, Any], *, source: str | None = None,
         location_type = LOCATION_LOCAL
     else:
         location_type = LOCATION_ONLINE
+    retailer = _text(raw.get("retailer") or raw.get("merchant") or marketplace or source)
+    observed_at = _text(raw.get("observed_at") or raw.get("timestamp")) or _now()
+    exact = bool(exact_match or raw.get("exact_match"))
     return {
-        "retailer": _text(raw.get("retailer") or raw.get("merchant") or marketplace or source),
+        "retailer": RETAILER_ALIASES.get((retailer or "").casefold(), retailer),
         "price": _number(raw.get("price")),
         "sale_price": _number(raw.get("sale_price")),
         "currency": _text(raw.get("currency") or raw.get("price_currency")),
@@ -74,16 +121,23 @@ def normalize_observation(raw: dict[str, Any], *, source: str | None = None,
         "store_id": _text(raw.get("store_id")),
         "postal_code": _text(raw.get("postal_code") or (context or {}).get("postal_code")),
         "url": _text(raw.get("url") or raw.get("link")),
-        "observed_at": _text(raw.get("observed_at") or raw.get("timestamp")) or _now(),
+        "observed_at": observed_at,
         "source": _text(source or raw.get("source")) or "unknown",
-        "confidence": round(float(raw.get("confidence", raw.get("match_confidence", 1.0 if exact_match else 0.5))), 4),
+        "provider": _text(source or raw.get("source")) or "unknown",
+        "confidence": round(float(raw.get("confidence", raw.get("match_confidence", 1.0 if exact else 0.5))), 4),
+        "freshness_state": freshness_state(observed_at, exact_match=exact),
+        "quality_state": "TRUSTED" if retailer_trust(retailer) == "TRUSTED" and exact else "ACCEPTABLE" if exact else "UNVERIFIED",
+        "retailer_trust": retailer_trust(retailer),
         "product_name": _text(raw.get("product_name") or raw.get("title")),
         "identifier": _text(raw.get("identifier") or raw.get("upc") or raw.get("ean")),
-        "exact_match": bool(exact_match or raw.get("exact_match")),
+        "exact_match": exact,
         "unit_or_pack": raw.get("unit_or_pack") or raw.get("quantity_or_pack_count"),
         "size": raw.get("size") or raw.get("size_value"),
         "quantity_or_pack_count": raw.get("quantity_or_pack_count") or raw.get("pack_quantity"),
         "shipping": raw.get("shipping") or raw.get("shipping_context"),
+        "shipping_price": _number(raw.get("shipping_price") or raw.get("shipping_cost")),
+        "condition": _text(raw.get("condition")),
+        "product_url": _text(raw.get("product_url") or raw.get("url") or raw.get("link")),
         "seller": _text(raw.get("seller")),
         "channel": "marketplace" if location_type == LOCATION_MARKETPLACE else "retail",
     }
@@ -205,10 +259,11 @@ def _marketplace_statuses(database, identifier: str, observations: list[dict[str
                                 ("Amazon", _configured("AMAZON_LWA_CLIENT_ID", "AMAZON_LWA_CLIENT_SECRET", "AMAZON_REFRESH_TOKEN")),
                                 ("eBay", False)):
         listing = None
-        try:
-            _, listing = _listing_observations(database, identifier, channel=channel.casefold())
-        except Exception:
-            pass
+        if database is not None:
+            try:
+                _, listing = _listing_observations(database, identifier, channel=channel.casefold())
+            except Exception:
+                pass
         linked = [item for item in observations if item.get("location_type") == LOCATION_MARKETPLACE and str(item.get("retailer") or "").casefold().startswith(channel.casefold())]
         if listing and listing.get("already_listed"):
             eligibility = "ALREADY_LISTED"
@@ -235,12 +290,100 @@ def marketplace_statuses(configured: dict[str, str] | None = None) -> list[dict[
             for channel in ("Walmart", "Amazon", "eBay")]
 
 
+def ebay_browse_observations(identifier: str, *, timeout: float = 4.0) -> tuple[list[dict[str, Any]], str]:
+    """Read active eBay Browse listings when an OAuth token is configured.
+
+    This deliberately does not call the API without an explicit token and
+    does not describe active listings as sold/completed-market evidence.
+    """
+    token = os.getenv("EBAY_OAUTH_TOKEN", "").strip()
+    if not token:
+        return [], "AUTH_REQUIRED"
+    query = urlencode({"gtin": identifier, "limit": "20", "fieldgroups": "EXTENDED"})
+    request = Request(
+        f"https://api.ebay.com/buy/browse/v1/item_summary/search?{query}",
+        headers={"Authorization": f"Bearer {token}", "Accept": "application/json",
+                 "X-EBAY-C-MARKETPLACE-ID": os.getenv("EBAY_MARKETPLACE_ID", "EBAY_US")},
+    )
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8", errors="replace") or "{}")
+    except HTTPError as error:
+        return [], "AUTH_REQUIRED" if error.code in {401, 403} else "PROVIDER_ERROR"
+    except (URLError, TimeoutError, ValueError):
+        return [], "PROVIDER_ERROR"
+    observations = []
+    for item in payload.get("itemSummaries") or []:
+        price = item.get("price") or {}
+        shipping = (item.get("shippingOptions") or [{}])[0].get("shippingCost") or {}
+        if _number(price.get("value")) is None:
+            continue
+        observations.append(normalize_observation({
+            "retailer": "eBay", "price": price.get("value"), "currency": price.get("currency"),
+            "shipping_price": shipping.get("value"), "condition": item.get("condition"),
+            "availability": "ACTIVE", "location_type": LOCATION_MARKETPLACE,
+            "seller": (item.get("seller") or {}).get("username"), "product_url": item.get("itemWebUrl"),
+            "identifier": identifier, "title": item.get("title"), "observed_at": _now(),
+        }, source="eBay Browse", exact_match=True))
+    return observations, "AVAILABLE" if observations else "NO_MATCH"
+
+
+def rank_observations(observations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Rank without deleting evidence; mark stale, unverified, and outlier rows."""
+    ranked = [dict(item) for item in observations if _number(item.get("sale_price") or item.get("price")) is not None]
+    cluster = [float(item.get("sale_price") or item.get("price")) for item in ranked
+               if item.get("exact_match") and item.get("freshness_state") in {"VERIFIED_CURRENT", "CURRENT"}
+               and item.get("retailer_trust") == "TRUSTED"]
+    median = statistics.median(cluster) if len(cluster) >= 2 else None
+    for item in ranked:
+        price = float(item.get("sale_price") or item.get("price"))
+        if item.get("freshness_state") == "STALE":
+            item["quality_state"] = "LOW_CONFIDENCE"
+        if median is not None and (price > max(median * 3, median + 10) or price < median / 4):
+            item["quality_state"] = "OUTLIER"
+            item["outlier_reason"] = f"Outside trusted price cluster around {median:.2f}"
+        item.setdefault("quality_state", "UNVERIFIED")
+    freshness_rank = {"VERIFIED_CURRENT": 0, "CURRENT": 1, "UNKNOWN": 2, "STALE": 3}
+    quality_rank = {"TRUSTED": 0, "ACCEPTABLE": 1, "UNVERIFIED": 2, "LOW_CONFIDENCE": 3, "OUTLIER": 4}
+    ranked.sort(key=lambda item: (quality_rank.get(item.get("quality_state"), 5), freshness_rank.get(item.get("freshness_state"), 4), item.get("price") or 0))
+    return ranked
+
+
+def select_reference_price(observations: list[dict[str, Any]]) -> dict[str, Any]:
+    """Select a conservative reference and expose the evidence used/excluded."""
+    ranked = rank_observations(observations)
+    eligible = [item for item in ranked if item.get("exact_match") and item.get("freshness_state") in {"VERIFIED_CURRENT", "CURRENT"}
+                and item.get("quality_state") not in {"OUTLIER", "LOW_CONFIDENCE"}]
+    trusted = [item for item in eligible if item.get("retailer_trust") == "TRUSTED"] or eligible
+    prices = [float(item.get("sale_price") or item.get("price")) for item in trusted]
+    if not prices:
+        return {"price": None, "currency": None, "confidence": 0.0, "quality_state": "UNVERIFIED",
+                "trusted_range": None, "explanation": "No current exact-match observations met the reference-quality threshold.",
+                "observation_count": 0, "excluded_count": len(ranked), "ranked_observations": ranked}
+    target = statistics.median(prices)
+    selected = min(trusted, key=lambda item: (abs(float(item.get("sale_price") or item.get("price")) - target),
+                                             0 if item.get("retailer_trust") == "TRUSTED" else 1))
+    confidence = min(1.0, 0.55 + min(len(trusted), 5) * 0.08 + (0.12 if selected.get("retailer_trust") == "TRUSTED" else 0))
+    excluded = len(ranked) - len(trusted)
+    return {"price": round(float(selected.get("sale_price") or selected.get("price")), 2),
+            "currency": selected.get("currency"), "confidence": round(confidence, 2),
+            "quality_state": "TRUSTED" if selected.get("retailer_trust") == "TRUSTED" else "ACCEPTABLE",
+            "trusted_range": {"low": round(min(prices), 2), "high": round(max(prices), 2)},
+            "explanation": f"Based on {len(trusted)} current exact-match observation(s); excluded {excluded} stale, outlier, or lower-confidence observation(s).",
+            "observation_count": len(trusted), "excluded_count": excluded, "selected_retailer": selected.get("retailer"),
+            "ranked_observations": ranked}
+
+
 def build_price_intelligence(external: dict[str, Any] | None, *, database=None, identifier: str | None = None,
                              location: dict[str, Any] | None = None, configured_marketplaces: dict[str, str] | None = None) -> dict[str, Any]:
     observations = observations_from_upc_lookup(external, location=location)
     provider_states = [{"provider": external.get("source", "UPCitemdb") if external else "UPCitemdb",
                         "status": "AVAILABLE" if observations else ("PROVIDER_ERROR" if external and external.get("error") else "NO_PRICE")}]
     walmart_meta = None
+    ebay_future = None
+    ebay_pool = ThreadPoolExecutor(max_workers=1) if identifier else None
+    if ebay_pool is not None:
+        ebay_future = ebay_pool.submit(ebay_browse_observations, str(identifier))
     if database is not None and identifier:
         walmart, state, walmart_meta = _walmart_catalog_observations(database, identifier, location=location)
         observations.extend(walmart)
@@ -248,18 +391,30 @@ def build_price_intelligence(external: dict[str, Any] | None, *, database=None, 
         for channel in ("walmart", "amazon"):
             listing_rows, _ = _listing_observations(database, identifier, channel=channel)
             observations.extend(listing_rows)
-    marketplaces = _marketplace_statuses(database, identifier, observations) if database is not None and identifier else marketplace_statuses(configured_marketplaces)
+    if ebay_future is not None:
+        try:
+            ebay_rows, ebay_state = ebay_future.result()
+        except Exception:
+            ebay_rows, ebay_state = [], "PROVIDER_ERROR"
+        observations.extend(ebay_rows)
+        provider_states.append({"provider": "eBay Browse", "status": ebay_state})
+        ebay_pool.shutdown(wait=False)
+    else:
+        provider_states.append({"provider": "eBay Browse", "status": "AUTH_REQUIRED"})
+    marketplaces = _marketplace_statuses(database, identifier or "", observations) if identifier else marketplace_statuses(configured_marketplaces)
     for item in marketplaces:
         if item["eligibility"] == "NOT_CONFIGURED":
             provider_states.append({"provider": item["channel"], "status": "NOT_CONFIGURED"})
-    prices = [(item.get("sale_price") or item.get("price")) for item in observations if item.get("exact_match") and (item.get("sale_price") or item.get("price")) is not None]
+    reference = select_reference_price(observations)
+    ranked = reference.pop("ranked_observations", [])
+    prices = [(item.get("sale_price") or item.get("price")) for item in ranked if item.get("exact_match") and (item.get("sale_price") or item.get("price")) is not None]
     return {
-        "observations": observations,
-        "local_observations": [item for item in observations if item["location_type"] == LOCATION_LOCAL],
-        "online_observations": [item for item in observations if item["location_type"] == LOCATION_ONLINE],
-        "marketplace_observations": [item for item in observations if item["location_type"] == LOCATION_MARKETPLACE],
+        "observations": ranked,
+        "local_observations": [item for item in ranked if item["location_type"] == LOCATION_LOCAL],
+        "online_observations": [item for item in ranked if item["location_type"] == LOCATION_ONLINE],
+        "marketplace_observations": [item for item in ranked if item["location_type"] == LOCATION_MARKETPLACE],
         "lowest_observed_price": min(prices, default=None),
         "retailers": unavailable_retailers(("Target", "Home Depot", "Lowe's", "Walgreens/CVS"), location=location),
         "marketplaces": marketplaces, "provider_states": provider_states, "walmart_catalog": walmart_meta,
-        "location": location, "provider_status": "connected" if observations else "unavailable",
+        "reference_price": reference, "location": location, "provider_status": "connected" if observations else "unavailable",
     }

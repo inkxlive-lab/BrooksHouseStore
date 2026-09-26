@@ -117,10 +117,13 @@ def _scan_result(request: DealScanRequest, database: Session) -> dict[str, Any]:
         identifier=request.raw_value if request.scan_type == "barcode" else None,
         location=location or None,
     )
-    observed_reference = price_intelligence.get("lowest_observed_price")
+    reference = price_intelligence.get("reference_price") or {}
+    observed_reference = reference.get("price")
     candidate_resale = request.candidate_resale_price
+    used_reference_price = False
     if candidate_resale is None and request.mode in {"sourcing", "bin"} and observed_reference is not None:
         candidate_resale = observed_reference
+        used_reference_price = True
     economics = calculate_deal_economics(
         mode=request.mode,
         bin_price=request.bin_price,
@@ -141,19 +144,36 @@ def _scan_result(request: DealScanRequest, database: Session) -> dict[str, Any]:
                 "available_inventory": int(available),
             }
     decision = request.decision if request.decision in {"GRAB", "PASS", "INSPECT_FIRST"} else "INSPECT_FIRST"
+    reference_strong = bool(
+        reference.get("price") is not None
+        and reference.get("quality_state") in {"TRUSTED", "ACCEPTABLE"}
+        and float(reference.get("confidence") or 0) >= 0.65
+    )
     if decision == "INSPECT_FIRST" and request.mode in {"bin", "sourcing"}:
         risk = any(bool(value) for key, value in request.inspection.items() if key != "powers_on")
         profit = economics.get("estimated_profit")
-        if risk or profit is None:
+        if risk or profit is None or not reference_strong:
             decision = "INSPECT_FIRST"
         else:
             decision = "GRAB" if float(profit) > 0 else "PASS"
+    personal_comparison = None
+    if request.mode == "personal" and request.candidate_resale_price is not None and observed_reference is not None:
+        entered = float(request.candidate_resale_price)
+        personal_comparison = {
+            "entered_price": entered,
+            "reference_price": observed_reference,
+            "difference": round(entered - float(observed_reference), 2),
+            "savings": round(max(0.0, float(observed_reference) - entered), 2),
+        }
     return {
         "scan": result,
         "economics": economics,
         "price_intelligence": price_intelligence,
         "comparison_prices": price_intelligence["observations"],
         "comparison_status": price_intelligence["provider_status"],
+        "reference_price": reference,
+        "reference_price_used_for_economics": used_reference_price,
+        "personal_comparison": personal_comparison,
         "brookshouse": catalog_context or {"carried": False},
         "condition": request.condition,
         "inspection": request.inspection,
@@ -196,7 +216,11 @@ def create_scan_reference(payload: DealScanRequest, database: Session = Depends(
         condition=payload.condition, inspection_json=_json(payload.inspection, {}), decision=result["decision"],
         price_observations_json=_json(result.get("comparison_prices"), []),
         marketplace_intelligence_json=_json(result.get("price_intelligence", {}).get("marketplaces"), []),
-        provider_status_json=_json({"status": result.get("comparison_status")}, {}),
+        provider_status_json=_json({
+            "status": result.get("comparison_status"),
+            "providers": result.get("price_intelligence", {}).get("provider_states", []),
+            "reference_price": result.get("reference_price"),
+        }, {}),
         local_context_json=_json(result.get("price_intelligence", {}).get("location"), {}),
     )
     database.add(row)
