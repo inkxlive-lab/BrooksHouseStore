@@ -111,12 +111,21 @@ def _scan_result(request: DealScanRequest, database: Session) -> dict[str, Any]:
             image_refs=request.image_refs,
         )
     location = {key: value for key, value in {"postal_code": request.postal_code, "store_name": request.store_name}.items() if value}
-    price_intelligence = build_price_intelligence(external or (initial if request.raw_value and request.scan_type == "barcode" else None), location=location or None)
+    price_intelligence = build_price_intelligence(
+        external or (initial if request.raw_value and request.scan_type == "barcode" else None),
+        database=database,
+        identifier=request.raw_value if request.scan_type == "barcode" else None,
+        location=location or None,
+    )
+    observed_reference = price_intelligence.get("lowest_observed_price")
+    candidate_resale = request.candidate_resale_price
+    if candidate_resale is None and request.mode in {"sourcing", "bin"} and observed_reference is not None:
+        candidate_resale = observed_reference
     economics = calculate_deal_economics(
         mode=request.mode,
         bin_price=request.bin_price,
         acquisition_cost=request.acquisition_cost,
-        candidate_resale_price=request.candidate_resale_price,
+        candidate_resale_price=candidate_resale,
         fees=request.fees,
         shipping_estimate=request.shipping_estimate,
         quantity=request.quantity,
