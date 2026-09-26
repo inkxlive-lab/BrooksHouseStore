@@ -121,6 +121,10 @@ class Product(Base):
         cascade="all, delete-orphan",
     )
 
+    deal_scan_references: Mapped[list["DealScanReference"]] = relationship(
+        back_populates="product",
+    )
+
     inventory_records: Mapped[list["Inventory"]] = relationship(
         back_populates="product",
     )
@@ -561,6 +565,58 @@ class Inventory(Base):
         back_populates="inventory_records",
     )
 
+
+class DealScanReference(Base):
+    """Temporary scan intelligence; never an inventory or published product row."""
+
+    __tablename__ = "deal_scan_references"
+    __table_args__ = (
+        Index("ix_deal_scan_references_status_created", "status", "created_at"),
+        Index("ix_deal_scan_references_barcode", "barcode"),
+        Index("ix_deal_scan_references_catalog_product", "catalog_product_id"),
+    )
+
+    reference_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    mode: Mapped[str] = mapped_column(String(40), nullable=False, default="personal")
+    scan_type: Mapped[str] = mapped_column(String(40), nullable=False, default="barcode")
+    raw_value: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    barcode: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
+    upc: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    ean: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    asin: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    sku: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    model_number: Mapped[Optional[str]] = mapped_column(String(160), nullable=True)
+    manufacturer: Mapped[Optional[str]] = mapped_column(String(160), nullable=True)
+    brand: Mapped[Optional[str]] = mapped_column(String(160), nullable=True)
+    product_name: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    variant: Mapped[Optional[str]] = mapped_column(String(250), nullable=True)
+    size: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    quantity_or_pack_count: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
+    ocr_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    catalog_match: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    catalog_product_id: Mapped[Optional[int]] = mapped_column(ForeignKey("products.product_id"), nullable=True)
+    identification_confidence: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 4), nullable=True)
+    identification_sources_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    image_refs_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="UNKNOWN", index=True)
+    acquisition_cost: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2), nullable=True)
+    candidate_resale_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2), nullable=True)
+    fees: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2), nullable=True)
+    shipping_estimate: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2), nullable=True)
+    estimated_profit: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2), nullable=True)
+    estimated_margin: Mapped[Optional[Decimal]] = mapped_column(Numeric(8, 2), nullable=True)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    potential_total_profit: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2), nullable=True)
+    bin_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2), nullable=True)
+    condition: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    inspection_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    decision: Mapped[str] = mapped_column(String(30), nullable=False, default="INSPECT_FIRST")
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now, onupdate=datetime.now)
+
+    product: Mapped["Product"] = relationship(
+        back_populates="deal_scan_references",
+    )
 
 class InventoryTransaction(Base):
     __tablename__ = "inventory_transactions"
