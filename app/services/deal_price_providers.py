@@ -30,6 +30,7 @@ QUALITY_STATES = {"TRUSTED", "ACCEPTABLE", "LOW_CONFIDENCE", "OUTLIER", "UNVERIF
 TRUSTED_RETAILERS = {
     "walmart", "walmart.com", "target", "home depot", "the home depot", "lowe's", "lowes",
     "ace hardware", "true value", "cvs", "walgreens", "best buy", "kroger", "kroger family",
+    "amazon", "ebay",
 }
 RETAILER_ALIASES = {"the home depot": "Home Depot", "lowes": "Lowe's", "walmart": "Walmart.com"}
 
@@ -47,6 +48,13 @@ def _number(value: Any) -> float | None:
 def _text(value: Any) -> str | None:
     value = str(value or "").strip()
     return value or None
+
+
+def _observation_price(value: Any) -> Any:
+    """Read provider price shapes without turning missing values into prices."""
+    if isinstance(value, dict):
+        return value.get("value") or value.get("amount") or value.get("price")
+    return value
 
 
 def _now() -> str:
@@ -85,10 +93,12 @@ def retailer_trust(retailer: Any) -> str:
 
 
 def _merchant_marketplace(raw: dict[str, Any]) -> str | None:
-    value = " ".join(str(raw.get(key) or "") for key in ("marketplace", "merchant", "seller", "url", "link")).casefold()
+    value = " ".join(str(raw.get(key) or "") for key in ("marketplace", "channel")).casefold()
     for name in ("walmart", "amazon", "ebay"):
         if name in value:
             return name.title()
+    if str(raw.get("merchant") or raw.get("retailer") or "").casefold().strip() in {"ebay", "ebay marketplace"}:
+        return "Ebay"
     return None
 
 
@@ -158,12 +168,23 @@ def observations_from_upc_lookup(result: dict[str, Any] | None, *, location: dic
     if not result:
         return []
     observations: list[dict[str, Any]] = []
-    for offer in result.get("offers") or []:
-        if not isinstance(offer, dict) or _number(offer.get("price")) is None:
+    raw_observations = list(result.get("observations") or result.get("price_observations") or [])
+    raw_offers = list(result.get("offers") or [])
+    for offer in raw_offers:
+        if isinstance(offer, dict):
+            raw_observations.append(offer)
+    raw_prices = result.get("prices") or []
+    for price in raw_prices:
+        raw_observations.append(price if isinstance(price, dict) else {"price": price})
+    for offer in raw_observations:
+        if not isinstance(offer, dict) or _number(_observation_price(offer.get("price") or offer.get("sale_price") or offer.get("amount"))) is None:
             continue
+        normalized_input = dict(offer)
+        normalized_input["price"] = _observation_price(offer.get("price") or offer.get("sale_price") or offer.get("amount"))
+        normalized_input.setdefault("currency", offer.get("currency") or result.get("currency"))
         observation = normalize_observation(
-            {**offer, "identifier": result.get("barcode"), "product_name": result.get("title"),
-             "currency": offer.get("currency") or result.get("currency")},
+            {**normalized_input, "identifier": offer.get("identifier") or result.get("barcode"),
+             "product_name": offer.get("product_name") or offer.get("title") or result.get("title")},
             source=result.get("source"), exact_match=True, context=location,
         )
         if not _variant_conflict(result, observation):
@@ -337,12 +358,23 @@ def rank_observations(observations: list[dict[str, Any]]) -> list[dict[str, Any]
     median = statistics.median(cluster) if len(cluster) >= 2 else None
     for item in ranked:
         price = float(item.get("sale_price") or item.get("price"))
+        item["reference_eligible"] = bool(
+            item.get("exact_match")
+            and item.get("freshness_state") in {"VERIFIED_CURRENT", "CURRENT"}
+            and item.get("quality_state") not in {"OUTLIER", "LOW_CONFIDENCE"}
+        )
         if item.get("freshness_state") == "STALE":
             item["quality_state"] = "LOW_CONFIDENCE"
+            item["reference_eligible"] = False
+            item["exclusion_reason"] = "STALE_SOURCE"
         if median is not None and (price > max(median * 3, median + 10) or price < median / 4):
             item["quality_state"] = "OUTLIER"
             item["outlier_reason"] = f"Outside trusted price cluster around {median:.2f}"
+            item["reference_eligible"] = False
+            item["exclusion_reason"] = "OUTLIER"
         item.setdefault("quality_state", "UNVERIFIED")
+        if not item["reference_eligible"] and not item.get("exclusion_reason"):
+            item["exclusion_reason"] = "LOW_CONFIDENCE_OR_NOT_EXACT"
     freshness_rank = {"VERIFIED_CURRENT": 0, "CURRENT": 1, "UNKNOWN": 2, "STALE": 3}
     quality_rank = {"TRUSTED": 0, "ACCEPTABLE": 1, "UNVERIFIED": 2, "LOW_CONFIDENCE": 3, "OUTLIER": 4}
     ranked.sort(key=lambda item: (quality_rank.get(item.get("quality_state"), 5), freshness_rank.get(item.get("freshness_state"), 4), item.get("price") or 0))
@@ -354,7 +386,7 @@ def select_reference_price(observations: list[dict[str, Any]]) -> dict[str, Any]
     ranked = rank_observations(observations)
     eligible = [item for item in ranked if item.get("exact_match") and item.get("freshness_state") in {"VERIFIED_CURRENT", "CURRENT"}
                 and item.get("quality_state") not in {"OUTLIER", "LOW_CONFIDENCE"}]
-    trusted = [item for item in eligible if item.get("retailer_trust") == "TRUSTED"] or eligible
+    trusted = [item for item in eligible if item.get("retailer_trust") == "TRUSTED"]
     prices = [float(item.get("sale_price") or item.get("price")) for item in trusted]
     if not prices:
         return {"price": None, "currency": None, "confidence": 0.0, "quality_state": "UNVERIFIED",
