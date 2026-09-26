@@ -79,6 +79,7 @@ from app.database.models import (
     ProductBarcode,
     ProductImage,
 )
+from app.services.smart_scan_engine import build_scan_result, catalog_product_for_barcode
 from app.schemas import ProductCreate
 from app.services.workflow_navigation import safe_return_to
 from app.services.smart_lookup_images import save_lookup_image
@@ -126,6 +127,8 @@ async def lifespan(app: FastAPI):
         "product_enrichment_proposals",
         "product_enrichment_audit_events",
         "product_enrichment_lookup_cache",
+        # Deal Scanner reference evidence is installed by its explicit migration.
+        "deal_scan_references",
     }
     Base.metadata.create_all(
         bind=engine,
@@ -1455,6 +1458,13 @@ def smart_scan_lookup(barcode: str):
     # together so the user can choose which values to retain.
     online = lookup_upc_online(barcode)
     local = lookup_barcode_local(barcode)
+    with SessionLocal() as database:
+        catalog = catalog_product_for_barcode(database, barcode)
+        intelligence = build_scan_result(
+            barcode,
+            catalog=catalog,
+            external=None if catalog else online,
+        )
 
     product_data = local.get("store_product", {}).get("data", {})
     return {
@@ -1464,6 +1474,7 @@ def smart_scan_lookup(barcode: str):
         "store_product": local.get("store_product", {}),
         "master_catalog": local.get("master_catalog", {}),
         "hot_item_alert": scan_hot_item_alert(product_data.get("product_id"), barcode),
+        "intelligence": intelligence,
     }
 
 
@@ -13528,6 +13539,10 @@ install_access_control(app)
 # OWNER-ADMIN PRODUCT ENRICHMENT REVIEW
 from app.product_enrichment import install_product_enrichment
 install_product_enrichment(app)
+
+# BROOKSHOUSE DEAL SCANNER / SHARED SMART SCAN INTELLIGENCE
+from app.deal_scanner import install_deal_scanner
+install_deal_scanner(app)
 
 
 # BROOKSHOUSE SHARED STORE + INVENTORY LOCATION MAP
