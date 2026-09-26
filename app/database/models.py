@@ -611,6 +611,10 @@ class DealScanReference(Base):
     condition: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
     inspection_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     decision: Mapped[str] = mapped_column(String(30), nullable=False, default="INSPECT_FIRST")
+    price_observations_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    marketplace_intelligence_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    provider_status_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    local_context_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now, onupdate=datetime.now)
 

@@ -10,19 +10,20 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import inspect
+from sqlalchemy import func, inspect, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 
 from app.database.connection import get_database
-from app.database.models import DealScanReference
+from app.database.models import DealScanReference, Inventory, Product
 from app.integrations.product_lookup import lookup_upc_online
 from app.services.smart_scan_engine import (
     build_scan_result,
     calculate_deal_economics,
     identify_barcode,
 )
+from app.services.deal_price_providers import build_price_intelligence
 
 
 router = APIRouter()
@@ -57,6 +58,8 @@ class DealScanRequest(BaseModel):
     condition: str = "Unknown"
     inspection: dict[str, bool] = Field(default_factory=dict)
     decision: str = "INSPECT_FIRST"
+    postal_code: str | None = None
+    store_name: str | None = None
 
 
 def _has_reference_table(database: Session) -> bool:
@@ -72,10 +75,22 @@ def _json(value: Any, fallback: Any) -> str:
 
 def _scan_result(request: DealScanRequest, database: Session) -> dict[str, Any]:
     identifiers = request.model_dump(exclude_none=True) if hasattr(request, "model_dump") else request.dict(exclude_none=True)
+    external = None
     if request.raw_value and request.scan_type == "barcode":
+        # Catalog is secondary context, so still ask the external identity
+        # provider for a cleaner display name when the barcode is known here.
         initial = identify_barcode(database, request.raw_value, external_lookup=lookup_upc_online)
+        external = initial.get("external")
         if initial.get("catalog_product_id") is not None:
             result = initial
+            if external and external.get("product_name"):
+                external_result = build_scan_result(request.raw_value, external=external)
+                result["display_product_name"] = external_result.get("product_name")
+                result["display_brand"] = external_result.get("brand")
+                for key in ("product_name", "brand", "variant", "size", "quantity_or_pack_count"):
+                    if external_result.get(key):
+                        result[key] = external_result[key]
+                result["catalog_display_name"] = initial.get("catalog_product_name") or initial.get("product_name")
             result["ocr_text"] = request.ocr_text or result.get("ocr_text", "")
             if request.ocr_text and "ocr" not in result["identification_sources"]:
                 result["identification_sources"].append("ocr")
@@ -85,7 +100,7 @@ def _scan_result(request: DealScanRequest, database: Session) -> dict[str, Any]:
                 scan_type=request.scan_type,
                 identifiers=identifiers,
                 ocr_text=request.ocr_text,
-                external=initial if initial.get("status") == "IDENTIFIED_EXTERNAL" else None,
+                external=initial.get("external") if initial.get("status") == "IDENTIFIED_EXTERNAL" else None,
             )
     else:
         result = build_scan_result(
@@ -95,6 +110,8 @@ def _scan_result(request: DealScanRequest, database: Session) -> dict[str, Any]:
             ocr_text=request.ocr_text,
             image_refs=request.image_refs,
         )
+    location = {key: value for key, value in {"postal_code": request.postal_code, "store_name": request.store_name}.items() if value}
+    price_intelligence = build_price_intelligence(external or (initial if request.raw_value and request.scan_type == "barcode" else None), location=location or None)
     economics = calculate_deal_economics(
         mode=request.mode,
         bin_price=request.bin_price,
@@ -104,14 +121,34 @@ def _scan_result(request: DealScanRequest, database: Session) -> dict[str, Any]:
         shipping_estimate=request.shipping_estimate,
         quantity=request.quantity,
     )
+    catalog_context = None
+    if result.get("catalog_product_id") is not None:
+        product = database.get(Product, result["catalog_product_id"])
+        if product:
+            available = database.scalar(select(func.coalesce(func.sum(Inventory.quantity_on_hand - Inventory.quantity_reserved), 0)).where(Inventory.product_id == product.product_id)) or 0
+            catalog_context = {
+                "carried": True, "product_id": product.product_id, "stored_title": product.product_name,
+                "price": str(product.store_price) if product.store_price is not None else None,
+                "available_inventory": int(available),
+            }
+    decision = request.decision if request.decision in {"GRAB", "PASS", "INSPECT_FIRST"} else "INSPECT_FIRST"
+    if decision == "INSPECT_FIRST" and request.mode in {"bin", "sourcing"}:
+        risk = any(bool(value) for key, value in request.inspection.items() if key != "powers_on")
+        profit = economics.get("estimated_profit")
+        if risk or profit is None:
+            decision = "INSPECT_FIRST"
+        else:
+            decision = "GRAB" if float(profit) > 0 else "PASS"
     return {
         "scan": result,
         "economics": economics,
-        "comparison_prices": [],
-        "comparison_status": "provider_deferred",
+        "price_intelligence": price_intelligence,
+        "comparison_prices": price_intelligence["observations"],
+        "comparison_status": price_intelligence["provider_status"],
+        "brookshouse": catalog_context or {"carried": False},
         "condition": request.condition,
         "inspection": request.inspection,
-        "decision": "INSPECT_FIRST" if request.decision not in {"GRAB", "PASS"} else request.decision,
+        "decision": decision,
     }
 
 
@@ -148,6 +185,10 @@ def create_scan_reference(payload: DealScanRequest, database: Session = Depends(
         estimated_margin=economics.get("estimated_margin"), quantity=economics.get("quantity", 1),
         potential_total_profit=economics.get("potential_total_profit"), bin_price=payload.bin_price,
         condition=payload.condition, inspection_json=_json(payload.inspection, {}), decision=result["decision"],
+        price_observations_json=_json(result.get("comparison_prices"), []),
+        marketplace_intelligence_json=_json(result.get("price_intelligence", {}).get("marketplaces"), []),
+        provider_status_json=_json({"status": result.get("comparison_status")}, {}),
+        local_context_json=_json(result.get("price_intelligence", {}).get("location"), {}),
     )
     database.add(row)
     try:

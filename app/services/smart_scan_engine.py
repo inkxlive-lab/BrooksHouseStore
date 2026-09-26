@@ -197,7 +197,13 @@ def identify_barcode(database, raw_value: Any, external_lookup: Callable[[str], 
             external = external_lookup(normalize_barcode(raw_value)["exact"]) or None
         except Exception:
             external = None
-    return build_scan_result(raw_value, catalog=catalog, external=external)
+    result = build_scan_result(raw_value, catalog=catalog, external=external)
+    # Keep the raw external evidence available to Deal Scanner so it can use a
+    # cleaner internet identity while retaining catalog context separately.
+    result["external"] = external
+    if catalog:
+        result["catalog_product_name"] = catalog.get("product_name")
+    return result
 
 
 def variants_match(left: dict[str, Any], right: dict[str, Any]) -> bool:

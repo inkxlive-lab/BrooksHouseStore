@@ -10,7 +10,7 @@ import argparse
 import shutil
 from pathlib import Path
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.schema import CreateIndex, CreateTable
 
@@ -18,6 +18,12 @@ from app.database.models import DealScanReference
 
 
 TABLES = [DealScanReference.__table__]
+M2_COLUMNS = {
+    "price_observations_json": "TEXT NOT NULL DEFAULT '[]'",
+    "marketplace_intelligence_json": "TEXT NOT NULL DEFAULT '[]'",
+    "provider_status_json": "TEXT NOT NULL DEFAULT '{}'",
+    "local_context_json": "TEXT NOT NULL DEFAULT '{}'",
+}
 
 
 def _sqlite_path(database_url: str) -> Path:
@@ -55,6 +61,12 @@ def apply(database_url: str, backup_path: str | None) -> None:
     try:
         with db_engine.begin() as connection:
             DealScanReference.metadata.create_all(bind=connection, tables=TABLES)
+            existing = {column["name"] for column in inspect(connection).get_columns("deal_scan_references")}
+            for name, declaration in M2_COLUMNS.items():
+                if name not in existing:
+                    connection.execute(text(
+                        f"ALTER TABLE deal_scan_references ADD COLUMN {name} {declaration}"
+                    ))
     finally:
         db_engine.dispose()
 
