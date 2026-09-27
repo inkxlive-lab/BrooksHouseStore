@@ -24,6 +24,7 @@ from app.services.smart_scan_engine import (
     identify_barcode,
 )
 from app.services.deal_price_providers import build_price_intelligence
+from app.services.shopping_calculator import calculate_cart, jsonable
 
 
 router = APIRouter()
@@ -60,6 +61,10 @@ class DealScanRequest(BaseModel):
     decision: str = "INSPECT_FIRST"
     postal_code: str | None = None
     store_name: str | None = None
+    price_you_are_paying: float | None = Field(default=None, ge=0)
+    discount: float = Field(default=0, ge=0)
+    taxable: bool = True
+    notes: str | None = None
 
 
 def _has_reference_table(database: Session) -> bool:
@@ -78,6 +83,13 @@ def _mode_summary(mode: str, *, request: DealScanRequest, intelligence: dict[str
     """Return labels and values for the question each scanner mode answers."""
     lowest = intelligence.get("lowest_observed_price")
     reference_price = reference.get("price")
+    if mode == "shopping_calculator":
+        return {
+            "mode": mode,
+            "question": "What should this item cost at the register?",
+            "cards": [],
+            "comparison_note": "Comparison is optional; adding the item does not depend on lookup.",
+        }
     if mode == "personal":
         entered = request.candidate_resale_price
         entered_number = float(entered) if entered not in (None, "") else None
@@ -132,7 +144,10 @@ def _scan_result(request: DealScanRequest, database: Session) -> dict[str, Any]:
     if request.raw_value and request.scan_type == "barcode":
         # Catalog is secondary context, so still ask the external identity
         # provider for a cleaner display name when the barcode is known here.
-        initial = identify_barcode(database, request.raw_value, external_lookup=lookup_upc_online)
+        initial = identify_barcode(
+            database, request.raw_value,
+            external_lookup=lambda barcode: lookup_upc_online(barcode, database=database),
+        )
         external = initial.get("external")
         if initial.get("catalog_product_id") is not None:
             result = initial
@@ -289,6 +304,23 @@ def create_scan_reference(payload: DealScanRequest, database: Session = Depends(
         database.rollback()
         raise HTTPException(status_code=503, detail="Deal Scanner migration is not installed.")
     return {"ok": True, "reference_id": row.reference_id, "status": row.status, "inventory_created": False}
+
+
+class ShoppingCartRequest(BaseModel):
+    items: list[dict[str, Any]] = Field(default_factory=list)
+    tax_rate: float = Field(default=0, ge=0)
+    cart_discount: float = Field(default=0, ge=0)
+
+
+@router.post("/api/deal-scanner/shopping/calculate")
+def calculate_shopping_cart(payload: ShoppingCartRequest):
+    """Calculate shopping totals without opening a database or mutating data."""
+    try:
+        return {"ok": True, **jsonable(calculate_cart(
+            payload.items, tax_rate=payload.tax_rate, cart_discount=payload.cart_discount,
+        ))}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.post("/api/deal-scanner/references/{reference_id}/photos")

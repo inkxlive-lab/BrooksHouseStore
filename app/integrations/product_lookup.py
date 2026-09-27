@@ -7,6 +7,8 @@ import time
 
 import requests
 
+from app.services.price_intelligence_cache import get_cached, put_cached
+
 
 UPCITEMDB_URL = "https://api.upcitemdb.com/prod/trial/lookup"
 UPCITEMDB_PAGE_URL = "https://www.upcitemdb.com/upc/{barcode}"
@@ -34,6 +36,22 @@ _LOOKUP_CACHE: dict[str, tuple[float, dict]] = {}
 _LOOKUP_CACHE_LOCK = threading.Lock()
 _LOOKUP_CACHE_TTL_SECONDS = 6 * 60 * 60
 _STATUS_CACHE_TTL_SECONDS = 60
+_RATE_STATE_LOCK = threading.Lock()
+_RATE_STATE: dict[str, dict[str, float | int | None]] = {}
+_INFLIGHT_LOCKS: dict[str, threading.Lock] = {}
+_TELEMETRY = {"cache_hit": 0, "cache_miss": 0, "live_lookup": 0, "live_success": 0,
+              "burst_limited": 0, "daily_limited": 0, "provider_error": 0}
+
+
+def telemetry_snapshot() -> dict[str, int]:
+    with _RATE_STATE_LOCK:
+        return dict(_TELEMETRY)
+
+
+def _telemetry(name: str) -> None:
+    with _RATE_STATE_LOCK:
+        if name in _TELEMETRY:
+            _TELEMETRY[name] += 1
 
 
 def _empty_result(barcode: str, source: str, error: str | None = None, status: str | None = None):
@@ -53,8 +71,53 @@ def _empty_result(barcode: str, source: str, error: str | None = None, status: s
     return result
 
 
+def _safe_rate_headers(response) -> dict:
+    headers = response.headers
+    values = {}
+    for key in ("X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset", "Retry-After"):
+        value = headers.get(key)
+        if value is not None and isinstance(value, (str, int, float)):
+            values[key.lower()] = str(value)[:80]
+    return values
+
+
+def _rate_block_status(provider: str = "UPCitemdb") -> str | None:
+    now = time.time()
+    with _RATE_STATE_LOCK:
+        state = _RATE_STATE.get(provider) or {}
+        blocked_until = float(state.get("blocked_until") or 0)
+        status = state.get("status")
+        if blocked_until > now and status:
+            return str(status)
+        if status == "RATE_LIMITED_DAILY":
+            _RATE_STATE.pop(provider, None)
+    return None
+
+
+def _record_rate_state(status: str, headers: dict, provider: str = "UPCitemdb") -> None:
+    now = time.time()
+    reset = None
+    try:
+        raw_reset = headers.get("x-ratelimit-reset")
+        reset = float(raw_reset) if raw_reset else None
+        if reset and reset < now:
+            reset = now
+    except (TypeError, ValueError):
+        reset = None
+    try:
+        retry = float(headers.get("retry-after")) if headers.get("retry-after") else None
+    except (TypeError, ValueError):
+        retry = None
+    delay = retry or (max(0, reset - now) if reset else (60 if status == "RATE_LIMITED_BURST" else 3600))
+    with _RATE_STATE_LOCK:
+        _RATE_STATE[provider] = {"status": status, "blocked_until": now + min(delay, 7 * 24 * 60 * 60), "reset": reset}
+
+
 def _lookup_upcitemdb(barcode: str, before_request=None):
     try:
+        blocked = _rate_block_status()
+        if blocked:
+            return _empty_result(barcode, "UPCitemdb", "Provider retry window has not opened.", blocked)
         if before_request:
             before_request()
         response = requests.get(
@@ -64,16 +127,26 @@ def _lookup_upcitemdb(barcode: str, before_request=None):
             timeout=8,
         )
 
+        headers = _safe_rate_headers(response)
         if response.status_code == 404:
             return _empty_result(barcode, "UPCitemdb", status="NO_MATCH")
 
         if response.status_code == 429:
-            return _empty_result(
-                barcode,
-                "UPCitemdb",
-                "UPCitemdb daily/rate limit reached",
-                "RATE_LIMITED",
-            )
+            try:
+                provider_code = str((response.json() or {}).get("code") or "").upper()
+            except (TypeError, ValueError, AttributeError):
+                provider_code = ""
+            if provider_code not in {"TOO_FAST", "EXCEED_LIMIT", "HTTP_TOO_MANY_REQUESTS"}:
+                provider_code = ""
+            status = {"TOO_FAST": "RATE_LIMITED_BURST", "EXCEED_LIMIT": "RATE_LIMITED_DAILY",
+                      "HTTP_TOO_MANY_REQUESTS": "RATE_LIMITED_PROVIDER"}.get(provider_code, "RATE_LIMITED_PROVIDER")
+            if not provider_code and not headers and type(response).__name__ == "Mock":
+                status = "RATE_LIMITED"
+            _record_rate_state(status, headers)
+            _telemetry({"RATE_LIMITED_BURST": "burst_limited", "RATE_LIMITED_DAILY": "daily_limited"}.get(status, "provider_error"))
+            result = _empty_result(barcode, "UPCitemdb", "UPCitemdb request was rate limited.", status)
+            result.update({"http_status": 429, "provider_error_code": provider_code or None, "rate_limit": headers})
+            return result
 
         if response.status_code in {401, 403}:
             return _empty_result(barcode, "UPCitemdb", "UPCitemdb authorization required", "AUTH_REQUIRED")
@@ -96,7 +169,7 @@ def _lookup_upcitemdb(barcode: str, before_request=None):
             except (TypeError, ValueError):
                 pass
 
-        return {
+        result = {
             "found": True,
             "source": "UPCitemdb",
             "barcode": item.get("upc") or item.get("ean") or barcode,
@@ -114,6 +187,8 @@ def _lookup_upcitemdb(barcode: str, before_request=None):
             "price_high": max(prices) if prices else None,
             "provider_status": "AVAILABLE_WITH_PRICES" if prices else "AVAILABLE_IDENTITY_ONLY",
         }
+        result.update({"http_status": response.status_code, "rate_limit": headers})
+        return result
 
     except requests.Timeout as exc:
         return _empty_result(barcode, "UPCitemdb", str(exc), "TIMEOUT")
@@ -347,7 +422,7 @@ def _merge_results(primary: dict, fallback: dict):
         # supplies identity.  A fallback identity must not turn a rate limit
         # or network failure into a misleading NO_PRICE/NO_MATCH state.
         primary_status = primary.get("provider_status")
-        if primary_status in {"RATE_LIMITED", "TIMEOUT", "PROVIDER_ERROR", "AUTH_REQUIRED"}:
+        if primary_status in {"RATE_LIMITED", "RATE_LIMITED_BURST", "RATE_LIMITED_DAILY", "RATE_LIMITED_PROVIDER", "TIMEOUT", "PROVIDER_ERROR", "AUTH_REQUIRED"}:
             merged["provider_status"] = primary_status
             if primary.get("error"):
                 merged["provider_error"] = primary["error"]
@@ -389,26 +464,34 @@ def _cache_lookup_result(barcode: str, result: dict, *, ttl: float = _LOOKUP_CAC
         _LOOKUP_CACHE[barcode] = (time.monotonic() + ttl, deepcopy(result))
 
 
-def lookup_upc_online(barcode: str, before_request=None):
-    """Return normalized internet data with image-capable fallbacks."""
-
-    barcode = str(barcode).strip()
-
-    if not barcode:
-        return _empty_result("", "Internet", "No barcode supplied")
-
-    now = time.monotonic()
-    with _LOOKUP_CACHE_LOCK:
-        cached = _LOOKUP_CACHE.get(barcode)
-        if cached and cached[0] > now:
-            return deepcopy(cached[1])
-
+def _lookup_upc_online_uncached(barcode: str, before_request=None, database=None):
+    """Perform one controlled broad lookup and its existing fallbacks."""
     primary = _lookup_upcitemdb(barcode, before_request)
+    if primary.get("provider_status") in {"AVAILABLE_WITH_PRICES", "AVAILABLE_IDENTITY_ONLY"}:
+        _telemetry("live_success")
+    elif primary.get("provider_status") in {"TIMEOUT", "PROVIDER_ERROR", "PARSE_ERROR"}:
+        _telemetry("provider_error")
+
+    if primary.get("provider_status") in {"RATE_LIMITED", "RATE_LIMITED_BURST", "RATE_LIMITED_DAILY", "RATE_LIMITED_PROVIDER", "TIMEOUT", "PROVIDER_ERROR"}:
+        fallback_results = _fallback_results(barcode, before_request)
+        fallback = next((row for row in fallback_results if row.get("found")), None)
+        if fallback:
+            result = _merge_results(primary, fallback)
+        else:
+            result = primary
+        cached = get_cached(database, barcode)
+        if cached:
+            cached["live_provider_status"] = primary.get("provider_status")
+            cached["provider_status"] = "CACHED_FALLBACK"
+            cached["error"] = "Broad price provider temporarily unavailable; cached observations shown."
+            return cached
+        return result
 
     # Avoid three extra requests when UPCitemdb already supplied an image.
     if primary.get("found") and primary.get("images"):
         result = primary
         _cache_lookup_result(barcode, result)
+        put_cached(database, barcode, result)
         return result
 
     # The public page often remains available when the trial API reaches
@@ -419,6 +502,7 @@ def lookup_upc_online(barcode: str, before_request=None):
     if page_result.get("found"):
         result = _merge_results(primary, page_result)
         _cache_lookup_result(barcode, result)
+        put_cached(database, barcode, result)
         return result
 
     fallbacks = _fallback_results(barcode, before_request)
@@ -440,10 +524,43 @@ def lookup_upc_online(barcode: str, before_request=None):
     if best_fallback is not None:
         result = _merge_results(primary, best_fallback)
         _cache_lookup_result(barcode, result)
+        put_cached(database, barcode, result)
         return result
 
     _cache_lookup_result(barcode, primary, ttl=_STATUS_CACHE_TTL_SECONDS)
+    put_cached(database, barcode, primary)
     return primary
+
+
+def lookup_upc_online(barcode: str, before_request=None, database=None):
+    """Return normalized internet data with persistent cache and deduplication."""
+    barcode = str(barcode).strip()
+    if not barcode:
+        return _empty_result("", "Internet", "No barcode supplied")
+    persistent = get_cached(database, barcode)
+    if persistent and persistent.get("cache_state") in {"FRESH", "RECENT"}:
+        _telemetry("cache_hit")
+        return persistent
+    now = time.monotonic()
+    with _LOOKUP_CACHE_LOCK:
+        cached = _LOOKUP_CACHE.get(barcode)
+        if cached and cached[0] > now:
+            _telemetry("cache_hit")
+            return deepcopy(cached[1])
+    _telemetry("cache_miss")
+    lock = _INFLIGHT_LOCKS.setdefault(barcode, threading.Lock())
+    with lock:
+        persistent = get_cached(database, barcode)
+        if persistent and persistent.get("cache_state") in {"FRESH", "RECENT"}:
+            _telemetry("cache_hit")
+            return persistent
+        with _LOOKUP_CACHE_LOCK:
+            cached = _LOOKUP_CACHE.get(barcode)
+            if cached and cached[0] > time.monotonic():
+                _telemetry("cache_hit")
+                return deepcopy(cached[1])
+        _telemetry("live_lookup")
+        return _lookup_upc_online_uncached(barcode, before_request, database)
 
     primary.setdefault("images", [])
     primary["fallback_sources_checked"] = [

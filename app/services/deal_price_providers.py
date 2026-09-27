@@ -22,7 +22,8 @@ from sqlalchemy import inspect, text
 
 PROVIDER_STATES = {
     "AVAILABLE", "AVAILABLE_WITH_PRICES", "AVAILABLE_IDENTITY_ONLY", "NOT_CONFIGURED",
-    "AUTH_REQUIRED", "UNSUPPORTED", "NO_MATCH", "NO_PRICE", "RATE_LIMITED", "TIMEOUT",
+    "AUTH_REQUIRED", "UNSUPPORTED", "NO_MATCH", "NO_PRICE", "RATE_LIMITED", "RATE_LIMITED_BURST",
+    "RATE_LIMITED_DAILY", "RATE_LIMITED_PROVIDER", "CACHED_FALLBACK", "TIMEOUT",
     "PROVIDER_ERROR", "PARSE_ERROR",
 }
 SELLABILITY_STATES = {"ELIGIBLE", "LIKELY_ELIGIBLE", "RESTRICTED", "NOT_ELIGIBLE", "ALREADY_LISTED", "AUTH_REQUIRED", "NOT_CONFIGURED", "UNKNOWN"}
@@ -188,11 +189,14 @@ def observations_from_upc_lookup(result: dict[str, Any] | None, *, location: dic
         normalized_input = dict(offer)
         normalized_input["price"] = _observation_price(offer.get("price") or offer.get("sale_price") or offer.get("amount"))
         normalized_input.setdefault("currency", offer.get("currency") or result.get("currency"))
+        normalized_input.setdefault("observed_at", offer.get("observed_at") or result.get("provider_observation_at") or result.get("cache_retrieved_at"))
         observation = normalize_observation(
             {**normalized_input, "identifier": offer.get("identifier") or result.get("barcode"),
              "product_name": offer.get("product_name") or offer.get("title") or result.get("title")},
             source=result.get("source"), exact_match=True, context=location,
         )
+        if result.get("cache_state") == "STALE":
+            observation["freshness_state"] = "STALE"
         if not _variant_conflict(result, observation):
             observations.append(observation)
     low = _number(result.get("price_low"))
@@ -256,6 +260,11 @@ def provider_diagnostics(result: dict[str, Any] | None, normalized: list[dict[st
         "rejection_reasons": dict(reasons),
         "error_present": bool(error),
         "duration_ms": result.get("duration_ms"),
+        "http_status": result.get("http_status"),
+        "provider_error_code": result.get("provider_error_code"),
+        "rate_limit": result.get("rate_limit") or {},
+        "cache_state": result.get("cache_state"),
+        "cache_retrieved_at": result.get("cache_retrieved_at"),
     }
 
 
@@ -518,4 +527,10 @@ def build_price_intelligence(external: dict[str, Any] | None, *, database=None, 
             "unavailable" if external is None else provider_states[0]["status"]
         ),
         "provider_diagnostics": diagnostics,
+        "cache": {
+            "state": external.get("cache_state") if external else None,
+            "retrieved_at": external.get("cache_retrieved_at") if external else None,
+            "age_seconds": external.get("cache_age_seconds") if external else None,
+            "live_provider_status": external.get("live_provider_status") if external else None,
+        },
     }
