@@ -1,4 +1,6 @@
+import os
 import unittest
+from unittest.mock import patch
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
@@ -33,13 +35,21 @@ class DealPriceProviderTests(unittest.TestCase):
             connection.execute(text("""INSERT INTO walmart_catalog_matches VALUES
                 ('78742014616','MATCH','12345','Great Value Cheese Wow! Spray Cheese, American Cheese, 8 oz',
                  'Great Value',3.48,'USD','2026-09-26T12:00:00Z','2026-09-26T12:00:00Z',NULL)"""))
-        with Session(engine) as database:
+        with patch.dict(os.environ, {"WALMART_CLIENT_ID": "", "WALMART_CLIENT_SECRET": ""}, clear=False), \
+                Session(engine) as database:
             result = build_price_intelligence(None, database=database, identifier="078742014616")
         self.assertEqual(result["observations"][0]["retailer"], "Walmart.com")
         self.assertEqual(result["observations"][0]["location_type"], "ONLINE")
         walmart = next(item for item in result["marketplaces"] if item["channel"] == "Walmart")
         self.assertEqual(walmart["eligibility"], "NOT_CONFIGURED")
         self.assertEqual(result["observations"][0]["price"], 3.48)
+
+        with patch.dict(os.environ, {"WALMART_CLIENT_ID": "configured-for-test", "WALMART_CLIENT_SECRET": "configured-for-test"}, clear=False), \
+                Session(engine) as database:
+            configured_result = build_price_intelligence(None, database=database, identifier="078742014616")
+        configured_walmart = next(item for item in configured_result["marketplaces"] if item["channel"] == "Walmart")
+        self.assertEqual(configured_walmart["eligibility"], "UNKNOWN")
+        self.assertTrue(configured_walmart["pricing_separate"])
 
     def test_unavailable_retailers_do_not_get_fake_prices(self):
         result = build_price_intelligence(None, location={"postal_code": "90210"})
@@ -49,7 +59,7 @@ class DealPriceProviderTests(unittest.TestCase):
 
     def test_provider_failure_is_explicit_and_nonfatal(self):
         result = build_price_intelligence({"source": "UPCitemdb", "error": "timeout"})
-        self.assertEqual(result["provider_states"][0]["status"], "PROVIDER_ERROR")
+        self.assertEqual(result["provider_states"][0]["status"], "TIMEOUT")
         self.assertEqual(result["observations"], [])
 
     def test_multiple_observations_and_marketplace_status_are_separate(self):

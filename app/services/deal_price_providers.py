@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import json
 import statistics
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Iterable
@@ -19,7 +20,11 @@ from urllib.request import Request, urlopen
 
 from sqlalchemy import inspect, text
 
-PROVIDER_STATES = {"AVAILABLE", "NOT_CONFIGURED", "AUTH_REQUIRED", "UNSUPPORTED", "NO_MATCH", "NO_PRICE", "PROVIDER_ERROR"}
+PROVIDER_STATES = {
+    "AVAILABLE", "AVAILABLE_WITH_PRICES", "AVAILABLE_IDENTITY_ONLY", "NOT_CONFIGURED",
+    "AUTH_REQUIRED", "UNSUPPORTED", "NO_MATCH", "NO_PRICE", "RATE_LIMITED", "TIMEOUT",
+    "PROVIDER_ERROR", "PARSE_ERROR",
+}
 SELLABILITY_STATES = {"ELIGIBLE", "LIKELY_ELIGIBLE", "RESTRICTED", "NOT_ELIGIBLE", "ALREADY_LISTED", "AUTH_REQUIRED", "NOT_CONFIGURED", "UNKNOWN"}
 LOCATION_LOCAL = "LOCAL_STORE"
 LOCATION_ONLINE = "ONLINE"
@@ -32,7 +37,7 @@ TRUSTED_RETAILERS = {
     "ace hardware", "true value", "cvs", "walgreens", "best buy", "kroger", "kroger family",
     "amazon", "ebay",
 }
-RETAILER_ALIASES = {"the home depot": "Home Depot", "lowes": "Lowe's", "walmart": "Walmart.com"}
+RETAILER_ALIASES = {"the home depot": "Home Depot", "lowes": "Lowe's", "walmart": "Walmart.com", "wal-mart.com": "Walmart.com"}
 
 
 def _number(value: Any) -> float | None:
@@ -85,9 +90,9 @@ def freshness_state(value: Any, *, now: datetime | None = None, exact_match: boo
 
 def retailer_trust(retailer: Any) -> str:
     name = str(retailer or "").casefold().strip()
-    if name in TRUSTED_RETAILERS or any(value in name for value in TRUSTED_RETAILERS if len(value) > 4):
+    if name in TRUSTED_RETAILERS or name.startswith("wal-mart.com") or any(value in name for value in TRUSTED_RETAILERS if len(value) > 4):
         return "TRUSTED"
-    if not name or name in {"unknown", "internet", "seller"}:
+    if not name or name in {"unknown", "internet", "seller"} or name.startswith("unknown ") or name.endswith(" seller"):
         return "UNVERIFIED"
     return "ACCEPTABLE"
 
@@ -163,20 +168,21 @@ def _variant_conflict(identity: dict[str, Any], observation: dict[str, Any]) -> 
     return False
 
 
+def _raw_observation_rows(result: dict[str, Any] | None) -> list[Any]:
+    if not result:
+        return []
+    rows = list(result.get("observations") or result.get("price_observations") or [])
+    rows.extend(result.get("offers") or [])
+    rows.extend(price if isinstance(price, dict) else {"price": price} for price in (result.get("prices") or []))
+    return rows
+
+
 def observations_from_upc_lookup(result: dict[str, Any] | None, *, location: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """Adapt the existing UPCitemdb/Open Facts contract into observations."""
     if not result:
         return []
     observations: list[dict[str, Any]] = []
-    raw_observations = list(result.get("observations") or result.get("price_observations") or [])
-    raw_offers = list(result.get("offers") or [])
-    for offer in raw_offers:
-        if isinstance(offer, dict):
-            raw_observations.append(offer)
-    raw_prices = result.get("prices") or []
-    for price in raw_prices:
-        raw_observations.append(price if isinstance(price, dict) else {"price": price})
-    for offer in raw_observations:
+    for offer in _raw_observation_rows(result):
         if not isinstance(offer, dict) or _number(_observation_price(offer.get("price") or offer.get("sale_price") or offer.get("amount"))) is None:
             continue
         normalized_input = dict(offer)
@@ -197,6 +203,60 @@ def observations_from_upc_lookup(result: dict[str, Any] | None, *, location: dic
             source=result.get("source"), exact_match=True, context=location,
         ))
     return observations
+
+
+def provider_diagnostics(result: dict[str, Any] | None, normalized: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Return safe retrieval/count diagnostics without exposing provider payloads."""
+    result = result or {}
+    rows = _raw_observation_rows(result)
+    normalized = normalized if normalized is not None else observations_from_upc_lookup(result)
+    reasons: Counter[str] = Counter()
+    accepted = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            reasons["MALFORMED_OFFER"] += 1
+            continue
+        value = _observation_price(row.get("price") or row.get("sale_price") or row.get("amount"))
+        if _number(value) is None:
+            reasons["MISSING_OR_INVALID_PRICE"] += 1
+            continue
+        if _variant_conflict(result, normalize_observation(
+            {**row, "identifier": row.get("identifier") or result.get("barcode"),
+             "product_name": row.get("product_name") or row.get("title") or result.get("title")},
+            source=result.get("source"), exact_match=True,
+        )):
+            reasons["WRONG_VARIANT"] += 1
+            continue
+        accepted += 1
+    error = str(result.get("error") or "")
+    error_lower = error.casefold()
+    explicit_status = str(result.get("provider_status") or "").upper()
+    if normalized:
+        status = "AVAILABLE_WITH_PRICES"
+    elif explicit_status in PROVIDER_STATES:
+        status = explicit_status
+    elif "timeout" in error_lower or "timed out" in error_lower:
+        status = "TIMEOUT"
+    elif error:
+        status = "PROVIDER_ERROR"
+    elif result.get("found") or result.get("title") or result.get("images"):
+        status = "AVAILABLE_IDENTITY_ONLY"
+    elif any(key in result for key in ("offers", "observations", "price_observations", "prices", "price_low")):
+        status = "NO_PRICE"
+    else:
+        status = "NO_MATCH"
+    return {
+        "provider": result.get("source") or "UPCitemdb",
+        "status": status,
+        "response_type": type(result).__name__,
+        "identity_present": bool(result.get("found") or result.get("title") or result.get("images")),
+        "raw_offer_count": len(rows),
+        "normalized_offer_count": len(normalized),
+        "rejected_offer_count": max(0, len(rows) - accepted),
+        "rejection_reasons": dict(reasons),
+        "error_present": bool(error),
+        "duration_ms": result.get("duration_ms"),
+    }
 
 
 def _table_columns(database, table: str) -> set[str]:
@@ -362,6 +422,7 @@ def rank_observations(observations: list[dict[str, Any]]) -> list[dict[str, Any]
             item.get("exact_match")
             and item.get("freshness_state") in {"VERIFIED_CURRENT", "CURRENT"}
             and item.get("quality_state") not in {"OUTLIER", "LOW_CONFIDENCE"}
+            and item.get("retailer_trust") in {"TRUSTED", "ACCEPTABLE"}
         )
         if item.get("freshness_state") == "STALE":
             item["quality_state"] = "LOW_CONFIDENCE"
@@ -387,6 +448,10 @@ def select_reference_price(observations: list[dict[str, Any]]) -> dict[str, Any]
     eligible = [item for item in ranked if item.get("exact_match") and item.get("freshness_state") in {"VERIFIED_CURRENT", "CURRENT"}
                 and item.get("quality_state") not in {"OUTLIER", "LOW_CONFIDENCE"}]
     trusted = [item for item in eligible if item.get("retailer_trust") == "TRUSTED"]
+    # A verified exact retailer observation is still useful when no named
+    # trusted retailer returned a price; unverified sellers never qualify.
+    if not trusted:
+        trusted = [item for item in eligible if item.get("retailer_trust") == "ACCEPTABLE"]
     prices = [float(item.get("sale_price") or item.get("price")) for item in trusted]
     if not prices:
         return {"price": None, "currency": None, "confidence": 0.0, "quality_state": "UNVERIFIED",
@@ -409,8 +474,8 @@ def select_reference_price(observations: list[dict[str, Any]]) -> dict[str, Any]
 def build_price_intelligence(external: dict[str, Any] | None, *, database=None, identifier: str | None = None,
                              location: dict[str, Any] | None = None, configured_marketplaces: dict[str, str] | None = None) -> dict[str, Any]:
     observations = observations_from_upc_lookup(external, location=location)
-    provider_states = [{"provider": external.get("source", "UPCitemdb") if external else "UPCitemdb",
-                        "status": "AVAILABLE" if observations else ("PROVIDER_ERROR" if external and external.get("error") else "NO_PRICE")}]
+    diagnostics = provider_diagnostics(external, observations)
+    provider_states = [{"provider": diagnostics["provider"], "status": diagnostics["status"]}]
     walmart_meta = None
     ebay_future = None
     ebay_pool = ThreadPoolExecutor(max_workers=1) if identifier else None
@@ -448,5 +513,9 @@ def build_price_intelligence(external: dict[str, Any] | None, *, database=None, 
         "lowest_observed_price": min(prices, default=None),
         "retailers": unavailable_retailers(("Target", "Home Depot", "Lowe's", "Walgreens/CVS"), location=location),
         "marketplaces": marketplaces, "provider_states": provider_states, "walmart_catalog": walmart_meta,
-        "reference_price": reference, "location": location, "provider_status": "connected" if observations else "unavailable",
+        "reference_price": reference, "location": location,
+        "provider_status": "connected" if observations else (
+            "unavailable" if external is None else provider_states[0]["status"]
+        ),
+        "provider_diagnostics": diagnostics,
     }

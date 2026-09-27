@@ -239,12 +239,12 @@ def calculate_deal_economics(*, mode: str, bin_price: Any = None, acquisition_co
             return Decimal("0")
     resale = money(candidate_resale_price)
     profit = None if cost is None or resale <= 0 else resale - cost - money(fees) - money(shipping_estimate)
-    units = max(1, int(quantity or 1))
+    units = max(1, int(quantity)) if quantity not in (None, "") else None
     return {
         "acquisition_cost": str(cost) if cost is not None else None,
         "candidate_resale_price": str(resale) if resale > 0 else None,
         "estimated_profit": str(profit) if profit is not None else None,
         "estimated_margin": str((profit / resale * 100).quantize(Decimal("0.01"))) if profit is not None and resale > 0 else None,
         "quantity": units,
-        "potential_total_profit": str(profit * units) if profit is not None else None,
+        "potential_total_profit": str(profit * units) if profit is not None and units is not None else None,
     }

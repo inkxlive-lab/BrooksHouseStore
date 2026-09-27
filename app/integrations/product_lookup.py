@@ -1,6 +1,9 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from copy import deepcopy
 from html import unescape
 import re
+import threading
+import time
 
 import requests
 
@@ -27,14 +30,22 @@ REQUEST_HEADERS = {
     "User-Agent": "BrooksHouse-WMS/1.0",
 }
 
+_LOOKUP_CACHE: dict[str, tuple[float, dict]] = {}
+_LOOKUP_CACHE_LOCK = threading.Lock()
+_LOOKUP_CACHE_TTL_SECONDS = 6 * 60 * 60
+_STATUS_CACHE_TTL_SECONDS = 60
 
-def _empty_result(barcode: str, source: str, error: str | None = None):
+
+def _empty_result(barcode: str, source: str, error: str | None = None, status: str | None = None):
     result = {
         "found": False,
         "source": source,
         "barcode": barcode,
         "images": [],
     }
+
+    if status:
+        result["provider_status"] = status
 
     if error:
         result["error"] = error
@@ -54,14 +65,18 @@ def _lookup_upcitemdb(barcode: str, before_request=None):
         )
 
         if response.status_code == 404:
-            return _empty_result(barcode, "UPCitemdb")
+            return _empty_result(barcode, "UPCitemdb", status="NO_MATCH")
 
         if response.status_code == 429:
             return _empty_result(
                 barcode,
                 "UPCitemdb",
                 "UPCitemdb daily/rate limit reached",
+                "RATE_LIMITED",
             )
+
+        if response.status_code in {401, 403}:
+            return _empty_result(barcode, "UPCitemdb", "UPCitemdb authorization required", "AUTH_REQUIRED")
 
         response.raise_for_status()
         items = response.json().get("items") or []
@@ -97,10 +112,13 @@ def _lookup_upcitemdb(barcode: str, before_request=None):
             "offers": offers,
             "price_low": min(prices) if prices else None,
             "price_high": max(prices) if prices else None,
+            "provider_status": "AVAILABLE_WITH_PRICES" if prices else "AVAILABLE_IDENTITY_ONLY",
         }
 
+    except requests.Timeout as exc:
+        return _empty_result(barcode, "UPCitemdb", str(exc), "TIMEOUT")
     except (requests.RequestException, ValueError) as exc:
-        return _empty_result(barcode, "UPCitemdb", str(exc))
+        return _empty_result(barcode, "UPCitemdb", str(exc), "PROVIDER_ERROR")
 
 
 def _lookup_upcitemdb_page(barcode: str, before_request=None):
@@ -186,7 +204,7 @@ def _lookup_upcitemdb_page(barcode: str, before_request=None):
         )
 
         if not valid_title and not image_candidates:
-            return _empty_result(barcode, "UPCitemdb Public Page")
+            return _empty_result(barcode, "UPCitemdb Public Page", status="NO_MATCH")
 
         return {
             "found": True,
@@ -204,13 +222,22 @@ def _lookup_upcitemdb_page(barcode: str, before_request=None):
             "offers": [],
             "price_low": None,
             "price_high": None,
+            "provider_status": "AVAILABLE_IDENTITY_ONLY",
         }
 
+    except requests.Timeout as exc:
+        return _empty_result(
+            barcode,
+            "UPCitemdb Public Page",
+            str(exc),
+            "TIMEOUT",
+        )
     except requests.RequestException as exc:
         return _empty_result(
             barcode,
             "UPCitemdb Public Page",
             str(exc),
+            "PROVIDER_ERROR",
         )
 
 
@@ -316,6 +343,14 @@ def _merge_results(primary: dict, fallback: dict):
 
     if not primary.get("found"):
         merged = dict(fallback)
+        # Keep a meaningful primary-provider failure visible when a fallback
+        # supplies identity.  A fallback identity must not turn a rate limit
+        # or network failure into a misleading NO_PRICE/NO_MATCH state.
+        primary_status = primary.get("provider_status")
+        if primary_status in {"RATE_LIMITED", "TIMEOUT", "PROVIDER_ERROR", "AUTH_REQUIRED"}:
+            merged["provider_status"] = primary_status
+            if primary.get("error"):
+                merged["provider_error"] = primary["error"]
     else:
         for key in (
             "title",
@@ -348,6 +383,12 @@ def _merge_results(primary: dict, fallback: dict):
     return merged
 
 
+def _cache_lookup_result(barcode: str, result: dict, *, ttl: float = _LOOKUP_CACHE_TTL_SECONDS):
+    """Cache only normalized, non-secret lookup results to reduce duplicate calls."""
+    with _LOOKUP_CACHE_LOCK:
+        _LOOKUP_CACHE[barcode] = (time.monotonic() + ttl, deepcopy(result))
+
+
 def lookup_upc_online(barcode: str, before_request=None):
     """Return normalized internet data with image-capable fallbacks."""
 
@@ -356,11 +397,19 @@ def lookup_upc_online(barcode: str, before_request=None):
     if not barcode:
         return _empty_result("", "Internet", "No barcode supplied")
 
+    now = time.monotonic()
+    with _LOOKUP_CACHE_LOCK:
+        cached = _LOOKUP_CACHE.get(barcode)
+        if cached and cached[0] > now:
+            return deepcopy(cached[1])
+
     primary = _lookup_upcitemdb(barcode, before_request)
 
     # Avoid three extra requests when UPCitemdb already supplied an image.
     if primary.get("found") and primary.get("images"):
-        return primary
+        result = primary
+        _cache_lookup_result(barcode, result)
+        return result
 
     # The public page often remains available when the trial API reaches
     # its daily limit. It is UPC-specific and therefore takes priority over
@@ -368,7 +417,9 @@ def lookup_upc_online(barcode: str, before_request=None):
     page_result = _lookup_upcitemdb_page(barcode, before_request)
 
     if page_result.get("found"):
-        return _merge_results(primary, page_result)
+        result = _merge_results(primary, page_result)
+        _cache_lookup_result(barcode, result)
+        return result
 
     fallbacks = _fallback_results(barcode, before_request)
     best_fallback = next(
@@ -387,7 +438,12 @@ def lookup_upc_online(barcode: str, before_request=None):
         )
 
     if best_fallback is not None:
-        return _merge_results(primary, best_fallback)
+        result = _merge_results(primary, best_fallback)
+        _cache_lookup_result(barcode, result)
+        return result
+
+    _cache_lookup_result(barcode, primary, ttl=_STATUS_CACHE_TTL_SECONDS)
+    return primary
 
     primary.setdefault("images", [])
     primary["fallback_sources_checked"] = [

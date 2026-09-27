@@ -53,7 +53,7 @@ class DealScanRequest(BaseModel):
     candidate_resale_price: float | None = Field(default=None, ge=0)
     fees: float = Field(default=0, ge=0)
     shipping_estimate: float = Field(default=0, ge=0)
-    quantity: int = Field(default=1, ge=1)
+    quantity: int | None = Field(default=1, ge=1)
     bin_price: float | None = Field(default=None, ge=0)
     condition: str = "Unknown"
     inspection: dict[str, bool] = Field(default_factory=dict)
@@ -71,6 +71,59 @@ def _json(value: Any, fallback: Any) -> str:
         return json.dumps(value if value is not None else fallback, default=str)
     except (TypeError, ValueError):
         return json.dumps(fallback)
+
+
+def _mode_summary(mode: str, *, request: DealScanRequest, intelligence: dict[str, Any],
+                  economics: dict[str, Any], reference: dict[str, Any], decision: str) -> dict[str, Any]:
+    """Return labels and values for the question each scanner mode answers."""
+    lowest = intelligence.get("lowest_observed_price")
+    reference_price = reference.get("price")
+    if mode == "personal":
+        entered = request.candidate_resale_price
+        entered_number = float(entered) if entered not in (None, "") else None
+        difference = round(entered_number - float(reference_price), 2) if entered_number is not None and reference_price is not None else None
+        return {
+            "mode": mode,
+            "question": "Is the price I am seeing/paying a good price?",
+            "cards": [
+                {"label": "YOUR PRICE", "value": entered_number},
+                {"label": "LOWEST FOUND", "value": lowest},
+                {"label": "REFERENCE / TYPICAL", "value": reference_price},
+                {"label": "YOU SAVE" if difference is not None and difference < 0 else "ABOVE REFERENCE", "value": round(abs(difference), 2) if difference is not None else None},
+            ],
+            "your_price": entered_number,
+            "lowest_found": lowest,
+            "reference_price": reference_price,
+            "difference_vs_reference": difference,
+            "comparison_wording": ("You save" if difference is not None and difference < 0 else "Above reference") if difference is not None else None,
+        }
+    if mode == "bin":
+        return {
+            "mode": mode,
+            "question": "At today's bin price, should I grab this?",
+            "cards": [
+                {"label": "BIN PRICE", "value": economics.get("acquisition_cost")},
+                {"label": "EXPECTED RESALE", "value": economics.get("candidate_resale_price")},
+                {"label": "EST. PROFIT", "value": economics.get("estimated_profit")},
+                {"label": "EST. MARGIN", "value": economics.get("estimated_margin"), "suffix": "%"},
+                {"label": "DECISION", "value": decision},
+            ],
+            "decision": decision,
+            "resale_source": "operator-entered" if request.candidate_resale_price is not None else "reference price",
+        }
+    return {
+        "mode": mode,
+        "question": "Can BrooksHouse buy this at this cost and resell it profitably?",
+        "cards": [
+            {"label": "ACQUISITION", "value": economics.get("acquisition_cost")},
+            {"label": "EXPECTED RESALE", "value": economics.get("candidate_resale_price")},
+            {"label": "EST. PROFIT", "value": economics.get("estimated_profit")},
+            {"label": "EST. MARGIN", "value": economics.get("estimated_margin"), "suffix": "%"},
+            {"label": "TOTAL POTENTIAL", "value": economics.get("potential_total_profit")},
+        ],
+        "resale_source": "operator-entered" if request.candidate_resale_price is not None else "reference price",
+        "estimate_note": "Profit includes only the entered fees and shipping estimate; unknown costs are not included.",
+    }
 
 
 def _scan_result(request: DealScanRequest, database: Session) -> dict[str, Any]:
@@ -165,6 +218,10 @@ def _scan_result(request: DealScanRequest, database: Session) -> dict[str, Any]:
             "difference": round(entered - float(observed_reference), 2),
             "savings": round(max(0.0, float(observed_reference) - entered), 2),
         }
+    mode_summary = _mode_summary(
+        request.mode, request=request, intelligence=price_intelligence, economics=economics,
+        reference=reference, decision=decision,
+    )
     return {
         "scan": result,
         "economics": economics,
@@ -178,6 +235,7 @@ def _scan_result(request: DealScanRequest, database: Session) -> dict[str, Any]:
         "condition": request.condition,
         "inspection": request.inspection,
         "decision": decision,
+        "mode_summary": mode_summary,
     }
 
 
@@ -219,6 +277,7 @@ def create_scan_reference(payload: DealScanRequest, database: Session = Depends(
         provider_status_json=_json({
             "status": result.get("comparison_status"),
             "providers": result.get("price_intelligence", {}).get("provider_states", []),
+            "diagnostics": result.get("price_intelligence", {}).get("provider_diagnostics", {}),
             "reference_price": result.get("reference_price"),
         }, {}),
         local_context_json=_json(result.get("price_intelligence", {}).get("location"), {}),
