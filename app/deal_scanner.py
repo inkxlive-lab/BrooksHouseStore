@@ -25,6 +25,7 @@ from app.services.smart_scan_engine import (
 )
 from app.services.deal_price_providers import build_price_intelligence
 from app.services.shopping_calculator import calculate_cart, jsonable
+from app.services.shopping_tax import resolve_tax
 
 
 router = APIRouter()
@@ -61,6 +62,7 @@ class DealScanRequest(BaseModel):
     decision: str = "INSPECT_FIRST"
     postal_code: str | None = None
     store_name: str | None = None
+    radius_miles: float = Field(default=5, ge=1, le=50)
     price_you_are_paying: float | None = Field(default=None, ge=0)
     discount: float = Field(default=0, ge=0)
     taxable: bool = True
@@ -138,7 +140,7 @@ def _mode_summary(mode: str, *, request: DealScanRequest, intelligence: dict[str
     }
 
 
-def _scan_result(request: DealScanRequest, database: Session) -> dict[str, Any]:
+def _scan_result(request: DealScanRequest, database: Session, *, include_price_intelligence: bool = True) -> dict[str, Any]:
     identifiers = request.model_dump(exclude_none=True) if hasattr(request, "model_dump") else request.dict(exclude_none=True)
     external = None
     if request.raw_value and request.scan_type == "barcode":
@@ -178,13 +180,20 @@ def _scan_result(request: DealScanRequest, database: Session) -> dict[str, Any]:
             ocr_text=request.ocr_text,
             image_refs=request.image_refs,
         )
-    location = {key: value for key, value in {"postal_code": request.postal_code, "store_name": request.store_name}.items() if value}
+    location = {key: value for key, value in {"postal_code": request.postal_code, "store_name": request.store_name,
+                                               "radius_miles": request.radius_miles}.items() if value}
     price_intelligence = build_price_intelligence(
         external or (initial if request.raw_value and request.scan_type == "barcode" else None),
         database=database,
         identifier=request.raw_value if request.scan_type == "barcode" else None,
         location=location or None,
-    )
+    ) if include_price_intelligence else {
+        "observations": [], "local_observations": [], "online_observations": [],
+        "marketplace_observations": [], "lowest_observed_price": None,
+        "retailers": [], "marketplaces": [], "provider_states": [],
+        "reference_price": {}, "location": location, "provider_status": "PENDING",
+        "provider_diagnostics": {}, "cache": {},
+    }
     reference = price_intelligence.get("reference_price") or {}
     observed_reference = reference.get("price")
     candidate_resale = request.candidate_resale_price
@@ -261,7 +270,26 @@ def deal_scanner_page(request: Request):
 
 @router.post("/api/deal-scanner/scan")
 def deal_scanner_scan(payload: DealScanRequest, database: Session = Depends(get_database)):
-    return {"ok": True, **_scan_result(payload, database)}
+    return {"ok": True, **_scan_result(payload, database, include_price_intelligence=payload.mode != "shopping_calculator")}
+
+
+@router.post("/api/deal-scanner/shopping-compare")
+def shopping_compare(payload: DealScanRequest, database: Session = Depends(get_database)):
+    """Run existing read-only price intelligence after an item is already in the cart."""
+    if payload.mode != "shopping_calculator":
+        raise HTTPException(status_code=400, detail="Shopping comparison is only available in Shopping Calculator mode.")
+    result = _scan_result(payload, database, include_price_intelligence=True)
+    return {"ok": True, "price_intelligence": result["price_intelligence"],
+            "scan": result["scan"], "status": "FOUND" if result["price_intelligence"].get("observations") else "LIMITED DATA"}
+
+
+@router.post("/api/deal-scanner/shopping-tax")
+def shopping_tax(payload: dict[str, Any]):
+    """Resolve tax metadata only; this endpoint never creates checkout or inventory records."""
+    try:
+        return {"ok": True, **resolve_tax(payload.get("location"), manual_rate=payload.get("manual_rate"))}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.post("/api/deal-scanner/references")
