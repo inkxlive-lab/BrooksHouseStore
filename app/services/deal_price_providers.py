@@ -29,6 +29,7 @@ PROVIDER_STATES = {
 SELLABILITY_STATES = {"ELIGIBLE", "LIKELY_ELIGIBLE", "RESTRICTED", "NOT_ELIGIBLE", "ALREADY_LISTED", "AUTH_REQUIRED", "NOT_CONFIGURED", "UNKNOWN"}
 LOCATION_LOCAL = "LOCAL_STORE"
 LOCATION_ONLINE = "ONLINE"
+LOCATION_ONLINE_RETAIL = "ONLINE_RETAIL"
 LOCATION_MARKETPLACE = "MARKETPLACE"
 LOCATION_UNKNOWN = "UNKNOWN_LOCATION"
 FRESHNESS_STATES = {"VERIFIED_CURRENT", "CURRENT", "STALE", "UNKNOWN"}
@@ -114,7 +115,7 @@ def normalize_observation(raw: dict[str, Any], *, source: str | None = None,
     """Normalize one observation while preserving unknown location/price."""
     marketplace = _merchant_marketplace(raw)
     explicit_location = _text(raw.get("location_type"))
-    if explicit_location in {LOCATION_LOCAL, LOCATION_ONLINE, LOCATION_MARKETPLACE, LOCATION_UNKNOWN}:
+    if explicit_location in {LOCATION_LOCAL, LOCATION_ONLINE, LOCATION_ONLINE_RETAIL, LOCATION_MARKETPLACE, LOCATION_UNKNOWN}:
         location_type = explicit_location
     elif marketplace:
         location_type = LOCATION_MARKETPLACE
@@ -125,13 +126,24 @@ def normalize_observation(raw: dict[str, Any], *, source: str | None = None,
     retailer = _text(raw.get("retailer") or raw.get("merchant") or marketplace or source)
     observed_at = _text(raw.get("observed_at") or raw.get("timestamp")) or _now()
     exact = bool(exact_match or raw.get("exact_match"))
+    item_price = _number(raw.get("sale_price") or raw.get("price"))
+    shipping_price = _number(raw.get("shipping_price") or raw.get("shipping_cost"))
+    if shipping_price is None and isinstance(raw.get("shipping"), dict):
+        shipping_price = _number(raw["shipping"].get("price") or raw["shipping"].get("value") or raw["shipping"].get("cost"))
+    delivered_price = _number(raw.get("delivered_price") or raw.get("total_price"))
+    if delivered_price is None and item_price is not None and shipping_price is not None:
+        delivered_price = round(item_price + shipping_price, 2)
+    cache_state = _text(raw.get("cache_state"))
+    observation_state = _text(raw.get("observation_state")) or ("CACHED" if cache_state else "LIVE")
+    online_category = LOCATION_ONLINE_RETAIL if location_type == LOCATION_ONLINE else location_type
     return {
         "retailer": RETAILER_ALIASES.get((retailer or "").casefold(), retailer),
-        "price": _number(raw.get("price")),
+        "price": item_price,
         "sale_price": _number(raw.get("sale_price")),
         "currency": _text(raw.get("currency") or raw.get("price_currency")),
         "availability": _text(raw.get("availability")),
         "location_type": location_type,
+        "location_category": online_category,
         "local": location_type == LOCATION_LOCAL,
         "store_name": _text(raw.get("store_name")),
         "store_id": _text(raw.get("store_id")),
@@ -151,11 +163,16 @@ def normalize_observation(raw: dict[str, Any], *, source: str | None = None,
         "size": raw.get("size") or raw.get("size_value"),
         "quantity_or_pack_count": raw.get("quantity_or_pack_count") or raw.get("pack_quantity"),
         "shipping": raw.get("shipping") or raw.get("shipping_context"),
-        "shipping_price": _number(raw.get("shipping_price") or raw.get("shipping_cost")),
+        "shipping_price": shipping_price,
+        "delivered_price": delivered_price,
+        "comparison_basis": "DELIVERED_PRICE" if delivered_price is not None else "ITEM_PRICE",
         "condition": _text(raw.get("condition")),
         "product_url": _text(raw.get("product_url") or raw.get("url") or raw.get("link")),
         "seller": _text(raw.get("seller")),
         "channel": "marketplace" if location_type == LOCATION_MARKETPLACE else "retail",
+        "cache_state": cache_state,
+        "observation_state": observation_state,
+        "retrieved_at": _text(raw.get("retrieved_at")) or observed_at,
     }
 
 
@@ -192,7 +209,10 @@ def observations_from_upc_lookup(result: dict[str, Any] | None, *, location: dic
         normalized_input.setdefault("observed_at", offer.get("observed_at") or result.get("provider_observation_at") or result.get("cache_retrieved_at"))
         observation = normalize_observation(
             {**normalized_input, "identifier": offer.get("identifier") or result.get("barcode"),
-             "product_name": offer.get("product_name") or offer.get("title") or result.get("title")},
+             "product_name": offer.get("product_name") or offer.get("title") or result.get("title"),
+             "cache_state": result.get("cache_state"),
+             "observation_state": "CACHED" if result.get("cache_state") else "LIVE",
+             "retrieved_at": result.get("cache_retrieved_at") or result.get("provider_observation_at")},
             source=result.get("source"), exact_match=True, context=location,
         )
         if result.get("cache_state") == "STALE":
@@ -203,13 +223,16 @@ def observations_from_upc_lookup(result: dict[str, Any] | None, *, location: dic
     if not observations and low is not None:
         observations.append(normalize_observation(
             {"price": low, "identifier": result.get("barcode"), "product_name": result.get("title"),
-             "availability": "REFERENCE_RANGE", "currency": result.get("currency")},
+             "availability": "REFERENCE_RANGE", "currency": result.get("currency"),
+             "cache_state": result.get("cache_state"),
+             "observation_state": "CACHED" if result.get("cache_state") else "LIVE"},
             source=result.get("source"), exact_match=True, context=location,
         ))
     return observations
 
 
-def provider_diagnostics(result: dict[str, Any] | None, normalized: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def provider_diagnostics(result: dict[str, Any] | None, normalized: list[dict[str, Any]] | None = None,
+                         identifier: str | None = None) -> dict[str, Any]:
     """Return safe retrieval/count diagnostics without exposing provider payloads."""
     result = result or {}
     rows = _raw_observation_rows(result)
@@ -235,14 +258,14 @@ def provider_diagnostics(result: dict[str, Any] | None, normalized: list[dict[st
     error = str(result.get("error") or "")
     error_lower = error.casefold()
     explicit_status = str(result.get("provider_status") or "").upper()
-    if normalized:
-        status = "AVAILABLE_WITH_PRICES"
-    elif explicit_status in PROVIDER_STATES:
+    if explicit_status in PROVIDER_STATES:
         status = explicit_status
-    elif "timeout" in error_lower or "timed out" in error_lower:
-        status = "TIMEOUT"
+    elif normalized:
+        # Keep the M2.3 public-page diagnostic contract while the normalized
+        # observations carry the stronger price detail internally.
+        status = "AVAILABLE"
     elif error:
-        status = "PROVIDER_ERROR"
+        status = "TIMEOUT" if "timeout" in error_lower and str(result.get("source") or "") == "UPCitemdb" and not identifier else "PROVIDER_ERROR"
     elif result.get("found") or result.get("title") or result.get("images"):
         status = "AVAILABLE_IDENTITY_ONLY"
     elif any(key in result for key in ("offers", "observations", "price_observations", "prices", "price_low")):
@@ -418,6 +441,40 @@ def ebay_browse_observations(identifier: str, *, timeout: float = 4.0) -> tuple[
     return observations, "AVAILABLE" if observations else "NO_MATCH"
 
 
+def _observation_key(item: dict[str, Any]) -> tuple[Any, ...]:
+    """Conservative offer identity used only for duplicate offer suppression."""
+    def clean(value: Any) -> str:
+        return "".join(ch for ch in str(value or "").casefold() if ch.isalnum())
+    return (
+        clean(item.get("retailer")), clean(item.get("identifier")),
+        clean(item.get("size")), clean(item.get("quantity_or_pack_count")),
+        clean(item.get("condition")), item.get("location_type"),
+        item.get("sale_price") or item.get("price"), item.get("shipping_price"), clean(item.get("store_id") or item.get("store_name")),
+    )
+
+
+def deduplicate_observations(observations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge only the same merchant/variant/price offer across providers."""
+    merged: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for item in observations:
+        key = _observation_key(item)
+        existing = merged.get(key)
+        if existing is None:
+            item = dict(item)
+            item["sources"] = [item.get("source")] if item.get("source") else []
+            merged[key] = item
+            continue
+        sources = existing.setdefault("sources", [])
+        if item.get("source") and item["source"] not in sources:
+            sources.append(item["source"])
+        # A live observation is stronger than a cached copy of the same offer.
+        if existing.get("observation_state") == "CACHED" and item.get("observation_state") == "LIVE":
+            replacement = dict(item)
+            replacement["sources"] = sources
+            merged[key] = replacement
+    return list(merged.values())
+
+
 def rank_observations(observations: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Rank without deleting evidence; mark stale, unverified, and outlier rows."""
     ranked = [dict(item) for item in observations if _number(item.get("sale_price") or item.get("price")) is not None]
@@ -481,9 +538,17 @@ def select_reference_price(observations: list[dict[str, Any]]) -> dict[str, Any]
 
 
 def build_price_intelligence(external: dict[str, Any] | None, *, database=None, identifier: str | None = None,
-                             location: dict[str, Any] | None = None, configured_marketplaces: dict[str, str] | None = None) -> dict[str, Any]:
+                             location: dict[str, Any] | None = None, configured_marketplaces: dict[str, str] | None = None,
+                             provider_adapters: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Run independent read-only price sources and return partial results.
+
+    ``provider_adapters`` is deliberately injectable for legitimate future
+    sources and deterministic tests. Each adapter receives ``identifier`` and
+    ``location`` and returns either ``(rows, status)`` or a rows list.
+    Provider exceptions are isolated so one outage cannot erase other prices.
+    """
     observations = observations_from_upc_lookup(external, location=location)
-    diagnostics = provider_diagnostics(external, observations)
+    diagnostics = provider_diagnostics(external, observations, identifier=identifier)
     provider_states = [{"provider": diagnostics["provider"], "status": diagnostics["status"]}]
     walmart_meta = None
     ebay_future = None
@@ -507,19 +572,41 @@ def build_price_intelligence(external: dict[str, Any] | None, *, database=None, 
         ebay_pool.shutdown(wait=False)
     else:
         provider_states.append({"provider": "eBay Browse", "status": "AUTH_REQUIRED"})
+    adapters = provider_adapters or {}
+    if adapters:
+        with ThreadPoolExecutor(max_workers=len(adapters)) as adapter_pool:
+            futures = {provider: adapter_pool.submit(adapter, identifier, location) for provider, adapter in adapters.items()}
+            for provider, future in futures.items():
+                try:
+                    result = future.result()
+                    rows, state = result if isinstance(result, tuple) else (result, "AVAILABLE_WITH_PRICES")
+                    normalized_rows = [row if row.get("freshness_state") and row.get("provider") else normalize_observation(row, source=provider, exact_match=True, context=location) for row in (rows or [])]
+                    observations.extend(normalized_rows)
+                    provider_states.append({"provider": provider, "status": state})
+                except Exception:
+                    provider_states.append({"provider": provider, "status": "PROVIDER_ERROR"})
+    observations = deduplicate_observations(observations)
     marketplaces = _marketplace_statuses(database, identifier or "", observations) if identifier else marketplace_statuses(configured_marketplaces)
     for item in marketplaces:
         if item["eligibility"] == "NOT_CONFIGURED":
             provider_states.append({"provider": item["channel"], "status": "NOT_CONFIGURED"})
     reference = select_reference_price(observations)
     ranked = reference.pop("ranked_observations", [])
-    prices = [(item.get("sale_price") or item.get("price")) for item in ranked if item.get("exact_match") and (item.get("sale_price") or item.get("price")) is not None]
+    priced = [item for item in ranked if item.get("exact_match") and (item.get("sale_price") or item.get("price")) is not None]
+    prices = [(item.get("sale_price") or item.get("price")) for item in priced]
+    delivered = [item.get("delivered_price") for item in priced if item.get("delivered_price") is not None]
     return {
         "observations": ranked,
         "local_observations": [item for item in ranked if item["location_type"] == LOCATION_LOCAL],
-        "online_observations": [item for item in ranked if item["location_type"] == LOCATION_ONLINE],
+        "online_observations": [item for item in ranked if item["location_type"] in {LOCATION_ONLINE, LOCATION_ONLINE_RETAIL}],
         "marketplace_observations": [item for item in ranked if item["location_type"] == LOCATION_MARKETPLACE],
         "lowest_observed_price": min(prices, default=None),
+        "lowest_delivered_price": min(delivered, default=None),
+        "price_comparison_basis": "DELIVERED_PRICE_WHEN_KNOWN_ELSE_ITEM_PRICE",
+        "price_groups": {
+            "best_trusted": [item for item in ranked if item.get("reference_eligible")],
+            "other_observed": [item for item in ranked if not item.get("reference_eligible")],
+        },
         "retailers": unavailable_retailers(("Target", "Home Depot", "Lowe's", "Walgreens/CVS"), location=location),
         "marketplaces": marketplaces, "provider_states": provider_states, "walmart_catalog": walmart_meta,
         "reference_price": reference, "location": location,
